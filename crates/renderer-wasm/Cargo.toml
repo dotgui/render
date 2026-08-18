@@ -1,0 +1,13 @@
+[package]
+name = "dotgui-renderer-wasm"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+dotgui-renderer = { path = "../renderer" }
+serde_json.workspace = true
+wasm-bindgen.workspace = true

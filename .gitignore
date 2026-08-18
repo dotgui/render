@@ -1,0 +1,19 @@
+# Rust build output
+/target/
+
+# Local renderer artifacts
+/out/
+/.gui-render/
+
+# Editor and OS files
+.DS_Store
+**/.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs and local environment
+*.log
+.env
+.env.*
