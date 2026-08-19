@@ -677,13 +677,16 @@ fn intrinsic_width(
         let font_family = text_style_value(node, metadata, "font-family");
         let font_weight = text_style_value(node, metadata, "font-weight");
         let font_style = text_style_value(node, metadata, "font-style");
-        return text_measurer.text_width(
+        let letter_spacing = text_style_number(node, metadata, "letter-spacing").unwrap_or(0.0);
+        let base_width = text_measurer.text_width(
             value,
             font_family.as_deref(),
             font_weight.as_deref(),
             font_style.as_deref(),
             font_size,
         );
+        let char_count = value.chars().count();
+        return base_width + char_count as f32 * letter_spacing;
     }
     0.0
 }
@@ -730,6 +733,7 @@ fn intrinsic_height(
         let font_family = text_style_value(node, metadata, "font-family");
         let font_weight = text_style_value(node, metadata, "font-weight");
         let font_style = text_style_value(node, metadata, "font-style");
+        let letter_spacing = text_style_number(node, metadata, "letter-spacing").unwrap_or(0.0);
         let lines = estimate_wrapped_line_count(
             value,
             width,
@@ -737,6 +741,7 @@ fn intrinsic_height(
             font_weight.as_deref(),
             font_style.as_deref(),
             font_size,
+            letter_spacing,
             text_measurer,
         );
         let max_lines = max_text_lines(node, metadata).unwrap_or(lines);
@@ -746,6 +751,16 @@ fn intrinsic_height(
 }
 
 fn max_text_lines(node: &GuiNode, metadata: &GuiMetadata) -> Option<usize> {
+    let max_lines = node.attributes
+        .get("max-lines")
+        .map(|value| resolve_token(value, metadata))
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|lines| *lines > 0);
+
+    if max_lines.is_some() {
+        return max_lines;
+    }
+
     if node
         .attributes
         .get("truncate")
@@ -754,11 +769,7 @@ fn max_text_lines(node: &GuiNode, metadata: &GuiMetadata) -> Option<usize> {
         return Some(1);
     }
 
-    node.attributes
-        .get("max-lines")
-        .map(|value| resolve_token(value, metadata))
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|lines| *lines > 0)
+    None
 }
 
 fn estimate_wrapped_line_count(
@@ -768,27 +779,33 @@ fn estimate_wrapped_line_count(
     font_weight: Option<&str>,
     font_style: Option<&str>,
     font_size: f32,
+    letter_spacing: f32,
     text_measurer: &dyn TextMeasurer,
 ) -> usize {
-    let mut lines = 1;
-    let mut current = 0.0_f32;
-    for word in value.split_whitespace() {
-        let word_width =
-            text_measurer.text_width(word, font_family, font_weight, font_style, font_size);
-        let separator = if current > 0.0 {
-            text_measurer.text_width(" ", font_family, font_weight, font_style, font_size)
-        } else {
-            0.0
-        };
-        if current > 0.0 && current + separator + word_width > width + 0.5 {
-            lines += 1;
-            current = word_width;
-        } else {
-            current += separator + word_width;
+    let mut total_lines = 0;
+    for source_line in value.lines() {
+        let mut lines_in_chunk = 1;
+        let mut current = 0.0_f32;
+        for word in source_line.split_whitespace() {
+            let word_width =
+                text_measurer.text_width(word, font_family, font_weight, font_style, font_size)
+                + word.chars().count() as f32 * letter_spacing;
+            let separator = if current > 0.0 {
+                text_measurer.text_width(" ", font_family, font_weight, font_style, font_size)
+                + letter_spacing
+            } else {
+                0.0
+            };
+            if current > 0.0 && current + separator + word_width > width + 0.5 {
+                lines_in_chunk += 1;
+                current = word_width;
+            } else {
+                current += separator + word_width;
+            }
         }
+        total_lines += lines_in_chunk;
     }
-
-    lines
+    total_lines.max(1)
 }
 
 fn text_style_value(node: &GuiNode, metadata: &GuiMetadata, name: &str) -> Option<String> {
@@ -1249,5 +1266,74 @@ mod tests {
         assert_eq!(layout.children[0].rect.width, 100.0);
         assert_eq!(layout.children[0].rect.height, 1.0);
         assert_eq!(layout.rect.height, 1.0);
+    }
+
+    #[test]
+    fn letter_spacing_increases_width() {
+        let doc_without = parse_gui_xml(
+            r#"
+            <gui version="0.2">
+              <col w="200">
+                <text value="Hello" font-size="10" />
+              </col>
+            </gui>
+            "#,
+        )
+        .unwrap();
+        let doc_with = parse_gui_xml(
+            r#"
+            <gui version="0.2">
+              <col w="200">
+                <text value="Hello" font-size="10" letter-spacing="2" />
+              </col>
+            </gui>
+            "#,
+        )
+        .unwrap();
+
+        let l_without = compute_layout(&doc_without);
+        let l_with = compute_layout(&doc_with);
+
+        let w_without = l_without.children[0].rect.width;
+        let w_with = l_with.children[0].rect.width;
+
+        // "Hello" is 5 characters, so total extra letter spacing is 5 * 2 = 10 px.
+        assert_eq!(w_with, w_without + 10.0);
+    }
+
+    #[test]
+    fn text_with_newline_splits_lines() {
+        let doc = parse_gui_xml(
+            r#"
+            <gui version="0.2">
+              <col w="500">
+                <text value="Hello&#10;World" font-size="10" line-height="12" />
+              </col>
+            </gui>
+            "#,
+        )
+        .unwrap();
+
+        let layout = compute_layout(&doc);
+        // It should layout onto 2 lines, so height should be 2 * 12.0 = 24.0.
+        assert_eq!(layout.children[0].rect.height, 24.0);
+    }
+
+    #[test]
+    fn max_lines_takes_precedence_over_truncate() {
+        let doc = parse_gui_xml(
+            r#"
+            <gui version="0.2">
+              <col w="50">
+                <text value="Hello World Long Text" font-size="10" line-height="12" truncate max-lines="3" />
+              </col>
+            </gui>
+            "#,
+        )
+        .unwrap();
+
+        let layout = compute_layout(&doc);
+        // Even with truncate, max-lines="3" means it should allow up to 3 lines, so height should be 3 * 12.0 = 36.0.
+        assert_eq!(layout.children[0].rect.height, 36.0);
     }
 }

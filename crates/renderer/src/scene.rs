@@ -69,6 +69,7 @@ pub enum PaintContent {
         max_lines: Option<usize>,
         truncate: bool,
         text_align: Option<String>,
+        letter_spacing: f32,
     },
     Image {
         src: String,
@@ -132,6 +133,7 @@ fn content_for(layout: &LayoutBox, metadata: &GuiMetadata) -> PaintContent {
                 let truncate = attr(layout, "truncate").is_some_and(|value| value != "false")
                     || attr(layout, "overflow").is_some_and(|value| value == "ellipsis");
                 let text_align = attr(layout, "align").map(ToOwned::to_owned);
+                let letter_spacing = text_style_number(layout, metadata, "letter-spacing").unwrap_or(0.0);
                 PaintContent::Text {
                     value,
                     font_family,
@@ -144,6 +146,7 @@ fn content_for(layout: &LayoutBox, metadata: &GuiMetadata) -> PaintContent {
                     max_lines,
                     truncate,
                     text_align,
+                    letter_spacing,
                 }
             })
             .unwrap_or(PaintContent::None),
@@ -272,13 +275,19 @@ fn text_width_estimate(value: &str, font_size: f32) -> f32 {
 }
 
 fn max_text_lines(layout: &LayoutBox) -> Option<usize> {
+    let max_lines = attr(layout, "max-lines")
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|lines| *lines > 0);
+
+    if max_lines.is_some() {
+        return max_lines;
+    }
+
     if attr(layout, "truncate").is_some_and(|value| value != "false") {
         return Some(1);
     }
 
-    attr(layout, "max-lines")
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|lines| *lines > 0)
+    None
 }
 
 #[cfg(test)]
@@ -328,7 +337,8 @@ mod tests {
                 can_wrap: false,
                 max_lines: None,
                 truncate: false,
-                text_align: None
+                text_align: None,
+                letter_spacing: 0.0,
             }
         );
         assert_eq!(
@@ -373,7 +383,8 @@ mod tests {
                 can_wrap: false,
                 max_lines: None,
                 truncate: false,
-                text_align: None
+                text_align: None,
+                letter_spacing: 0.0,
             }
         );
     }
@@ -409,7 +420,8 @@ mod tests {
                 can_wrap: true,
                 max_lines: Some(1),
                 truncate: true,
-                text_align: Some("right".to_owned())
+                text_align: Some("right".to_owned()),
+                letter_spacing: 0.0,
             }
         );
     }

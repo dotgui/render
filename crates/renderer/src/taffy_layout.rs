@@ -263,7 +263,10 @@ fn intrinsic_text_width(node: &GuiNode, metadata: &GuiMetadata) -> f32 {
     let font_size = text_style_number(node, metadata, "font-size")
         .or_else(|| text_style_number(node, metadata, "size"))
         .unwrap_or(16.0);
-    value.chars().count() as f32 * font_size * 0.55
+    let letter_spacing = text_style_number(node, metadata, "letter-spacing").unwrap_or(0.0);
+    let char_count = value.chars().count() as f32;
+    let base_width = char_count * font_size * 0.55;
+    base_width + char_count * letter_spacing
 }
 
 fn intrinsic_text_height(node: &GuiNode, metadata: &GuiMetadata) -> f32 {

@@ -160,6 +160,7 @@ fn paint_content(
             max_lines,
             truncate,
             text_align,
+            letter_spacing,
             ..
         } => {
             if let Some(face) = fonts.and_then(|fonts| {
@@ -180,6 +181,7 @@ fn paint_content(
                     *max_lines,
                     *truncate,
                     text_align.as_deref(),
+                    *letter_spacing,
                 );
             } else if let Some(font) = font {
                 paint_text_fontdue(
@@ -193,6 +195,7 @@ fn paint_content(
                     *max_lines,
                     *truncate,
                     text_align.as_deref(),
+                    *letter_spacing,
                 );
             } else {
                 paint_text_placeholder(pixmap, node);
@@ -228,6 +231,7 @@ fn paint_text_face(
     max_lines: Option<usize>,
     truncate: bool,
     text_align: Option<&str>,
+    letter_spacing: f32,
 ) {
     if paint_text_variable(
         pixmap,
@@ -240,6 +244,7 @@ fn paint_text_face(
         max_lines,
         truncate,
         text_align,
+        letter_spacing,
     )
     .is_none()
     {
@@ -254,6 +259,7 @@ fn paint_text_face(
             max_lines,
             truncate,
             text_align,
+            letter_spacing,
         );
     }
 }
@@ -269,6 +275,7 @@ fn paint_text_variable(
     max_lines: Option<usize>,
     truncate: bool,
     text_align: Option<&str>,
+    letter_spacing: f32,
 ) -> Option<()> {
     let color = node
         .fill
@@ -284,12 +291,12 @@ fn paint_text_variable(
     let mut baseline = node.bounds.y + baseline_offset;
     let max_y = node.bounds.y + node.bounds.height;
     let mut lines = if can_wrap && !truncate {
-        wrap_text_face(face, value, font_size, node.bounds.width)
+        wrap_text_face(face, value, font_size, letter_spacing, node.bounds.width)
     } else {
         vec![value.to_owned()]
     };
     apply_line_limit_and_ellipsis(&mut lines, max_lines, truncate, node.bounds.width, |text| {
-        face.text_width(text, font_size)
+        face.text_width(text, font_size) + text.chars().count() as f32 * letter_spacing
     });
 
     for line in lines {
@@ -297,15 +304,16 @@ fn paint_text_variable(
             break;
         }
 
+        let line_width = face.text_width(&line, font_size) + line.chars().count() as f32 * letter_spacing;
         let mut cursor_x = aligned_text_x(
             node.bounds.x,
             node.bounds.width,
-            face.text_width(&line, font_size),
+            line_width,
             text_align,
         );
         for ch in line.chars() {
             let Some(glyph) = ttf_face.glyph_index(ch) else {
-                cursor_x += face.fallback().metrics(ch, font_size).advance_width;
+                cursor_x += face.fallback().metrics(ch, font_size).advance_width + letter_spacing;
                 continue;
             };
 
@@ -324,7 +332,8 @@ fn paint_text_variable(
             cursor_x += ttf_face
                 .glyph_hor_advance(glyph)
                 .map(|advance| advance as f32 * scale)
-                .unwrap_or_else(|| face.fallback().metrics(ch, font_size).advance_width);
+                .unwrap_or_else(|| face.fallback().metrics(ch, font_size).advance_width)
+                + letter_spacing;
         }
         baseline += line_height;
     }
@@ -343,6 +352,7 @@ fn paint_text_fontdue(
     max_lines: Option<usize>,
     truncate: bool,
     text_align: Option<&str>,
+    letter_spacing: f32,
 ) {
     let Some(color) = node
         .fill
@@ -356,22 +366,23 @@ fn paint_text_fontdue(
     let max_y = node.bounds.y + node.bounds.height;
 
     let mut lines = if can_wrap && !truncate {
-        wrap_text(font, value, font_size, node.bounds.width)
+        wrap_text(font, value, font_size, letter_spacing, node.bounds.width)
     } else {
         vec![value.to_owned()]
     };
     apply_line_limit_and_ellipsis(&mut lines, max_lines, truncate, node.bounds.width, |text| {
-        text_width(font, text, font_size)
+        text_width(font, text, font_size) + text.chars().count() as f32 * letter_spacing
     });
 
     for line in lines {
         if baseline - font_size > max_y {
             break;
         }
+        let line_width = text_width(font, &line, font_size) + line.chars().count() as f32 * letter_spacing;
         let mut cursor_x = aligned_text_x(
             node.bounds.x,
             node.bounds.width,
-            text_width(font, &line, font_size),
+            line_width,
             text_align,
         );
         for ch in line.chars() {
@@ -388,13 +399,19 @@ fn paint_text_fontdue(
                 &bitmap,
                 color,
             );
-            cursor_x += metrics.advance_width;
+            cursor_x += metrics.advance_width + letter_spacing;
         }
         baseline += line_height;
     }
 }
 
-fn wrap_text_face(face: &FontFace, value: &str, font_size: f32, max_width: f32) -> Vec<String> {
+fn wrap_text_face(
+    face: &FontFace,
+    value: &str,
+    font_size: f32,
+    letter_spacing: f32,
+    max_width: f32,
+) -> Vec<String> {
     let max_width = max_width.max(1.0);
     let mut lines = Vec::new();
 
@@ -403,14 +420,14 @@ fn wrap_text_face(face: &FontFace, value: &str, font_size: f32, max_width: f32) 
         let mut current_width = 0.0_f32;
 
         for word in source_line.split_whitespace() {
-            let word_width = face.text_width(word, font_size);
+            let word_width = face.text_width(word, font_size) + word.chars().count() as f32 * letter_spacing;
             let space_width = if current.is_empty() {
                 0.0
             } else {
-                face.text_width(" ", font_size)
+                face.text_width(" ", font_size) + letter_spacing
             };
 
-            if !current.is_empty() && current_width + space_width + word_width > max_width {
+            if !current.is_empty() && current_width + space_width + word_width > max_width + 0.5 {
                 lines.push(current);
                 current = word.to_owned();
                 current_width = word_width;
@@ -439,7 +456,10 @@ fn wrap_text_face(face: &FontFace, value: &str, font_size: f32, max_width: f32) 
 
 fn fontdue_baseline_offset(font: &Font, font_size: f32, line_height: f32) -> f32 {
     font.horizontal_line_metrics(font_size)
-        .map(|metrics| ((line_height - font_size) / 2.0) + metrics.ascent)
+        .map(|metrics| {
+            let content_height = metrics.ascent - metrics.descent;
+            ((line_height - content_height) / 2.0) + metrics.ascent
+        })
         .unwrap_or(font_size)
 }
 
@@ -453,11 +473,15 @@ fn apply_line_limit_and_ellipsis(
     let max_lines = max_lines.unwrap_or(usize::MAX);
     if lines.len() > max_lines {
         lines.truncate(max_lines);
-    }
-
-    if truncate && max_lines == 1 {
-        let source = lines.first().cloned().unwrap_or_default();
-        *lines = vec![ellipsize(&source, max_width, measure)];
+        if truncate && max_lines >= 1 {
+            if let Some(last_line) = lines.last_mut() {
+                *last_line = ellipsize(last_line, max_width, &measure);
+            }
+        }
+    } else if truncate {
+        if let Some(last_line) = lines.last_mut() {
+            *last_line = ellipsize(last_line, max_width, &measure);
+        }
     }
 }
 
@@ -492,7 +516,13 @@ fn aligned_text_x(x: f32, width: f32, text_width: f32, align: Option<&str>) -> f
     }
 }
 
-fn wrap_text(font: &Font, value: &str, font_size: f32, max_width: f32) -> Vec<String> {
+fn wrap_text(
+    font: &Font,
+    value: &str,
+    font_size: f32,
+    letter_spacing: f32,
+    max_width: f32,
+) -> Vec<String> {
     let max_width = max_width.max(1.0);
     let mut lines = Vec::new();
 
@@ -501,14 +531,14 @@ fn wrap_text(font: &Font, value: &str, font_size: f32, max_width: f32) -> Vec<St
         let mut current_width = 0.0_f32;
 
         for word in source_line.split_whitespace() {
-            let word_width = text_width(font, word, font_size);
+            let word_width = text_width(font, word, font_size) + word.chars().count() as f32 * letter_spacing;
             let space_width = if current.is_empty() {
                 0.0
             } else {
-                text_width(font, " ", font_size)
+                text_width(font, " ", font_size) + letter_spacing
             };
 
-            if !current.is_empty() && current_width + space_width + word_width > max_width {
+            if !current.is_empty() && current_width + space_width + word_width > max_width + 0.5 {
                 lines.push(current);
                 current = word.to_owned();
                 current_width = word_width;
@@ -1459,5 +1489,24 @@ mod tests {
         let metadata = std::fs::metadata(&path).expect("png exists");
         assert!(metadata.len() > 0);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn apply_line_limit_and_ellipsis_multi_line() {
+        let mut lines = vec![
+            "First line".to_string(),
+            "Second line that overflows".to_string(),
+            "Third line which should not be seen".to_string(),
+            "Fourth line".to_string(),
+        ];
+
+        let measure = |s: &str| s.len() as f32 * 10.0;
+
+        apply_line_limit_and_ellipsis(&mut lines, Some(2), true, 120.0, measure);
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "First line");
+        assert!(lines[1].ends_with("..."));
+        assert!(measure(&lines[1]) <= 120.0);
     }
 }

@@ -57,12 +57,18 @@ impl FontFace {
     pub fn baseline_offset(&self, font_size: f32, line_height: f32) -> f32 {
         if let Some(face) = self.variable_face() {
             let scale = font_size / face.units_per_em() as f32;
-            return ((line_height - font_size) / 2.0) + face.ascender() as f32 * scale;
+            let ascender = face.ascender() as f32 * scale;
+            let descender = face.descender() as f32 * scale;
+            let content_height = ascender - descender;
+            return ((line_height - content_height) / 2.0) + ascender;
         }
 
         self.fallback
             .horizontal_line_metrics(font_size)
-            .map(|metrics| ((line_height - font_size) / 2.0) + metrics.ascent)
+            .map(|metrics| {
+                let content_height = metrics.ascent - metrics.descent;
+                ((line_height - content_height) / 2.0) + metrics.ascent
+            })
             .unwrap_or(font_size)
     }
 
