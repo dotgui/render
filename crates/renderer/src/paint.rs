@@ -5,7 +5,7 @@ use fontdue::{Font, FontSettings};
 use std::{fs, path::Path};
 use thiserror::Error;
 use tiny_skia::{
-    Color, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke, Transform,
+    Color, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, PixmapRef, Rect, Stroke, Transform,
 };
 use ttf_parser::OutlineBuilder;
 
@@ -258,7 +258,7 @@ fn paint_content(
                 paint_text_placeholder(pixmap, node);
             }
         }
-        PaintContent::Image { src } => paint_image(pixmap, node, src, asset_cache),
+        PaintContent::Image { src, fit } => paint_image(pixmap, node, src, fit.as_deref(), asset_cache),
     }
 }
 
@@ -747,12 +747,22 @@ fn paint_text_placeholder(pixmap: &mut Pixmap, node: &SceneNode) {
     );
 }
 
-fn paint_image(pixmap: &mut Pixmap, node: &SceneNode, src: &str, asset_cache: Option<&AssetCache>) {
+fn paint_image(
+    pixmap: &mut Pixmap,
+    node: &SceneNode,
+    src: &str,
+    fit: Option<&str>,
+    asset_cache: Option<&AssetCache>,
+) {
     if let Some(cache) = asset_cache {
         if let Ok(asset) = cache.resolve(src) {
             if asset.media_type.as_deref() == Some("image/svg+xml") || looks_like_svg(&asset.bytes)
             {
                 if render_svg_asset(pixmap, node, &asset.bytes).is_ok() {
+                    return;
+                }
+            } else {
+                if render_raster_asset(pixmap, node, &asset.bytes, fit).is_ok() {
                     return;
                 }
             }
@@ -766,6 +776,70 @@ fn paint_image(pixmap: &mut Pixmap, node: &SceneNode, src: &str, asset_cache: Op
     }
 
     paint_image_placeholder(pixmap, node);
+}
+
+fn render_raster_asset(
+    pixmap: &mut Pixmap,
+    node: &SceneNode,
+    bytes: &[u8],
+    fit: Option<&str>,
+) -> Result<(), PaintError> {
+    let img = image::load_from_memory(bytes).map_err(|err| PaintError::Asset(err.to_string()))?;
+    let rgba = img.to_rgba8();
+    let img_pixmap = PixmapRef::from_bytes(rgba.as_raw(), rgba.width(), rgba.height())
+        .ok_or_else(|| PaintError::Asset("failed to create PixmapRef".to_owned()))?;
+
+    let rx = node.bounds.x;
+    let ry = node.bounds.y;
+    let rw = node.bounds.width;
+    let rh = node.bounds.height;
+
+    let iw = rgba.width() as f32;
+    let ih = rgba.height() as f32;
+
+    let fit = fit.unwrap_or("fill");
+
+    let (transform, needs_clip) = match fit {
+        "contain" => {
+            let scale = (rw / iw).min(rh / ih);
+            let dx = rx + (rw - iw * scale) / 2.0;
+            let dy = ry + (rh - ih * scale) / 2.0;
+            (Transform::from_scale(scale, scale).post_translate(dx, dy), false)
+        }
+        "cover" => {
+            let scale = (rw / iw).max(rh / ih);
+            let dx = rx + (rw - iw * scale) / 2.0;
+            let dy = ry + (rh - ih * scale) / 2.0;
+            (Transform::from_scale(scale, scale).post_translate(dx, dy), true)
+        }
+        "crop" | "none" => {
+            let dx = rx + (rw - iw) / 2.0;
+            let dy = ry + (rh - ih) / 2.0;
+            (Transform::from_translate(dx, dy), true)
+        }
+        _ => {
+            let scale_x = rw / iw;
+            let scale_y = rh / ih;
+            (Transform::from_scale(scale_x, scale_y).post_translate(rx, ry), false)
+        }
+    };
+
+    let mask = if needs_clip {
+        create_clip_mask(pixmap.width(), pixmap.height(), node)
+    } else {
+        None
+    };
+
+    pixmap.draw_pixmap(
+        0,
+        0,
+        img_pixmap,
+        &PixmapPaint::default(),
+        transform,
+        mask.as_ref(),
+    );
+
+    Ok(())
 }
 
 fn looks_like_svg(bytes: &[u8]) -> bool {
@@ -1585,6 +1659,41 @@ mod tests {
         let path = std::env::temp_dir().join("dotgui-renderer-clip-test.png");
         paint_scene_to_png(&scene, &path).expect("png paints");
         
+        let bytes = std::fs::read(&path).expect("png readable");
+        let _ = std::fs::remove_file(&path);
+        assert!(bytes.len() > 0);
+    }
+
+    #[test]
+    fn paints_raster_image_fit_modes() {
+        const RED_PNG: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
+            0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0, 144, 119, 83, 222,
+            0, 0, 0, 12, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192,
+            0, 0, 3, 1, 0, 2, 175, 172, 150, 14, 0, 0, 0, 0, 73, 69, 78, 68,
+            174, 66, 96, 130
+        ];
+
+        let document = parse_gui_xml(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="100">
+                <img src="assets/red.png" w="100" h="100" fit="cover" />
+              </col>
+            </gui>
+            "##,
+        )
+        .expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+
+        let mut package_assets = std::collections::BTreeMap::new();
+        package_assets.insert("assets/red.png".to_owned(), RED_PNG.to_vec());
+        let cache = AssetCache::new(std::env::temp_dir()).with_package_assets(package_assets);
+
+        let path = std::env::temp_dir().join("dotgui-renderer-raster-test.png");
+        paint_scene_to_png_with_assets(&scene, &path, &cache).expect("png paints");
+
         let bytes = std::fs::read(&path).expect("png readable");
         let _ = std::fs::remove_file(&path);
         assert!(bytes.len() > 0);

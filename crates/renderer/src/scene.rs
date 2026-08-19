@@ -73,6 +73,7 @@ pub enum PaintContent {
     },
     Image {
         src: String,
+        fit: Option<String>,
     },
 }
 
@@ -154,7 +155,10 @@ fn content_for(layout: &LayoutBox, metadata: &GuiMetadata) -> PaintContent {
             .attributes
             .get("src")
             .cloned()
-            .map(|src| PaintContent::Image { src })
+            .map(|src| PaintContent::Image {
+                src,
+                fit: layout.attributes.get("fit").cloned(),
+            })
             .unwrap_or(PaintContent::None),
         _ => PaintContent::None,
     }
@@ -344,7 +348,8 @@ mod tests {
         assert_eq!(
             scene.root.children[1].content,
             PaintContent::Image {
-                src: "assets/icon.svg".to_owned()
+                src: "assets/icon.svg".to_owned(),
+                fit: None,
             }
         );
     }
