@@ -1023,12 +1023,23 @@ fn stroke_rounded_rect(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
         ..Default::default()
     };
 
+    let offset = match border.align.as_str() {
+        "center" => 0.0,
+        "outside" => -border.width / 2.0,
+        _ => border.width / 2.0,
+    };
+    let delta_size = match border.align.as_str() {
+        "center" => 0.0,
+        "outside" => border.width,
+        _ => -border.width,
+    };
+
     if node.tag == "ellipse" {
         if let Some(path) = ellipse_path(
-            node.bounds.x + border.width / 2.0,
-            node.bounds.y + border.width / 2.0,
-            (node.bounds.width - border.width).max(0.0),
-            (node.bounds.height - border.width).max(0.0),
+            node.bounds.x + offset,
+            node.bounds.y + offset,
+            (node.bounds.width + delta_size).max(0.0),
+            (node.bounds.height + delta_size).max(0.0),
         ) {
             pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
         }
@@ -1036,10 +1047,10 @@ fn stroke_rounded_rect(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
     }
 
     if let Some(path) = rounded_rect_path(
-        node.bounds.x + border.width / 2.0,
-        node.bounds.y + border.width / 2.0,
-        (node.bounds.width - border.width).max(0.0),
-        (node.bounds.height - border.width).max(0.0),
+        node.bounds.x + offset,
+        node.bounds.y + offset,
+        (node.bounds.width + delta_size).max(0.0),
+        (node.bounds.height + delta_size).max(0.0),
         node.radius.unwrap_or(0.0),
     ) {
         pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
@@ -1055,47 +1066,73 @@ fn stroke_sided_border(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
     let w = node.bounds.width;
     let h = node.bounds.height;
 
+    let align = border.align.as_str();
+
     if border.widths.top > 0.0 {
+        let sw = border.widths.top;
+        let dy = match align {
+            "center" => 0.0,
+            "outside" => -sw / 2.0,
+            _ => sw / 2.0,
+        };
         stroke_line(
             pixmap,
             x,
-            y + border.widths.top / 2.0,
+            y + dy,
             x + w,
-            y + border.widths.top / 2.0,
-            border.widths.top,
+            y + dy,
+            sw,
             color,
         );
     }
     if border.widths.right > 0.0 {
+        let sw = border.widths.right;
+        let dx = match align {
+            "center" => 0.0,
+            "outside" => sw / 2.0,
+            _ => -sw / 2.0,
+        };
         stroke_line(
             pixmap,
-            x + w - border.widths.right / 2.0,
+            x + w + dx,
             y,
-            x + w - border.widths.right / 2.0,
+            x + w + dx,
             y + h,
-            border.widths.right,
+            sw,
             color,
         );
     }
     if border.widths.bottom > 0.0 {
+        let sw = border.widths.bottom;
+        let dy = match align {
+            "center" => 0.0,
+            "outside" => sw / 2.0,
+            _ => -sw / 2.0,
+        };
         stroke_line(
             pixmap,
             x,
-            y + h - border.widths.bottom / 2.0,
+            y + h + dy,
             x + w,
-            y + h - border.widths.bottom / 2.0,
-            border.widths.bottom,
+            y + h + dy,
+            sw,
             color,
         );
     }
     if border.widths.left > 0.0 {
+        let sw = border.widths.left;
+        let dx = match align {
+            "center" => 0.0,
+            "outside" => -sw / 2.0,
+            _ => sw / 2.0,
+        };
         stroke_line(
             pixmap,
-            x + border.widths.left / 2.0,
+            x + dx,
             y,
-            x + border.widths.left / 2.0,
+            x + dx,
             y + h,
-            border.widths.left,
+            sw,
             color,
         );
     }
@@ -1693,6 +1730,29 @@ mod tests {
 
         let path = std::env::temp_dir().join("dotgui-renderer-raster-test.png");
         paint_scene_to_png_with_assets(&scene, &path, &cache).expect("png paints");
+
+        let bytes = std::fs::read(&path).expect("png readable");
+        let _ = std::fs::remove_file(&path);
+        assert!(bytes.len() > 0);
+    }
+
+    #[test]
+    fn paints_stroke_alignments() {
+        let document = parse_gui_xml(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="100" fill="#ffffff" border="2 #000000 solid outside">
+                <rect w="50" h="50" border="2 #ff0000 solid center" />
+              </col>
+            </gui>
+            "##,
+        )
+        .expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+
+        let path = std::env::temp_dir().join("dotgui-renderer-stroke-test.png");
+        paint_scene_to_png(&scene, &path).expect("png paints");
 
         let bytes = std::fs::read(&path).expect("png readable");
         let _ = std::fs::remove_file(&path);
