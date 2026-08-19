@@ -103,7 +103,13 @@ fn layout_node(
         }
         "stack" => layout_col(node, metadata, text_measurer, x, y, constraints),
         "frame" | "group" => layout_frame(node, metadata, text_measurer, x, y, constraints),
-        _ => layout_leaf(node, metadata, text_measurer, x, y, constraints),
+        "rect" | "line" | "ellipse" | "text" | "img" | "appearance" => {
+            layout_leaf(node, metadata, text_measurer, x, y, constraints)
+        }
+        other => {
+            eprintln!("warning: unsupported element tag: <{}>", other);
+            layout_leaf(node, metadata, text_measurer, x, y, constraints)
+        }
     }
 }
 

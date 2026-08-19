@@ -763,16 +763,22 @@ fn paint_image(
     asset_cache: Option<&AssetCache>,
 ) {
     if let Some(cache) = asset_cache {
-        if let Ok(asset) = cache.resolve(src) {
-            if asset.media_type.as_deref() == Some("image/svg+xml") || looks_like_svg(&asset.bytes)
-            {
-                if render_svg_asset(pixmap, node, &asset.bytes).is_ok() {
-                    return;
+        match cache.resolve(src) {
+            Ok(asset) => {
+                if asset.media_type.as_deref() == Some("image/svg+xml") || looks_like_svg(&asset.bytes) {
+                    match render_svg_asset(pixmap, node, &asset.bytes) {
+                        Ok(_) => return,
+                        Err(err) => eprintln!("warning: failed to render SVG asset '{}': {}", src, err),
+                    }
+                } else {
+                    match render_raster_asset(pixmap, node, &asset.bytes, fit) {
+                        Ok(_) => return,
+                        Err(err) => eprintln!("warning: failed to decode/render raster asset '{}': {}", src, err),
+                    }
                 }
-            } else {
-                if render_raster_asset(pixmap, node, &asset.bytes, fit).is_ok() {
-                    return;
-                }
+            }
+            Err(err) => {
+                eprintln!("warning: failed to resolve asset '{}': {}", src, err);
             }
         }
     }

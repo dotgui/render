@@ -135,6 +135,8 @@ impl FontStore {
                             store
                                 .fonts
                                 .insert(FontFaceKey::new(family, &weight, &style), font);
+                        } else {
+                            eprintln!("warning: Google font family '{}' (weight {}, style {}) could not be resolved", family, weight, style);
                         }
                     } else if info.source == "system" {
                         if let Some((bytes, collection_index)) = find_system_font(family, &weight, &style) {
@@ -155,6 +157,8 @@ impl FontStore {
                             store
                                 .fonts
                                 .insert(FontFaceKey::new(family, &weight, &style), font);
+                        } else {
+                            eprintln!("warning: System font family '{}' (weight {}, style {}) was not found", family, weight, style);
                         }
                     }
                 }
