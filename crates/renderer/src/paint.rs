@@ -81,11 +81,68 @@ fn paint_node(
     paint_fill(pixmap, node);
     paint_content(pixmap, node, font, asset_cache, fonts);
 
-    for child in &node.children {
-        paint_node(pixmap, child, font, asset_cache, fonts);
+    if node.clip && !node.children.is_empty() {
+        if let Some(mut child_pixmap) = Pixmap::new(pixmap.width(), pixmap.height()) {
+            for child in &node.children {
+                paint_node(&mut child_pixmap, child, font, asset_cache, fonts);
+            }
+            if let Some(mask) = create_clip_mask(pixmap.width(), pixmap.height(), node) {
+                pixmap.draw_pixmap(
+                    0,
+                    0,
+                    child_pixmap.as_ref(),
+                    &PixmapPaint::default(),
+                    Transform::identity(),
+                    Some(&mask),
+                );
+            } else {
+                pixmap.draw_pixmap(
+                    0,
+                    0,
+                    child_pixmap.as_ref(),
+                    &PixmapPaint::default(),
+                    Transform::identity(),
+                    None,
+                );
+            }
+        }
+    } else {
+        for child in &node.children {
+            paint_node(pixmap, child, font, asset_cache, fonts);
+        }
     }
 
     paint_border(pixmap, node);
+}
+
+fn create_clip_mask(width: u32, height: u32, node: &SceneNode) -> Option<tiny_skia::Mask> {
+    let mut mask = tiny_skia::Mask::new(width, height)?;
+    let path = if node.tag == "ellipse" {
+        ellipse_path(
+            node.bounds.x,
+            node.bounds.y,
+            node.bounds.width,
+            node.bounds.height,
+        )?
+    } else if let Some(radius) = node.radius.filter(|r| *r > 0.0) {
+        rounded_rect_path(
+            node.bounds.x,
+            node.bounds.y,
+            node.bounds.width,
+            paint_height(node),
+            radius,
+        )?
+    } else {
+        let mut pb = PathBuilder::new();
+        pb.move_to(node.bounds.x, node.bounds.y);
+        pb.line_to(node.bounds.x + node.bounds.width, node.bounds.y);
+        pb.line_to(node.bounds.x + node.bounds.width, node.bounds.y + paint_height(node));
+        pb.line_to(node.bounds.x, node.bounds.y + paint_height(node));
+        pb.close();
+        pb.finish()?
+    };
+    mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+    Some(mask)
 }
 
 fn paint_fill(pixmap: &mut Pixmap, node: &SceneNode) {
@@ -1508,5 +1565,28 @@ mod tests {
         assert_eq!(lines[0], "First line");
         assert!(lines[1].ends_with("..."));
         assert!(measure(&lines[1]) <= 120.0);
+    }
+
+    #[test]
+    fn paints_clipping_bounds() {
+        let document = parse_gui_xml(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="100" fill="#ffffff" clip>
+                <rect x="150" y="150" w="50" h="50" fill="#ff0000" />
+              </col>
+            </gui>
+            "##,
+        )
+        .expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+
+        let path = std::env::temp_dir().join("dotgui-renderer-clip-test.png");
+        paint_scene_to_png(&scene, &path).expect("png paints");
+        
+        let bytes = std::fs::read(&path).expect("png readable");
+        let _ = std::fs::remove_file(&path);
+        assert!(bytes.len() > 0);
     }
 }

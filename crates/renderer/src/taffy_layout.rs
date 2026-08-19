@@ -97,6 +97,14 @@ fn style_for_node(node: &GuiNode, metadata: &GuiMetadata) -> Style {
             width: dimension_attr(node, metadata, "w"),
             height: dimension_attr(node, metadata, "h"),
         },
+        min_size: Size {
+            width: dimension_attr(node, metadata, "min-w"),
+            height: dimension_attr(node, metadata, "min-h"),
+        },
+        max_size: Size {
+            width: dimension_attr(node, metadata, "max-w"),
+            height: dimension_attr(node, metadata, "max-h"),
+        },
         padding: Rect {
             left: length(padding_side(node, metadata, Side::Left)),
             right: length(padding_side(node, metadata, Side::Right)),

@@ -205,18 +205,25 @@ fn layout_row(
         gap
     };
 
-    let mut cursor_x = x + padding.left;
-    let child_y = y + padding.top;
-    let mut content_width = 0.0_f32;
     let gap_total = actual_gap * flow.len().saturating_sub(1) as f32;
-    let content_area_width = known_content_area_width.unwrap_or(natural_content_width + gap_total);
+    let natural_width = natural_content_width + gap_total;
+    let mut width = known_width.unwrap_or(natural_width + padding.horizontal());
+    if let Some(min_w) = number_attr(node, metadata, "min-w") {
+        width = width.max(min_w);
+    }
+    if let Some(max_w) = number_attr(node, metadata, "max-w") {
+        width = width.min(max_w);
+    }
+
+    let content_area_width = (width - padding.horizontal()).max(0.0);
     let occupied_width = natural_content_width + gap_total;
     let main_offset = row_main_axis_offset(node, content_area_width, occupied_width);
-    cursor_x += main_offset;
+
+    let mut cursor_x = x + padding.left + main_offset;
+    let child_y = y + padding.top;
     for (index, child_layout) in children.iter_mut().enumerate() {
         if index > 0 {
             cursor_x += actual_gap;
-            content_width += actual_gap;
         }
         translate_layout(
             child_layout,
@@ -224,11 +231,15 @@ fn layout_row(
             child_y - child_layout.rect.y,
         );
         cursor_x += child_layout.rect.width;
-        content_width += child_layout.rect.width;
     }
 
-    let width = known_width.unwrap_or(content_width + padding.horizontal());
-    let height = known_height.unwrap_or(content_height + padding.vertical());
+    let mut height = known_height.unwrap_or(content_height + padding.vertical());
+    if let Some(min_h) = number_attr(node, metadata, "min-h") {
+        height = height.max(min_h);
+    }
+    if let Some(max_h) = number_attr(node, metadata, "max-h") {
+        height = height.min(max_h);
+    }
 
     apply_cross_axis_alignment(node, &mut children, y, height, padding, Axis::Horizontal);
     append_absolute_children(node, metadata, text_measurer, x, y, &mut children);
@@ -346,16 +357,22 @@ fn layout_col(
     };
 
     let gap_total = actual_gap * flow.len().saturating_sub(1) as f32;
-    let content_area_height =
-        known_content_area_height.unwrap_or(natural_content_height + gap_total);
+    let natural_height = natural_content_height + gap_total;
+    let mut height = known_height.unwrap_or(natural_height + padding.vertical());
+    if let Some(min_h) = number_attr(node, metadata, "min-h") {
+        height = height.max(min_h);
+    }
+    if let Some(max_h) = number_attr(node, metadata, "max-h") {
+        height = height.min(max_h);
+    }
+
+    let content_area_height = (height - padding.vertical()).max(0.0);
     let occupied_height = natural_content_height + gap_total;
     let mut cursor_y =
         y + padding.top + col_main_axis_offset(node, content_area_height, occupied_height);
-    let mut content_height = 0.0_f32;
     for (index, child_layout) in children.iter_mut().enumerate() {
         if index > 0 {
             cursor_y += actual_gap;
-            content_height += actual_gap;
         }
         translate_layout(
             child_layout,
@@ -363,11 +380,15 @@ fn layout_col(
             cursor_y - child_layout.rect.y,
         );
         cursor_y += child_layout.rect.height;
-        content_height += child_layout.rect.height;
     }
 
-    let width = known_width.unwrap_or(content_width + padding.horizontal());
-    let height = known_height.unwrap_or(content_height + padding.vertical());
+    let mut width = known_width.unwrap_or(content_width + padding.horizontal());
+    if let Some(min_w) = number_attr(node, metadata, "min-w") {
+        width = width.max(min_w);
+    }
+    if let Some(max_w) = number_attr(node, metadata, "max-w") {
+        width = width.min(max_w);
+    }
 
     apply_cross_axis_alignment(node, &mut children, x, width, padding, Axis::Vertical);
     append_absolute_children(node, metadata, text_measurer, x, y, &mut children);
@@ -393,8 +414,14 @@ fn layout_frame(
     y: f32,
     constraints: Constraints,
 ) -> LayoutBox {
-    let width = resolved_size(node, metadata, "w", constraints.width).unwrap_or(0.0);
-    let height = resolved_size(node, metadata, "h", constraints.height).unwrap_or(0.0);
+    let mut width = resolved_size(node, metadata, "w", constraints.width).unwrap_or(0.0);
+    if let Some(min_w) = number_attr(node, metadata, "min-w") { width = width.max(min_w); }
+    if let Some(max_w) = number_attr(node, metadata, "max-w") { width = width.min(max_w); }
+
+    let mut height = resolved_size(node, metadata, "h", constraints.height).unwrap_or(0.0);
+    if let Some(min_h) = number_attr(node, metadata, "min-h") { height = height.max(min_h); }
+    if let Some(max_h) = number_attr(node, metadata, "max-h") { height = height.min(max_h); }
+
     let mut children = Vec::new();
 
     for child in node
@@ -439,7 +466,7 @@ fn layout_leaf(
     constraints: Constraints,
 ) -> LayoutBox {
     let intrinsic_width = intrinsic_width(node, metadata, text_measurer);
-    let width = resolved_size(node, metadata, "w", constraints.width).unwrap_or_else(|| {
+    let mut width = resolved_size(node, metadata, "w", constraints.width).unwrap_or_else(|| {
         if node.tag == "text" {
             constraints
                 .width
@@ -449,8 +476,13 @@ fn layout_leaf(
             intrinsic_width
         }
     });
-    let height = resolved_size(node, metadata, "h", constraints.height)
+    if let Some(min_w) = number_attr(node, metadata, "min-w") { width = width.max(min_w); }
+    if let Some(max_w) = number_attr(node, metadata, "max-w") { width = width.min(max_w); }
+
+    let mut height = resolved_size(node, metadata, "h", constraints.height)
         .unwrap_or_else(|| intrinsic_height(node, metadata, text_measurer, Some(width)));
+    if let Some(min_h) = number_attr(node, metadata, "min-h") { height = height.max(min_h); }
+    if let Some(max_h) = number_attr(node, metadata, "max-h") { height = height.min(max_h); }
 
     LayoutBox {
         tag: node.tag.clone(),
@@ -1335,5 +1367,23 @@ mod tests {
         let layout = compute_layout(&doc);
         // Even with truncate, max-lines="3" means it should allow up to 3 lines, so height should be 3 * 12.0 = 36.0.
         assert_eq!(layout.children[0].rect.height, 36.0);
+    }
+
+    #[test]
+    fn min_max_constraints_clamp_dimensions() {
+        let doc = parse_gui_xml(
+            r#"
+            <gui version="0.2">
+              <col w="100" min-h="150" max-w="80">
+                <rect w="200" h="50" />
+              </col>
+            </gui>
+            "#,
+        )
+        .unwrap();
+
+        let layout = compute_layout(&doc);
+        assert_eq!(layout.rect.width, 80.0);
+        assert_eq!(layout.rect.height, 150.0);
     }
 }
