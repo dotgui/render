@@ -26,16 +26,24 @@ pub struct FontFace {
     fallback: Font,
     bytes: Rc<Vec<u8>>,
     weight: f32,
+    collection_index: u32,
 }
 
 impl FontFace {
-    fn new(bytes: Vec<u8>, weight: &str) -> Result<Self, String> {
-        let fallback = Font::from_bytes(bytes.clone(), FontSettings::default())
-            .map_err(|err| err.to_string())?;
+    fn new(bytes: Vec<u8>, weight: &str, collection_index: u32) -> Result<Self, String> {
+        let fallback = Font::from_bytes(
+            bytes.clone(),
+            FontSettings {
+                collection_index,
+                ..FontSettings::default()
+            },
+        )
+        .map_err(|err| err.to_string())?;
         Ok(Self {
             fallback,
             bytes: Rc::new(bytes),
             weight: normalize_weight(weight).parse().unwrap_or(400.0),
+            collection_index,
         })
     }
 
@@ -73,7 +81,7 @@ impl FontFace {
     }
 
     pub fn variable_face(&self) -> Option<Face<'_>> {
-        let mut face = Face::parse(&self.bytes, 0).ok()?;
+        let mut face = Face::parse(&self.bytes, self.collection_index).ok()?;
         let _ = face.set_variation(Tag::from_bytes(b"wght"), self.weight);
         Some(face)
     }
@@ -101,31 +109,53 @@ impl FontStore {
         let mut loaded_fonts = BTreeMap::<(String, String), Rc<FontFace>>::new();
 
         for (family, info) in &document.metadata.fonts {
-            if info.source != "google" {
+            if info.source != "google" && info.source != "system" {
                 continue;
             }
 
             for weight in declared_weights(info) {
                 for style in declared_styles(info) {
-                    if let Some(url) = google_font_ttf_url(family, &weight, &style, cache)? {
-                        let loaded_key = (url.clone(), weight.clone());
-                        let font = if let Some(font) = loaded_fonts.get(&loaded_key) {
-                            Rc::clone(font)
-                        } else {
-                            let asset = cache.resolve(&url)?;
-                            let font = Rc::new(FontFace::new(asset.bytes, &weight).map_err(
-                                |message| FontError::Load {
-                                    family: family.clone(),
-                                    message,
-                                },
-                            )?);
-                            loaded_fonts.insert(loaded_key, Rc::clone(&font));
-                            font
-                        };
+                    if info.source == "google" {
+                        if let Some(url) = google_font_ttf_url(family, &weight, &style, cache)? {
+                            let loaded_key = (url.clone(), weight.clone());
+                            let font = if let Some(font) = loaded_fonts.get(&loaded_key) {
+                                Rc::clone(font)
+                            } else {
+                                let asset = cache.resolve(&url)?;
+                                let font = Rc::new(FontFace::new(asset.bytes, &weight, 0).map_err(
+                                    |message| FontError::Load {
+                                        family: family.clone(),
+                                        message,
+                                    },
+                                )?);
+                                loaded_fonts.insert(loaded_key, Rc::clone(&font));
+                                font
+                            };
 
-                        store
-                            .fonts
-                            .insert(FontFaceKey::new(family, &weight, &style), font);
+                            store
+                                .fonts
+                                .insert(FontFaceKey::new(family, &weight, &style), font);
+                        }
+                    } else if info.source == "system" {
+                        if let Some((bytes, collection_index)) = find_system_font(family, &weight, &style) {
+                            let loaded_key = (format!("system://{family}/{collection_index}"), weight.clone());
+                            let font = if let Some(font) = loaded_fonts.get(&loaded_key) {
+                                Rc::clone(font)
+                            } else {
+                                let font = Rc::new(FontFace::new(bytes, &weight, collection_index).map_err(
+                                    |message| FontError::Load {
+                                        family: family.clone(),
+                                        message,
+                                    },
+                                )?);
+                                loaded_fonts.insert(loaded_key, Rc::clone(&font));
+                                font
+                            };
+
+                            store
+                                .fonts
+                                .insert(FontFaceKey::new(family, &weight, &style), font);
+                        }
                     }
                 }
             }
@@ -364,6 +394,88 @@ fn fallback_text_width(value: &str, font_size: f32) -> f32 {
     value.chars().count() as f32 * font_size * 0.55
 }
 
+fn find_system_font(family: &str, weight: &str, style: &str) -> Option<(Vec<u8>, u32)> {
+    let slug = family.to_ascii_lowercase().replace(' ', "").replace('-', "");
+    let target_weight = normalize_weight(weight).parse::<u16>().unwrap_or(400);
+    let target_italic = style == "italic";
+
+    let dirs = [
+        "/System/Library/Fonts",
+        "/System/Library/Fonts/Supplemental",
+        "/Library/Fonts",
+    ];
+
+    let mut candidates = Vec::new();
+
+    for dir in dirs {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()).map(|n| n.to_ascii_lowercase()) else {
+                continue;
+            };
+            if name.ends_with(".ttf") || name.ends_with(".otf") || name.ends_with(".ttc") {
+                let name_slug = name.replace(' ', "").replace('-', "");
+                if name_slug.contains(&slug) {
+                    candidates.push(path);
+                }
+            }
+        }
+    }
+
+    let mut best_bytes = None;
+    let mut best_index = 0;
+    let mut best_score = -1;
+
+    for path in candidates {
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let num_fonts = ttf_parser::fonts_in_collection(&bytes).unwrap_or(1);
+        for index in 0..num_fonts {
+            if let Ok(face) = Face::parse(&bytes, index) {
+                let mut face_family = None;
+                for name in face.names() {
+                    let name_id = name.name_id;
+                    // Name ID 16: Typographic Family, Name ID 1: Font Family
+                    if name_id == 16 || (name_id == 1 && face_family.is_none()) {
+                        if let Some(s) = name.to_string() {
+                            face_family = Some(s);
+                        }
+                    }
+                }
+                if let Some(face_family) = face_family {
+                    let face_slug = face_family.to_ascii_lowercase().replace(' ', "").replace('-', "");
+                    if face_slug == slug || face_slug.contains(&slug) || slug.contains(&face_slug) {
+                        let face_weight = face.weight().to_number();
+                        let face_italic = face.is_italic();
+                        
+                        let style_score = if face_italic == target_italic { 10 } else { 0 };
+                        let weight_diff = (face_weight as i32 - target_weight as i32).abs();
+                        let weight_score = 1000 - weight_diff;
+                        let score = style_score + weight_score;
+
+                        if score > best_score {
+                            best_score = score;
+                            best_bytes = Some(bytes.clone());
+                            best_index = index;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    best_bytes.map(|bytes| (bytes, best_index))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,6 +559,17 @@ mod tests {
             path: format!("ofl/test/{name}"),
             entry_type: "file".to_owned(),
             download_url: Some(format!("https://example.com/{name}")),
+        }
+    }
+
+    #[test]
+    fn resolves_system_font_georgia() {
+        let res = find_system_font("Georgia", "400", "normal");
+        if cfg!(target_os = "macos") {
+            assert!(res.is_some(), "Should find Georgia on macOS system fonts");
+            let (bytes, index) = res.unwrap();
+            assert!(bytes.len() > 0);
+            assert_eq!(index, 0);
         }
     }
 }
