@@ -24,7 +24,7 @@ pub use model::{FontInfo, GuiDocument, GuiMetadata, GuiNode};
 pub use package::{read_gui_package, read_gui_package_xml, GuiPackage, PackageError};
 pub use paint::{
     paint_scene_to_png, paint_scene_to_png_with_assets, paint_scene_to_png_with_assets_and_fonts,
-    PaintError,
+    paint_scene_to_png_bytes, PaintError,
 };
 pub use parser::{parse_gui_xml, ParseError};
 pub use scene::{build_scene, Border, BorderWidths, PaintContent, Scene, SceneNode};

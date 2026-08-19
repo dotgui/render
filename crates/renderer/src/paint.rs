@@ -48,12 +48,11 @@ pub fn paint_scene_to_png_with_assets_and_fonts(
     paint_scene(scene, path, Some(cache), Some(fonts))
 }
 
-fn paint_scene(
+pub fn paint_scene_to_png_bytes(
     scene: &Scene,
-    path: impl AsRef<Path>,
     asset_cache: Option<&AssetCache>,
     fonts: Option<&FontStore>,
-) -> Result<(), PaintError> {
+) -> Result<Vec<u8>, PaintError> {
     let width = scene.root.bounds.width.ceil();
     let height = scene.root.bounds.height.ceil();
     if width <= 0.0 || height <= 0.0 || !width.is_finite() || !height.is_finite() {
@@ -66,9 +65,18 @@ fn paint_scene(
     let font = load_default_font();
     paint_node(&mut pixmap, &scene.root, font.as_ref(), asset_cache, fonts);
     pixmap
-        .save_png(path)
-        .map_err(|err| PaintError::Png(err.to_string()))?;
-    Ok(())
+        .encode_png()
+        .map_err(|err| PaintError::Png(err.to_string()))
+}
+
+fn paint_scene(
+    scene: &Scene,
+    path: impl AsRef<Path>,
+    asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
+) -> Result<(), PaintError> {
+    let bytes = paint_scene_to_png_bytes(scene, asset_cache, fonts)?;
+    fs::write(path, bytes).map_err(|err| PaintError::Png(err.to_string()))
 }
 
 fn paint_node(
