@@ -1,4 +1,8 @@
-use crate::{GuiDocument, GuiMetadata, GuiNode, LayoutBox, LayoutRect};
+use crate::{
+    text,
+    text_style::{resolve_text_runs, resolve_token, TextRunStyle},
+    ApproxTextMeasurer, GuiDocument, GuiMetadata, GuiNode, LayoutBox, LayoutRect, TextMeasurer,
+};
 use taffy::prelude::*;
 use taffy::TaffyError;
 use thiserror::Error;
@@ -15,17 +19,57 @@ struct BuiltNode<'a> {
     children: Vec<BuiltNode<'a>>,
 }
 
+/// Everything the measure function needs to break a `<text>` node into lines.
+///
+/// Taffy only hands the measure function its node context, so the resolved
+/// font attributes are captured here while the tree is built.
+struct TextContext {
+    /// Styled runs, already resolved and inherited.
+    runs: Vec<TextRunStyle>,
+    max_lines: Option<usize>,
+}
+
+/// Lays the document out using rough per-character width estimates.
+///
+/// Prefer [`compute_taffy_layout_with_text`] wherever a [`FontStore`] is
+/// available: painting measures with real font metrics, so layout has to as
+/// well or wrapped text is sized against the wrong widths.
+///
+/// [`FontStore`]: crate::FontStore
 pub fn compute_taffy_layout(document: &GuiDocument) -> Result<LayoutBox, TaffyLayoutError> {
-    let mut tree: TaffyTree<()> = TaffyTree::new();
-    let built = build_node(&mut tree, &document.root, &document.metadata)?;
+    compute_taffy_layout_with_text(document, &ApproxTextMeasurer)
+}
+
+/// Lays the document out, measuring text with `text_measurer`.
+pub fn compute_taffy_layout_with_text(
+    document: &GuiDocument,
+    text_measurer: &dyn TextMeasurer,
+) -> Result<LayoutBox, TaffyLayoutError> {
+    let mut tree: TaffyTree<TextContext> = TaffyTree::new();
+    // Taffy rounds boxes to whole pixels by default, which can leave a text box
+    // a fraction narrower than the string it was measured for; painting would
+    // then re-wrap and drop the overflowing word.
+    tree.disable_rounding();
+    let built = build_node(
+        &mut tree,
+        &document.root,
+        &document.metadata,
+        FlexDirection::Column,
+    )?;
 
     let width = number_attr(&document.root, &document.metadata, "w");
     let height = number_attr(&document.root, &document.metadata, "h");
-    tree.compute_layout(
+    tree.compute_layout_with_measure(
         built.node_id,
         Size {
             width: width.map_or(AvailableSpace::MaxContent, AvailableSpace::Definite),
             height: height.map_or(AvailableSpace::MaxContent, AvailableSpace::Definite),
+        },
+        |known_dimensions, available_space, _node_id, node_context, _style| {
+            let Some(context) = node_context else {
+                return Size::ZERO;
+            };
+            measure_text(context, text_measurer, known_dimensions, available_space)
         },
     )?;
 
@@ -33,26 +77,37 @@ pub fn compute_taffy_layout(document: &GuiDocument) -> Result<LayoutBox, TaffyLa
 }
 
 fn build_node<'a>(
-    tree: &mut TaffyTree<()>,
+    tree: &mut TaffyTree<TextContext>,
     node: &'a GuiNode,
     metadata: &GuiMetadata,
+    parent_direction: FlexDirection,
 ) -> Result<BuiltNode<'a>, TaffyError> {
+    let direction = flex_direction_for(node);
+    // `appearance` describes the parent's paint and `segment` is text content;
+    // neither is a box. Keeping segments out also leaves `<text>` childless, so
+    // Taffy still calls the measure function on it.
     let children = node
         .children
         .iter()
-        .filter(|child| child.tag != "appearance")
-        .map(|child| build_node(tree, child, metadata))
+        .filter(|child| child.tag != "appearance" && child.tag != "segment")
+        .map(|child| build_node(tree, child, metadata, direction))
         .collect::<Result<Vec<_>, _>>()?;
     let child_ids = children
         .iter()
         .map(|child| child.node_id)
         .collect::<Vec<_>>();
 
-    let style = style_for_node(node, metadata);
-    let node_id = if child_ids.is_empty() {
-        tree.new_leaf(style)?
-    } else {
+    warn_on_unsupported_tag(node);
+
+    let style = style_for_node(node, metadata, parent_direction);
+    let node_id = if !child_ids.is_empty() {
         tree.new_with_children(style, &child_ids)?
+    } else if let Some(context) = text_context(node, metadata) {
+        // Taffy only measures childless leaves, which is exactly where text
+        // lives: `<text>` carries its string in an attribute.
+        tree.new_leaf_with_context(style, context)?
+    } else {
+        tree.new_leaf(style)?
     };
 
     Ok(BuiltNode {
@@ -63,7 +118,7 @@ fn build_node<'a>(
 }
 
 fn read_layout(
-    tree: &TaffyTree<()>,
+    tree: &TaffyTree<TextContext>,
     built: &BuiltNode<'_>,
     offset_x: f32,
     offset_y: f32,
@@ -75,27 +130,74 @@ fn read_layout(
     Ok(LayoutBox {
         tag: built.source.tag.clone(),
         attributes: built.source.attributes.clone(),
+        text: built.source.text.clone(),
         rect: LayoutRect {
             x,
             y,
             width: layout.size.width,
             height: layout.size.height,
         },
-        children: built
-            .children
-            .iter()
-            .map(|child| read_layout(tree, child, x, y))
-            .collect::<Result<Vec<_>, _>>()?,
+        children: read_children(tree, built, x, y)?,
     })
 }
 
-fn style_for_node(node: &GuiNode, metadata: &GuiMetadata) -> Style {
+fn read_children(
+    tree: &TaffyTree<TextContext>,
+    built: &BuiltNode<'_>,
+    x: f32,
+    y: f32,
+) -> Result<Vec<LayoutBox>, TaffyError> {
+    let mut children = built
+        .children
+        .iter()
+        .map(|child| read_layout(tree, child, x, y))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // `<segment>` never entered the layout tree — it is text content, and
+    // keeping it out is what lets Taffy measure `<text>` as a leaf. The scene
+    // still needs its text and styling, so it rides along without geometry.
+    children.extend(
+        built
+            .source
+            .children
+            .iter()
+            .filter(|child| child.tag == "segment")
+            .map(|child| LayoutBox {
+                tag: child.tag.clone(),
+                attributes: child.attributes.clone(),
+                text: child.text.clone(),
+                rect: LayoutRect {
+                    x,
+                    y,
+                    width: 0.0,
+                    height: 0.0,
+                },
+                children: Vec::new(),
+            }),
+    );
+
+    Ok(children)
+}
+
+fn style_for_node(
+    node: &GuiNode,
+    metadata: &GuiMetadata,
+    parent_direction: FlexDirection,
+) -> Style {
     let mut style = Style {
         display: display_for(node),
         flex_direction: flex_direction_for(node),
         size: Size {
             width: dimension_attr(node, metadata, "w"),
             height: dimension_attr(node, metadata, "h"),
+        },
+        min_size: Size {
+            width: dimension_attr(node, metadata, "min-w"),
+            height: dimension_attr(node, metadata, "min-h"),
+        },
+        max_size: Size {
+            width: dimension_attr(node, metadata, "max-w"),
+            height: dimension_attr(node, metadata, "max-h"),
         },
         padding: Rect {
             left: length(padding_side(node, metadata, Side::Left)),
@@ -109,31 +211,45 @@ fn style_for_node(node: &GuiNode, metadata: &GuiMetadata) -> Style {
         },
         align_items: align_items_for(node),
         justify_content: justify_content_for(node),
+        // A declared size is a fixed size, as in a design tool: only `fill`
+        // boxes give way when a container runs short of room.
+        flex_shrink: 0.0,
         ..Default::default()
     };
 
-    if attr_is(node, "w", "fill") {
+    // `fill` means different things per axis. Along the parent's main axis it
+    // is "take the free space", i.e. flex-grow. Across it, stretching to the
+    // parent's width/height is what `dimension_attr` already returns, and
+    // growing there would collapse the box's own size contribution.
+    let fills_main_axis = if parent_direction == FlexDirection::Row {
+        attr_is(node, "w", "fill")
+    } else {
+        attr_is(node, "h", "fill")
+    };
+    if fills_main_axis {
         style.flex_grow = 1.0;
         style.flex_shrink = 1.0;
         style.flex_basis = zero();
-    }
-    if attr_is(node, "h", "fill") {
-        style.flex_grow = 1.0;
-        style.flex_shrink = 1.0;
     }
     if is_absolute(node) {
         style.position = Position::Absolute;
         style.inset.left = number_attr(node, metadata, "x").map_or(auto(), length);
         style.inset.top = number_attr(node, metadata, "y").map_or(auto(), length);
     }
-    if node.tag == "text" && !node.attributes.contains_key("w") {
-        style.size.width = length(intrinsic_text_width(node, metadata));
-    }
-    if node.tag == "text" && !node.attributes.contains_key("h") {
-        style.size.height = length(intrinsic_text_height(node, metadata));
-    }
-
     style
+}
+
+/// Tags the layout engine understands. Anything else is laid out as a plain
+/// block, which is rarely what the document intended.
+const SUPPORTED_TAGS: &[&str] = &[
+    "gui", "row", "col", "stack", "frame", "group", "grid", "rect", "line", "ellipse", "text",
+    "img",
+];
+
+fn warn_on_unsupported_tag(node: &GuiNode) {
+    if !SUPPORTED_TAGS.contains(&node.tag.as_str()) {
+        eprintln!("warning: unsupported element tag <{}>", node.tag);
+    }
 }
 
 fn display_for(node: &GuiNode) -> Display {
@@ -152,10 +268,23 @@ fn flex_direction_for(node: &GuiNode) -> FlexDirection {
 }
 
 fn dimension_attr(node: &GuiNode, metadata: &GuiMetadata, name: &str) -> Dimension {
-    match node.attributes.get(name).map(String::as_str) {
-        Some("fill") => percent(1.0),
-        Some("hug") | Some("auto") | None => auto(),
-        Some(_) => number_attr(node, metadata, name).map_or(auto(), length),
+    let Some(raw) = node.attributes.get(name) else {
+        return auto();
+    };
+
+    let resolved = resolve_token(raw, metadata);
+    match resolved.as_str() {
+        "fill" => percent(1.0),
+        "hug" | "auto" => auto(),
+        // `parse_number` drops a trailing `%`, which would quietly turn
+        // `50%` into 50px, so percentages are handled before it is reached.
+        value => match value.trim().strip_suffix('%') {
+            Some(percentage) => percentage
+                .trim()
+                .parse::<f32>()
+                .map_or(auto(), |value| percent(value / 100.0)),
+            None => parse_number(value).map_or(auto(), length),
+        },
     }
 }
 
@@ -253,38 +382,103 @@ fn padding_side(node: &GuiNode, metadata: &GuiMetadata, side: Side) -> f32 {
     }
 }
 
-fn intrinsic_text_width(node: &GuiNode, metadata: &GuiMetadata) -> f32 {
-    let value = node
-        .attributes
-        .get("value")
-        .or(node.text.as_ref())
-        .map(String::as_str)
-        .unwrap_or("");
-    let font_size = text_style_number(node, metadata, "font-size")
-        .or_else(|| text_style_number(node, metadata, "size"))
-        .unwrap_or(16.0);
-    value.chars().count() as f32 * font_size * 0.55
-}
+fn text_context(node: &GuiNode, metadata: &GuiMetadata) -> Option<TextContext> {
+    if node.tag != "text" {
+        return None;
+    }
 
-fn intrinsic_text_height(node: &GuiNode, metadata: &GuiMetadata) -> f32 {
-    text_style_number(node, metadata, "line-height")
-        .or_else(|| {
-            text_style_number(node, metadata, "font-size")
-                .or_else(|| text_style_number(node, metadata, "size"))
-                .map(|size| size * 1.2)
-        })
-        .unwrap_or(19.2)
-}
-
-fn text_style_number(node: &GuiNode, metadata: &GuiMetadata, name: &str) -> Option<f32> {
-    number_attr(node, metadata, name).or_else(|| {
-        let style_name = node
-            .attributes
-            .get("text-style")
-            .or_else(|| node.attributes.get("style"))?;
-        let style = metadata.styles.get(style_name)?;
-        style.get(name).and_then(|value| parse_number(value))
+    Some(TextContext {
+        runs: resolve_text_runs(node, metadata),
+        max_lines: max_text_lines(node, metadata),
     })
+}
+
+/// Resolves how many lines a `<text>` node may occupy.
+///
+/// An explicit `max-lines` wins over `truncate`, which on its own means a
+/// single ellipsized line. `crate::scene` resolves this the same way, so the
+/// height reserved here matches the lines that get painted.
+fn max_text_lines(node: &GuiNode, metadata: &GuiMetadata) -> Option<usize> {
+    let explicit = node
+        .attributes
+        .get("max-lines")
+        .map(|value| resolve_token(value, metadata))
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|lines| *lines > 0);
+    if explicit.is_some() {
+        return explicit;
+    }
+
+    let truncates = node
+        .attributes
+        .get("truncate")
+        .is_some_and(|value| value != "false")
+        || node
+            .attributes
+            .get("overflow")
+            .is_some_and(|value| value == "ellipsis");
+
+    truncates.then_some(1)
+}
+
+fn measure_text(
+    context: &TextContext,
+    text_measurer: &dyn TextMeasurer,
+    known_dimensions: Size<Option<f32>>,
+    available_space: Size<AvailableSpace>,
+) -> Size<f32> {
+    let measure = |value: &str, style: usize| {
+        let style = &context.runs[style].style;
+        text_measurer.text_width(
+            value,
+            style.font_family.as_deref(),
+            style.font_weight.as_deref(),
+            style.font_style.as_deref(),
+            style.font_size,
+        ) + value.chars().count() as f32 * style.letter_spacing
+    };
+
+    // `MinContent` asks how narrow the text can get, which is a zero-width
+    // wrap: every word lands on its own line and the widest one wins.
+    let wrap_width = known_dimensions.width.or(match available_space.width {
+        AvailableSpace::Definite(width) => Some(width),
+        AvailableSpace::MinContent => Some(0.0),
+        AvailableSpace::MaxContent => None,
+    });
+
+    let runs = context
+        .runs
+        .iter()
+        .enumerate()
+        .map(|(index, run)| text::Run {
+            text: run.value.clone(),
+            style: index,
+        })
+        .collect::<Vec<_>>();
+
+    let mut lines = text::wrap_runs(&runs, wrap_width, &measure);
+    if let Some(max_lines) = context.max_lines {
+        lines.truncate(max_lines.max(1));
+    }
+
+    // Each line is as tall as its tallest run, matching how painting stacks
+    // them, so a resized segment reserves the room it needs.
+    let height: f32 = lines
+        .iter()
+        .map(|line| {
+            line.iter()
+                .map(|run| context.runs[run.style].style.line_height)
+                .fold(0.0_f32, f32::max)
+                .max(context.runs[0].style.line_height)
+        })
+        .sum();
+
+    Size {
+        width: known_dimensions
+            .width
+            .unwrap_or_else(|| text::max_line_width(&lines, &measure)),
+        height: known_dimensions.height.unwrap_or(height),
+    }
 }
 
 fn number_attr(node: &GuiNode, metadata: &GuiMetadata, name: &str) -> Option<f32> {
@@ -292,18 +486,6 @@ fn number_attr(node: &GuiNode, metadata: &GuiMetadata, name: &str) -> Option<f32
         .get(name)
         .map(|value| resolve_token(value, metadata))
         .and_then(|value| parse_number(&value))
-}
-
-fn resolve_token(value: &str, metadata: &GuiMetadata) -> String {
-    if let Some(name) = value.strip_prefix('$') {
-        metadata
-            .tokens
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| value.to_owned())
-    } else {
-        value.to_owned()
-    }
 }
 
 fn parse_number(value: &str) -> Option<f32> {
@@ -354,6 +536,307 @@ mod tests {
         assert_eq!(layout.children[0].rect.x, 10.0);
         assert_eq!(layout.children[0].rect.y, 10.0);
         assert_eq!(layout.children[1].rect.y, 35.0);
+    }
+
+    /// `ApproxTextMeasurer` bills 0.55 * font size per character, so at
+    /// `font-size="10"` every character is 5.5px wide.
+    fn layout_of(xml: &str) -> LayoutBox {
+        let document = parse_gui_xml(xml).expect("valid gui");
+        compute_taffy_layout(&document).expect("layout computes")
+    }
+
+    #[test]
+    fn wrapped_text_reserves_height_for_every_line() {
+        // "aaaa bbbb" is 49.5px and fits; adding " cccc" reaches 77px and wraps.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="50">
+                <text value="aaaa bbbb cccc" font-size="10" line-height="12" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.height, 24.0);
+        assert_eq!(layout.rect.height, 24.0);
+    }
+
+    #[test]
+    fn max_lines_caps_the_reserved_height() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="50">
+                <text value="aaaa bbbb cccc" font-size="10" line-height="12" max-lines="1" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.height, 12.0);
+    }
+
+    #[test]
+    fn truncate_alone_reserves_a_single_line() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="50">
+                <text value="aaaa bbbb cccc" font-size="10" line-height="12" truncate />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.height, 12.0);
+    }
+
+    #[test]
+    fn hard_newlines_break_without_a_width_constraint() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="500">
+                <text value="aa&#10;bb" font-size="10" line-height="12" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.height, 24.0);
+    }
+
+    #[test]
+    fn text_keeps_the_exact_width_it_was_measured_at() {
+        // Rounding this down would make painting re-wrap and drop a word.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="Hello" font-size="10" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.width, 27.5);
+    }
+
+    #[test]
+    fn truncate_and_max_lines_agree_on_the_line_count() {
+        // `truncate` used to force a single painted line while layout reserved
+        // room for `max-lines`, leaving an empty gap under the text.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="50">
+                <text value="aaaa bbbb cccc dddd eeee ffff gggg hhhh" font-size="10" line-height="12" truncate max-lines="3" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.height, 36.0);
+    }
+
+    #[test]
+    fn unsupported_tags_are_still_laid_out() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="40" h="20">
+                <marquee w="10" h="10" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.width, 10.0);
+    }
+
+    #[test]
+    fn fill_width_inside_a_column_does_not_collapse_heights() {
+        // `w="fill"` used to set flex-basis 0 regardless of the parent's
+        // direction, which zeroed the vertical contribution of every box in a
+        // column and squashed fixed-height rows.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="200">
+                <col w="fill">
+                  <row w="fill" h="56"><rect w="10" h="10" /></row>
+                  <row w="fill" h="56"><rect w="10" h="10" /></row>
+                </col>
+              </col>
+            </gui>
+            "#,
+        );
+
+        let inner = &layout.children[0];
+        assert_eq!(inner.rect.width, 200.0);
+        assert_eq!(inner.children[0].rect.height, 56.0);
+        assert_eq!(inner.children[1].rect.height, 56.0);
+        assert_eq!(inner.rect.height, 112.0);
+    }
+
+    #[test]
+    fn fill_width_inside_a_row_still_takes_the_free_space() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <row w="200" h="20">
+                <rect w="40" h="10" />
+                <rect w="fill" h="10" />
+              </row>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[1].rect.width, 160.0);
+    }
+
+    #[test]
+    fn a_declared_size_is_not_shrunk_to_fit() {
+        // Design-tool semantics: a fixed box overflows its parent rather than
+        // being compressed.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="100" h="40">
+                <rect w="10" h="30" />
+                <rect w="10" h="30" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.height, 30.0);
+        assert_eq!(layout.children[1].rect.height, 30.0);
+    }
+
+    #[test]
+    fn segments_measure_as_one_continuous_string() {
+        // Both spellings must size identically: styling changes glyphs, not
+        // how much text there is.
+        let plain = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="one two" font-size="10" />
+              </col>
+            </gui>
+            "#,
+        );
+        let segmented = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text font-size="10">
+                  <segment value="one " />
+                  <segment value="two" font-weight="700" />
+                </text>
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(
+            segmented.children[0].rect.width,
+            plain.children[0].rect.width
+        );
+    }
+
+    #[test]
+    fn a_larger_segment_raises_the_line_height() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text font-size="10" line-height="12">
+                  <segment value="small " />
+                  <segment value="big" font-size="30" />
+                </text>
+              </col>
+            </gui>
+            "#,
+        );
+
+        // The 30px segment's own line height (30 * 1.2) wins over the node's 12.
+        assert_eq!(layout.children[0].rect.height, 36.0);
+    }
+
+    #[test]
+    fn text_wraps_across_segment_boundaries() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="50">
+                <text font-size="10" line-height="12">
+                  <segment value="aaaa bbbb " />
+                  <segment value="cccc dddd" font-weight="700" />
+                </text>
+              </col>
+            </gui>
+            "#,
+        );
+
+        // Same wrapping as the equivalent plain string: two lines, not one per
+        // segment.
+        assert_eq!(layout.children[0].rect.height, 24.0);
+    }
+
+    #[test]
+    fn segments_are_content_not_boxes() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text font-size="10">
+                  <segment value="one" />
+                  <segment value="two" />
+                </text>
+              </col>
+            </gui>
+            "#,
+        );
+
+        // They ride along for the scene to read, but contribute no geometry.
+        let text = &layout.children[0];
+        assert!(text.rect.width > 0.0);
+        assert!(text.children.iter().all(|child| child.tag == "segment"));
+        assert!(text.children.iter().all(|child| child.rect.width == 0.0));
+    }
+
+    #[test]
+    fn min_and_max_constraints_clamp_boxes() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="100" min-h="150" max-w="80">
+                <rect w="200" h="50" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.rect.width, 80.0);
+        assert_eq!(layout.rect.height, 150.0);
+    }
+
+    #[test]
+    fn percentage_constraints_resolve_against_the_parent() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="400">
+                <col w="100" min-w="50%" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.width, 200.0);
     }
 
     #[test]

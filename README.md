@@ -49,17 +49,25 @@ This is an early native renderer. It can already:
 - read `.gui` packages and `.guix` XML
 - extract `design.guix` and bundled package assets
 - parse tokens, fonts, text styles, nodes, attributes, and children
-- compute an early layout tree for rows, columns, stacks, frames, groups, and
-  leaves
-- support `hug`, `fill`, numeric sizes, padding, gap, `gap="auto"`, basic align,
-  `align="stretch"`, absolute children, lines, and text wrapping
+- compute a flexbox layout tree (Taffy) for rows, columns, stacks, frames,
+  groups, and leaves
+- support `hug`, `fill`, numeric and percentage sizes, `min-w`/`max-w`/
+  `min-h`/`max-h`, padding, gap, `gap="auto"`, basic align, `align="stretch"`,
+  absolute children, lines, and text wrapping
+- measure text with real font metrics during layout, so wrapped text reserves
+  the height it is painted at
 - build a paintable scene tree
 - render fills, rounded rectangles, ellipses, borders, sided borders, dividers,
   SVG images, text, truncation, and simple text alignment
-- resolve Google fonts through the renderer cache
+- draw rich text: `<segment>` runs with their own weight, style, size, and
+  colour, wrapping as one continuous string
+- resolve Google fonts through the renderer cache, and system fonts from the
+  host's font directories
 - apply variable font `wght` for text measurement and outline painting
 - preserve bundled assets from `.gui` packages
-- expose a small WASM wrapper around the parser
+- render raster images (PNG/JPEG) with `contain`, `cover`, `fill`, and `crop`
+  fit modes
+- expose parsing, layout, scene, and PNG rendering through WASM
 
 It is not complete yet. The renderer should be treated as a growing engine, not
 as a pixel-perfect replacement for the HTML renderer.
@@ -82,6 +90,33 @@ Run tests:
 
 ```bash
 cargo test
+```
+
+Layout snapshots record the box tree for every example as plain text. They
+measure text by character count rather than font metrics, so they produce the
+same result on any machine and are the regression signal CI relies on. After an
+intentional layout change, read the diff and regenerate:
+
+```bash
+UPDATE_SNAPSHOTS=1 cargo test -p dotgui-renderer --test layout_snapshots
+```
+
+Golden-image tests compare four examples against committed PNGs. They only run
+on macOS, because text that falls back to a system font paints differently
+elsewhere. Each golden records the fingerprints of the fonts it was generated
+with in a `.fonts` file, so a host with a different SF Pro or Roboto says so
+instead of reporting an unexplained pixel diff. Regenerate both together:
+
+```bash
+UPDATE_GOLDENS=1 cargo test -p dotgui-renderer --test golden_tests
+```
+
+Build the browser bundle. The `net` feature is off for wasm32 (its TLS stack
+does not cross-compile), so assets and fonts have to travel inside the `.gui`
+package:
+
+```bash
+cargo build -p dotgui-renderer-wasm --target wasm32-unknown-unknown
 ```
 
 Render any `.gui` file to PNG:
@@ -119,6 +154,30 @@ Inventory tags and attributes across examples:
 ```bash
 cargo run -q -p dotgui-renderer --example inventory examples
 ```
+
+## Rich Text
+
+A `<text>` node can be split into styled runs with `<segment>`:
+
+```xml
+<text font-family="Inter" font-size="16" fill="$text">
+  <segment value="Total " />
+  <segment value="$318.18" font-weight="700" fill="$accent" font-size="26" />
+  <segment value=" due today" />
+</text>
+```
+
+Each segment inherits every property it does not override, and accepts
+`font-family`, `font-weight`, `font-style`, `font-size`, `line-height`,
+`letter-spacing`, `fill`/`color`, and `text-style`.
+
+Text flows continuously across segments, so wrapping, `max-lines`, `truncate`,
+and alignment behave exactly as they do for a plain string — a line can break
+in the middle of a segment, and the ellipsis lands wherever the text runs out.
+Runs on a line share a baseline, and the line is as tall as its largest run.
+
+Segments are content, not boxes: they never appear in the layout or scene tree
+as nodes.
 
 ## Asset And Font Resolution
 
@@ -175,7 +234,6 @@ it as needed.
 
 - Build a real `.gui` preview command or viewer instead of only PNG export.
 - Add a comparison workflow against HTML renderer output.
-- Add golden-image tests for stable examples.
 - Add clearer diagnostics for missing assets, unsupported tags, and failed font
   resolution.
 
@@ -183,18 +241,14 @@ it as needed.
 
 - Continue matching the HTML renderer's row/col/stack behavior.
 - Improve fill/hug behavior in nested mixed-axis layouts.
-- Add support for min/max width and height.
 - Add grid layout support.
 - Improve frame/group absolute positioning semantics.
-- Add clipping support during painting, not just scene capture.
 
 ### Text Fidelity
 
 - Improve line-height, baseline, ascender/descender, and leading behavior.
 - Improve wrapping to match the HTML renderer and Figma-exported widths.
-- Add letter spacing support.
-- Add `max-lines`, `truncate`, and ellipsis behavior for multi-line cases.
-- Add richer text and list marker support.
+- Add list marker support.
 - Add better text shaping for complex scripts and ligatures.
 
 ### Fonts
@@ -202,13 +256,10 @@ it as needed.
 - Expand Google Fonts resolver beyond the current repository metadata path.
 - Resolve static faces where available and variable faces where needed.
 - Support italic variable axes where available.
-- Add system font discovery.
 - Add custom packaged fonts.
 
 ### Assets
 
-- Add raster image support beyond SVG.
-- Add image fit modes: contain, cover, fill, crop, none.
 - Support package-relative asset paths consistently.
 - Add asset cache metadata, expiration, size limits, and cleanup commands.
 
@@ -216,13 +267,11 @@ it as needed.
 
 - Improve antialiasing quality for text and vector shapes.
 - Add shadows, opacity groups, blend modes, and effects.
-- Add proper stroke alignment for inside, center, and outside strokes.
 - Add masks and clipping paths.
 - Add PDF export once the scene model is stable.
 
 ### WASM And API
 
-- Expose layout, scene, and PNG rendering through WASM.
 - Design a stable Rust API for host applications.
 - Add incremental update APIs for live previews.
 - Support repainting from an in-memory document model.

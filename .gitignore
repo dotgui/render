@@ -17,3 +17,6 @@
 *.log
 .env
 .env.*
+
+# Rendered output written next to a golden when it fails
+*.actual.png

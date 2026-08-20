@@ -1,11 +1,12 @@
 use crate::{
-    AssetCache, Border, BorderWidths, FontFace, FontStore, PaintContent, Scene, SceneNode,
+    text, AssetCache, Border, BorderWidths, FontFace, FontStore, PaintContent, Scene, SceneNode,
+    TextSegment,
 };
 use fontdue::{Font, FontSettings};
 use std::{fs, path::Path};
 use thiserror::Error;
 use tiny_skia::{
-    Color, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke, Transform,
+    Color, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, PixmapRef, Rect, Stroke, Transform,
 };
 use ttf_parser::OutlineBuilder;
 
@@ -48,12 +49,11 @@ pub fn paint_scene_to_png_with_assets_and_fonts(
     paint_scene(scene, path, Some(cache), Some(fonts))
 }
 
-fn paint_scene(
+pub fn paint_scene_to_png_bytes(
     scene: &Scene,
-    path: impl AsRef<Path>,
     asset_cache: Option<&AssetCache>,
     fonts: Option<&FontStore>,
-) -> Result<(), PaintError> {
+) -> Result<Vec<u8>, PaintError> {
     let width = scene.root.bounds.width.ceil();
     let height = scene.root.bounds.height.ceil();
     if width <= 0.0 || height <= 0.0 || !width.is_finite() || !height.is_finite() {
@@ -66,9 +66,18 @@ fn paint_scene(
     let font = load_default_font();
     paint_node(&mut pixmap, &scene.root, font.as_ref(), asset_cache, fonts);
     pixmap
-        .save_png(path)
-        .map_err(|err| PaintError::Png(err.to_string()))?;
-    Ok(())
+        .encode_png()
+        .map_err(|err| PaintError::Png(err.to_string()))
+}
+
+fn paint_scene(
+    scene: &Scene,
+    path: impl AsRef<Path>,
+    asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
+) -> Result<(), PaintError> {
+    let bytes = paint_scene_to_png_bytes(scene, asset_cache, fonts)?;
+    fs::write(path, bytes).map_err(|err| PaintError::Png(err.to_string()))
 }
 
 fn paint_node(
@@ -81,11 +90,71 @@ fn paint_node(
     paint_fill(pixmap, node);
     paint_content(pixmap, node, font, asset_cache, fonts);
 
-    for child in &node.children {
-        paint_node(pixmap, child, font, asset_cache, fonts);
+    if node.clip && !node.children.is_empty() {
+        if let Some(mut child_pixmap) = Pixmap::new(pixmap.width(), pixmap.height()) {
+            for child in &node.children {
+                paint_node(&mut child_pixmap, child, font, asset_cache, fonts);
+            }
+            if let Some(mask) = create_clip_mask(pixmap.width(), pixmap.height(), node) {
+                pixmap.draw_pixmap(
+                    0,
+                    0,
+                    child_pixmap.as_ref(),
+                    &PixmapPaint::default(),
+                    Transform::identity(),
+                    Some(&mask),
+                );
+            } else {
+                pixmap.draw_pixmap(
+                    0,
+                    0,
+                    child_pixmap.as_ref(),
+                    &PixmapPaint::default(),
+                    Transform::identity(),
+                    None,
+                );
+            }
+        }
+    } else {
+        for child in &node.children {
+            paint_node(pixmap, child, font, asset_cache, fonts);
+        }
     }
 
     paint_border(pixmap, node);
+}
+
+fn create_clip_mask(width: u32, height: u32, node: &SceneNode) -> Option<tiny_skia::Mask> {
+    let mut mask = tiny_skia::Mask::new(width, height)?;
+    let path = if node.tag == "ellipse" {
+        ellipse_path(
+            node.bounds.x,
+            node.bounds.y,
+            node.bounds.width,
+            node.bounds.height,
+        )?
+    } else if let Some(radius) = node.radius.filter(|r| *r > 0.0) {
+        rounded_rect_path(
+            node.bounds.x,
+            node.bounds.y,
+            node.bounds.width,
+            paint_height(node),
+            radius,
+        )?
+    } else {
+        let mut pb = PathBuilder::new();
+        pb.move_to(node.bounds.x, node.bounds.y);
+        pb.line_to(node.bounds.x + node.bounds.width, node.bounds.y);
+        pb.line_to(
+            node.bounds.x + node.bounds.width,
+            node.bounds.y + paint_height(node),
+        );
+        pb.line_to(node.bounds.x, node.bounds.y + paint_height(node));
+        pb.close();
+        pb.finish()?
+    };
+    mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+    Some(mask)
 }
 
 fn paint_fill(pixmap: &mut Pixmap, node: &SceneNode) {
@@ -150,55 +219,250 @@ fn paint_content(
     match &node.content {
         PaintContent::None => {}
         PaintContent::Text {
-            value,
-            font_family,
-            font_weight,
-            font_style,
-            font_size,
-            line_height,
-            can_wrap,
+            segments,
             max_lines,
             truncate,
             text_align,
             ..
         } => {
-            if let Some(face) = fonts.and_then(|fonts| {
-                fonts.get(
-                    font_family.as_deref(),
-                    font_weight.as_deref(),
-                    font_style.as_deref(),
-                )
-            }) {
-                paint_text_face(
-                    pixmap,
-                    node,
-                    face,
-                    value,
-                    *font_size,
-                    *line_height,
-                    *can_wrap,
-                    *max_lines,
-                    *truncate,
-                    text_align.as_deref(),
-                );
-            } else if let Some(font) = font {
-                paint_text_fontdue(
-                    pixmap,
-                    node,
-                    font,
-                    value,
-                    *font_size,
-                    *line_height,
-                    *can_wrap,
-                    *max_lines,
-                    *truncate,
-                    text_align.as_deref(),
-                );
-            } else {
+            let styles = segments
+                .iter()
+                .map(|segment| RunStyle::resolve(segment, node, font, fonts))
+                .collect::<Vec<_>>();
+
+            if styles.iter().all(|style| !style.is_drawable()) {
                 paint_text_placeholder(pixmap, node);
+                return;
+            }
+
+            let runs = segments
+                .iter()
+                .enumerate()
+                .map(|(index, segment)| text::Run {
+                    text: segment.value.clone(),
+                    style: index,
+                })
+                .collect::<Vec<_>>();
+
+            paint_text(
+                pixmap,
+                node,
+                &styles,
+                &runs,
+                *max_lines,
+                *truncate,
+                text_align.as_deref(),
+            );
+        }
+        PaintContent::Image { src, fit } => {
+            paint_image(pixmap, node, src, fit.as_deref(), asset_cache)
+        }
+    }
+}
+
+/// The text properties every painter needs, kept together so the painting
+/// entry points do not thread seven parallel arguments each.
+/// One text style resolved to everything painting needs: a face to draw with,
+/// a colour, and the metrics that position it.
+struct RunStyle<'a> {
+    /// The declared face, when the document's fonts resolved.
+    face: Option<&'a FontFace>,
+    /// The host's default font, used when the declared face is missing.
+    fallback: Option<&'a Font>,
+    color: Option<Color>,
+    font_size: f32,
+    line_height: f32,
+    letter_spacing: f32,
+}
+
+impl<'a> RunStyle<'a> {
+    fn resolve(
+        segment: &TextSegment,
+        node: &SceneNode,
+        fallback: Option<&'a Font>,
+        fonts: Option<&'a FontStore>,
+    ) -> Self {
+        let face = fonts.and_then(|fonts| {
+            fonts.get(
+                segment.font_family.as_deref(),
+                segment.font_weight.as_deref(),
+                segment.font_style.as_deref(),
+            )
+        });
+
+        Self {
+            face,
+            fallback,
+            // A segment inherits the node's fill when it declares no colour of
+            // its own; `node.opacity` applies either way.
+            color: segment
+                .color
+                .as_deref()
+                .or(node.fill.as_deref())
+                .and_then(|fill| parse_color(fill, node.opacity)),
+            font_size: segment.font_size,
+            line_height: segment.line_height,
+            letter_spacing: segment.letter_spacing,
+        }
+    }
+
+    fn is_drawable(&self) -> bool {
+        self.color.is_some() && (self.face.is_some() || self.fallback.is_some())
+    }
+
+    fn width(&self, text: &str) -> f32 {
+        let base = match (self.face, self.fallback) {
+            (Some(face), _) => face.text_width(text, self.font_size),
+            (None, Some(font)) => text_width(font, text, self.font_size),
+            (None, None) => text.chars().count() as f32 * self.font_size * 0.55,
+        };
+        base + text.chars().count() as f32 * self.letter_spacing
+    }
+
+    fn baseline_offset(&self, line_height: f32) -> f32 {
+        match (self.face, self.fallback) {
+            (Some(face), _) => face.baseline_offset(self.font_size, line_height),
+            (None, Some(font)) => fontdue_baseline_offset(font, self.font_size, line_height),
+            (None, None) => self.font_size,
+        }
+    }
+
+    /// Draws `text` from `cursor_x`, advancing it past the run.
+    fn draw(&self, pixmap: &mut Pixmap, text: &str, cursor_x: &mut f32, baseline: f32) {
+        let Some(color) = self.color else {
+            return;
+        };
+
+        if let Some(face) = self.face {
+            if let Some(ttf_face) = face.variable_face() {
+                self.draw_outlines(pixmap, &ttf_face, face, text, cursor_x, baseline, color);
+                return;
             }
         }
-        PaintContent::Image { src } => paint_image(pixmap, node, src, asset_cache),
+
+        let font = self.face.map(FontFace::fallback).or(self.fallback);
+        if let Some(font) = font {
+            self.draw_bitmaps(pixmap, font, text, cursor_x, baseline, color);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_outlines(
+        &self,
+        pixmap: &mut Pixmap,
+        ttf_face: &ttf_parser::Face<'_>,
+        face: &FontFace,
+        text: &str,
+        cursor_x: &mut f32,
+        baseline: f32,
+        color: Color,
+    ) {
+        let scale = self.font_size / ttf_face.units_per_em() as f32;
+        let mut paint = Paint::default();
+        paint.set_color(color);
+        paint.anti_alias = true;
+
+        for ch in text.chars() {
+            let Some(glyph) = ttf_face.glyph_index(ch) else {
+                *cursor_x +=
+                    face.fallback().metrics(ch, self.font_size).advance_width + self.letter_spacing;
+                continue;
+            };
+
+            let mut builder = GlyphPathBuilder::new(*cursor_x, baseline, scale);
+            ttf_face.outline_glyph(glyph, &mut builder);
+            if let Some(path) = builder.finish() {
+                pixmap.fill_path(
+                    &path,
+                    &paint,
+                    FillRule::Winding,
+                    Transform::identity(),
+                    None,
+                );
+            }
+
+            *cursor_x += ttf_face
+                .glyph_hor_advance(glyph)
+                .map(|advance| advance as f32 * scale)
+                .unwrap_or_else(|| face.fallback().metrics(ch, self.font_size).advance_width)
+                + self.letter_spacing;
+        }
+    }
+
+    fn draw_bitmaps(
+        &self,
+        pixmap: &mut Pixmap,
+        font: &Font,
+        text: &str,
+        cursor_x: &mut f32,
+        baseline: f32,
+        color: Color,
+    ) {
+        for ch in text.chars() {
+            let (metrics, bitmap) = font.rasterize(ch, self.font_size);
+            draw_glyph_bitmap(
+                pixmap,
+                *cursor_x + metrics.xmin as f32,
+                baseline - metrics.ymin as f32 - metrics.height as f32,
+                metrics.width,
+                metrics.height,
+                &bitmap,
+                color,
+            );
+            *cursor_x += metrics.advance_width + self.letter_spacing;
+        }
+    }
+}
+
+fn paint_text(
+    pixmap: &mut Pixmap,
+    node: &SceneNode,
+    styles: &[RunStyle<'_>],
+    runs: &[text::Run],
+    max_lines: Option<usize>,
+    truncate: bool,
+    text_align: Option<&str>,
+) {
+    let measure = |text: &str, style: usize| styles[style].width(text);
+
+    let mut lines = text::wrap_runs(runs, Some(node.bounds.width), &measure);
+    text::apply_line_limit_and_ellipsis(
+        &mut lines,
+        max_lines,
+        truncate,
+        node.bounds.width,
+        &measure,
+    );
+
+    let max_y = node.bounds.y + node.bounds.height;
+    let mut line_top = node.bounds.y;
+
+    for line in lines {
+        // The tallest run on the line sets the line box and the shared
+        // baseline, so a larger segment is not clipped by its neighbours.
+        let tallest = line
+            .iter()
+            .map(|run| run.style)
+            .max_by(|a, b| styles[*a].font_size.total_cmp(&styles[*b].font_size))
+            .unwrap_or(0);
+        let line_height = line
+            .iter()
+            .map(|run| styles[run.style].line_height)
+            .fold(0.0_f32, f32::max)
+            .max(styles[tallest].line_height);
+        let baseline = line_top + styles[tallest].baseline_offset(line_height);
+
+        if baseline - styles[tallest].font_size > max_y {
+            break;
+        }
+
+        let width = text::line_width(&line, &measure);
+        let mut cursor_x = aligned_text_x(node.bounds.x, node.bounds.width, width, text_align);
+        for run in &line {
+            styles[run.style].draw(pixmap, &run.text, &mut cursor_x, baseline);
+        }
+
+        line_top += line_height;
     }
 }
 
@@ -217,271 +481,13 @@ fn load_default_font() -> Option<Font> {
     })
 }
 
-fn paint_text_face(
-    pixmap: &mut Pixmap,
-    node: &SceneNode,
-    face: &FontFace,
-    value: &str,
-    font_size: f32,
-    line_height: f32,
-    can_wrap: bool,
-    max_lines: Option<usize>,
-    truncate: bool,
-    text_align: Option<&str>,
-) {
-    if paint_text_variable(
-        pixmap,
-        node,
-        face,
-        value,
-        font_size,
-        line_height,
-        can_wrap,
-        max_lines,
-        truncate,
-        text_align,
-    )
-    .is_none()
-    {
-        paint_text_fontdue(
-            pixmap,
-            node,
-            face.fallback(),
-            value,
-            font_size,
-            line_height,
-            can_wrap,
-            max_lines,
-            truncate,
-            text_align,
-        );
-    }
-}
-
-fn paint_text_variable(
-    pixmap: &mut Pixmap,
-    node: &SceneNode,
-    face: &FontFace,
-    value: &str,
-    font_size: f32,
-    line_height: f32,
-    can_wrap: bool,
-    max_lines: Option<usize>,
-    truncate: bool,
-    text_align: Option<&str>,
-) -> Option<()> {
-    let color = node
-        .fill
-        .as_deref()
-        .and_then(|fill| parse_color(fill, node.opacity))?;
-    let ttf_face = face.variable_face()?;
-    let scale = font_size / ttf_face.units_per_em() as f32;
-    let mut paint = Paint::default();
-    paint.set_color(color);
-    paint.anti_alias = true;
-
-    let baseline_offset = face.baseline_offset(font_size, line_height);
-    let mut baseline = node.bounds.y + baseline_offset;
-    let max_y = node.bounds.y + node.bounds.height;
-    let mut lines = if can_wrap && !truncate {
-        wrap_text_face(face, value, font_size, node.bounds.width)
-    } else {
-        vec![value.to_owned()]
-    };
-    apply_line_limit_and_ellipsis(&mut lines, max_lines, truncate, node.bounds.width, |text| {
-        face.text_width(text, font_size)
-    });
-
-    for line in lines {
-        if baseline - font_size > max_y {
-            break;
-        }
-
-        let mut cursor_x = aligned_text_x(
-            node.bounds.x,
-            node.bounds.width,
-            face.text_width(&line, font_size),
-            text_align,
-        );
-        for ch in line.chars() {
-            let Some(glyph) = ttf_face.glyph_index(ch) else {
-                cursor_x += face.fallback().metrics(ch, font_size).advance_width;
-                continue;
-            };
-
-            let mut builder = GlyphPathBuilder::new(cursor_x, baseline, scale);
-            ttf_face.outline_glyph(glyph, &mut builder);
-            if let Some(path) = builder.finish() {
-                pixmap.fill_path(
-                    &path,
-                    &paint,
-                    FillRule::Winding,
-                    Transform::identity(),
-                    None,
-                );
-            }
-
-            cursor_x += ttf_face
-                .glyph_hor_advance(glyph)
-                .map(|advance| advance as f32 * scale)
-                .unwrap_or_else(|| face.fallback().metrics(ch, font_size).advance_width);
-        }
-        baseline += line_height;
-    }
-
-    Some(())
-}
-
-fn paint_text_fontdue(
-    pixmap: &mut Pixmap,
-    node: &SceneNode,
-    font: &Font,
-    value: &str,
-    font_size: f32,
-    line_height: f32,
-    can_wrap: bool,
-    max_lines: Option<usize>,
-    truncate: bool,
-    text_align: Option<&str>,
-) {
-    let Some(color) = node
-        .fill
-        .as_deref()
-        .and_then(|fill| parse_color(fill, node.opacity))
-    else {
-        return;
-    };
-
-    let mut baseline = node.bounds.y + fontdue_baseline_offset(font, font_size, line_height);
-    let max_y = node.bounds.y + node.bounds.height;
-
-    let mut lines = if can_wrap && !truncate {
-        wrap_text(font, value, font_size, node.bounds.width)
-    } else {
-        vec![value.to_owned()]
-    };
-    apply_line_limit_and_ellipsis(&mut lines, max_lines, truncate, node.bounds.width, |text| {
-        text_width(font, text, font_size)
-    });
-
-    for line in lines {
-        if baseline - font_size > max_y {
-            break;
-        }
-        let mut cursor_x = aligned_text_x(
-            node.bounds.x,
-            node.bounds.width,
-            text_width(font, &line, font_size),
-            text_align,
-        );
-        for ch in line.chars() {
-            let (metrics, bitmap) = font.rasterize(ch, font_size);
-            let glyph_x = cursor_x + metrics.xmin as f32;
-            let glyph_y = baseline - metrics.ymin as f32 - metrics.height as f32;
-
-            draw_glyph_bitmap(
-                pixmap,
-                glyph_x,
-                glyph_y,
-                metrics.width,
-                metrics.height,
-                &bitmap,
-                color,
-            );
-            cursor_x += metrics.advance_width;
-        }
-        baseline += line_height;
-    }
-}
-
-fn wrap_text_face(face: &FontFace, value: &str, font_size: f32, max_width: f32) -> Vec<String> {
-    let max_width = max_width.max(1.0);
-    let mut lines = Vec::new();
-
-    for source_line in value.lines() {
-        let mut current = String::new();
-        let mut current_width = 0.0_f32;
-
-        for word in source_line.split_whitespace() {
-            let word_width = face.text_width(word, font_size);
-            let space_width = if current.is_empty() {
-                0.0
-            } else {
-                face.text_width(" ", font_size)
-            };
-
-            if !current.is_empty() && current_width + space_width + word_width > max_width {
-                lines.push(current);
-                current = word.to_owned();
-                current_width = word_width;
-            } else {
-                if !current.is_empty() {
-                    current.push(' ');
-                    current_width += space_width;
-                }
-                current.push_str(word);
-                current_width += word_width;
-            }
-        }
-
-        if current.is_empty() {
-            lines.push(String::new());
-        } else {
-            lines.push(current);
-        }
-    }
-
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    lines
-}
-
 fn fontdue_baseline_offset(font: &Font, font_size: f32, line_height: f32) -> f32 {
     font.horizontal_line_metrics(font_size)
-        .map(|metrics| ((line_height - font_size) / 2.0) + metrics.ascent)
+        .map(|metrics| {
+            let content_height = metrics.ascent - metrics.descent;
+            ((line_height - content_height) / 2.0) + metrics.ascent
+        })
         .unwrap_or(font_size)
-}
-
-fn apply_line_limit_and_ellipsis(
-    lines: &mut Vec<String>,
-    max_lines: Option<usize>,
-    truncate: bool,
-    max_width: f32,
-    measure: impl Fn(&str) -> f32,
-) {
-    let max_lines = max_lines.unwrap_or(usize::MAX);
-    if lines.len() > max_lines {
-        lines.truncate(max_lines);
-    }
-
-    if truncate && max_lines == 1 {
-        let source = lines.first().cloned().unwrap_or_default();
-        *lines = vec![ellipsize(&source, max_width, measure)];
-    }
-}
-
-fn ellipsize(value: &str, max_width: f32, measure: impl Fn(&str) -> f32) -> String {
-    if measure(value) <= max_width {
-        return value.to_owned();
-    }
-
-    let ellipsis = "...";
-    if measure(ellipsis) > max_width {
-        return String::new();
-    }
-
-    let mut fitted = String::new();
-    for ch in value.chars() {
-        fitted.push(ch);
-        let candidate = format!("{fitted}{ellipsis}");
-        if measure(&candidate) > max_width {
-            fitted.pop();
-            break;
-        }
-    }
-
-    format!("{fitted}{ellipsis}")
 }
 
 fn aligned_text_x(x: f32, width: f32, text_width: f32, align: Option<&str>) -> f32 {
@@ -490,49 +496,6 @@ fn aligned_text_x(x: f32, width: f32, text_width: f32, align: Option<&str>) -> f
         Some("center") | Some("middle") => x + ((width - text_width).max(0.0) / 2.0),
         _ => x,
     }
-}
-
-fn wrap_text(font: &Font, value: &str, font_size: f32, max_width: f32) -> Vec<String> {
-    let max_width = max_width.max(1.0);
-    let mut lines = Vec::new();
-
-    for source_line in value.lines() {
-        let mut current = String::new();
-        let mut current_width = 0.0_f32;
-
-        for word in source_line.split_whitespace() {
-            let word_width = text_width(font, word, font_size);
-            let space_width = if current.is_empty() {
-                0.0
-            } else {
-                text_width(font, " ", font_size)
-            };
-
-            if !current.is_empty() && current_width + space_width + word_width > max_width {
-                lines.push(current);
-                current = word.to_owned();
-                current_width = word_width;
-            } else {
-                if !current.is_empty() {
-                    current.push(' ');
-                    current_width += space_width;
-                }
-                current.push_str(word);
-                current_width += word_width;
-            }
-        }
-
-        if current.is_empty() {
-            lines.push(String::new());
-        } else {
-            lines.push(current);
-        }
-    }
-
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    lines
 }
 
 struct GlyphPathBuilder {
@@ -660,14 +623,37 @@ fn paint_text_placeholder(pixmap: &mut Pixmap, node: &SceneNode) {
     );
 }
 
-fn paint_image(pixmap: &mut Pixmap, node: &SceneNode, src: &str, asset_cache: Option<&AssetCache>) {
+fn paint_image(
+    pixmap: &mut Pixmap,
+    node: &SceneNode,
+    src: &str,
+    fit: Option<&str>,
+    asset_cache: Option<&AssetCache>,
+) {
     if let Some(cache) = asset_cache {
-        if let Ok(asset) = cache.resolve(src) {
-            if asset.media_type.as_deref() == Some("image/svg+xml") || looks_like_svg(&asset.bytes)
-            {
-                if render_svg_asset(pixmap, node, &asset.bytes).is_ok() {
-                    return;
+        match cache.resolve(src) {
+            Ok(asset) => {
+                if asset.media_type.as_deref() == Some("image/svg+xml")
+                    || looks_like_svg(&asset.bytes)
+                {
+                    match render_svg_asset(pixmap, node, &asset.bytes) {
+                        Ok(_) => return,
+                        Err(err) => {
+                            eprintln!("warning: failed to render SVG asset '{}': {}", src, err)
+                        }
+                    }
+                } else {
+                    match render_raster_asset(pixmap, node, &asset.bytes, fit) {
+                        Ok(_) => return,
+                        Err(err) => eprintln!(
+                            "warning: failed to decode/render raster asset '{}': {}",
+                            src, err
+                        ),
+                    }
                 }
+            }
+            Err(err) => {
+                eprintln!("warning: failed to resolve asset '{}': {}", src, err);
             }
         }
     }
@@ -679,6 +665,96 @@ fn paint_image(pixmap: &mut Pixmap, node: &SceneNode, src: &str, asset_cache: Op
     }
 
     paint_image_placeholder(pixmap, node);
+}
+
+fn render_raster_asset(
+    pixmap: &mut Pixmap,
+    node: &SceneNode,
+    bytes: &[u8],
+    fit: Option<&str>,
+) -> Result<(), PaintError> {
+    let img = image::load_from_memory(bytes).map_err(|err| PaintError::Asset(err.to_string()))?;
+    let rgba = img.to_rgba8();
+    // `image` decodes straight alpha; tiny-skia stores premultiplied. Skipping
+    // this leaves transparent pixels too bright and haloes cut-out edges.
+    let premultiplied = premultiply_rgba(rgba.as_raw());
+    let img_pixmap = PixmapRef::from_bytes(&premultiplied, rgba.width(), rgba.height())
+        .ok_or_else(|| PaintError::Asset("failed to create PixmapRef".to_owned()))?;
+
+    let rx = node.bounds.x;
+    let ry = node.bounds.y;
+    let rw = node.bounds.width;
+    let rh = node.bounds.height;
+
+    let iw = rgba.width() as f32;
+    let ih = rgba.height() as f32;
+
+    let fit = fit.unwrap_or("fill");
+
+    let (transform, needs_clip) = match fit {
+        "contain" => {
+            let scale = (rw / iw).min(rh / ih);
+            let dx = rx + (rw - iw * scale) / 2.0;
+            let dy = ry + (rh - ih * scale) / 2.0;
+            (
+                Transform::from_scale(scale, scale).post_translate(dx, dy),
+                false,
+            )
+        }
+        "cover" => {
+            let scale = (rw / iw).max(rh / ih);
+            let dx = rx + (rw - iw * scale) / 2.0;
+            let dy = ry + (rh - ih * scale) / 2.0;
+            (
+                Transform::from_scale(scale, scale).post_translate(dx, dy),
+                true,
+            )
+        }
+        "crop" | "none" => {
+            let dx = rx + (rw - iw) / 2.0;
+            let dy = ry + (rh - ih) / 2.0;
+            (Transform::from_translate(dx, dy), true)
+        }
+        _ => {
+            let scale_x = rw / iw;
+            let scale_y = rh / ih;
+            (
+                Transform::from_scale(scale_x, scale_y).post_translate(rx, ry),
+                false,
+            )
+        }
+    };
+
+    let mask = if needs_clip {
+        create_clip_mask(pixmap.width(), pixmap.height(), node)
+    } else {
+        None
+    };
+
+    pixmap.draw_pixmap(
+        0,
+        0,
+        img_pixmap,
+        &PixmapPaint::default(),
+        transform,
+        mask.as_ref(),
+    );
+
+    Ok(())
+}
+
+fn premultiply_rgba(straight: &[u8]) -> Vec<u8> {
+    let mut premultiplied = Vec::with_capacity(straight.len());
+    for pixel in straight.chunks_exact(4) {
+        let alpha = pixel[3] as u32;
+        for channel in &pixel[..3] {
+            // Rounded `channel * alpha / 255`, which stays <= alpha and so is
+            // always a valid premultiplied component.
+            premultiplied.push(((*channel as u32 * alpha + 127) / 255) as u8);
+        }
+        premultiplied.push(pixel[3]);
+    }
+    premultiplied
 }
 
 fn looks_like_svg(bytes: &[u8]) -> bool {
@@ -862,12 +938,23 @@ fn stroke_rounded_rect(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
         ..Default::default()
     };
 
+    let offset = match border.align.as_str() {
+        "center" => 0.0,
+        "outside" => -border.width / 2.0,
+        _ => border.width / 2.0,
+    };
+    let delta_size = match border.align.as_str() {
+        "center" => 0.0,
+        "outside" => border.width,
+        _ => -border.width,
+    };
+
     if node.tag == "ellipse" {
         if let Some(path) = ellipse_path(
-            node.bounds.x + border.width / 2.0,
-            node.bounds.y + border.width / 2.0,
-            (node.bounds.width - border.width).max(0.0),
-            (node.bounds.height - border.width).max(0.0),
+            node.bounds.x + offset,
+            node.bounds.y + offset,
+            (node.bounds.width + delta_size).max(0.0),
+            (node.bounds.height + delta_size).max(0.0),
         ) {
             pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
         }
@@ -875,10 +962,10 @@ fn stroke_rounded_rect(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
     }
 
     if let Some(path) = rounded_rect_path(
-        node.bounds.x + border.width / 2.0,
-        node.bounds.y + border.width / 2.0,
-        (node.bounds.width - border.width).max(0.0),
-        (node.bounds.height - border.width).max(0.0),
+        node.bounds.x + offset,
+        node.bounds.y + offset,
+        (node.bounds.width + delta_size).max(0.0),
+        (node.bounds.height + delta_size).max(0.0),
         node.radius.unwrap_or(0.0),
     ) {
         pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
@@ -894,49 +981,43 @@ fn stroke_sided_border(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
     let w = node.bounds.width;
     let h = node.bounds.height;
 
+    let align = border.align.as_str();
+
     if border.widths.top > 0.0 {
-        stroke_line(
-            pixmap,
-            x,
-            y + border.widths.top / 2.0,
-            x + w,
-            y + border.widths.top / 2.0,
-            border.widths.top,
-            color,
-        );
+        let sw = border.widths.top;
+        let dy = match align {
+            "center" => 0.0,
+            "outside" => -sw / 2.0,
+            _ => sw / 2.0,
+        };
+        stroke_line(pixmap, x, y + dy, x + w, y + dy, sw, color);
     }
     if border.widths.right > 0.0 {
-        stroke_line(
-            pixmap,
-            x + w - border.widths.right / 2.0,
-            y,
-            x + w - border.widths.right / 2.0,
-            y + h,
-            border.widths.right,
-            color,
-        );
+        let sw = border.widths.right;
+        let dx = match align {
+            "center" => 0.0,
+            "outside" => sw / 2.0,
+            _ => -sw / 2.0,
+        };
+        stroke_line(pixmap, x + w + dx, y, x + w + dx, y + h, sw, color);
     }
     if border.widths.bottom > 0.0 {
-        stroke_line(
-            pixmap,
-            x,
-            y + h - border.widths.bottom / 2.0,
-            x + w,
-            y + h - border.widths.bottom / 2.0,
-            border.widths.bottom,
-            color,
-        );
+        let sw = border.widths.bottom;
+        let dy = match align {
+            "center" => 0.0,
+            "outside" => sw / 2.0,
+            _ => -sw / 2.0,
+        };
+        stroke_line(pixmap, x, y + h + dy, x + w, y + h + dy, sw, color);
     }
     if border.widths.left > 0.0 {
-        stroke_line(
-            pixmap,
-            x + border.widths.left / 2.0,
-            y,
-            x + border.widths.left / 2.0,
-            y + h,
-            border.widths.left,
-            color,
-        );
+        let sw = border.widths.left;
+        let dx = match align {
+            "center" => 0.0,
+            "outside" => -sw / 2.0,
+            _ => sw / 2.0,
+        };
+        stroke_line(pixmap, x + dx, y, x + dx, y + h, sw, color);
     }
 }
 
@@ -1269,6 +1350,8 @@ fn stroke_ellipse(
     }
 }
 
+// Geometry parameters; grouping them would not make a call site clearer.
+#[allow(clippy::too_many_arguments)]
 fn stroke_arc_like(
     pixmap: &mut Pixmap,
     x: f32,
@@ -1459,5 +1542,160 @@ mod tests {
         let metadata = std::fs::metadata(&path).expect("png exists");
         assert!(metadata.len() > 0);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn paints_clipping_bounds() {
+        let document = parse_gui_xml(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="100" fill="#ffffff" clip>
+                <rect x="150" y="150" w="50" h="50" fill="#ff0000" />
+              </col>
+            </gui>
+            "##,
+        )
+        .expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+
+        let path = std::env::temp_dir().join("dotgui-renderer-clip-test.png");
+        paint_scene_to_png(&scene, &path).expect("png paints");
+
+        let bytes = std::fs::read(&path).expect("png readable");
+        let _ = std::fs::remove_file(&path);
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn translucent_raster_pixels_composite_against_the_backdrop() {
+        // A single white pixel at 50% alpha over black must land near mid grey.
+        // Handing tiny-skia straight-alpha bytes would paint it pure white.
+        let mut translucent = Vec::new();
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 128]))
+            .write_to(
+                &mut std::io::Cursor::new(&mut translucent),
+                image::ImageFormat::Png,
+            )
+            .expect("test image encodes");
+
+        let document = parse_gui_xml(
+            r##"
+            <gui version="0.2">
+              <col w="4" h="4" fill="#000000">
+                <img src="assets/translucent.png" w="4" h="4" fit="fill" />
+              </col>
+            </gui>
+            "##,
+        )
+        .expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+
+        let mut package_assets = std::collections::BTreeMap::new();
+        package_assets.insert("assets/translucent.png".to_owned(), translucent);
+        let cache = AssetCache::new(std::env::temp_dir()).with_package_assets(package_assets);
+
+        let png = paint_scene_to_png_bytes(&scene, Some(&cache), None).expect("scene paints");
+        let painted = image::load_from_memory(&png)
+            .expect("painted png decodes")
+            .to_rgba8();
+
+        let pixel = painted.get_pixel(2, 2);
+        assert!(
+            (100..=155).contains(&pixel[0]),
+            "expected mid grey, painted {pixel:?}"
+        );
+    }
+
+    #[test]
+    fn each_segment_paints_in_its_own_colour() {
+        let document = parse_gui_xml(
+            r##"
+            <gui version="0.2">
+              <col w="220" h="40" fill="#ffffff" p="4">
+                <text font-size="20" fill="#000000">
+                  <segment value="RRRR" fill="#ff0000" />
+                  <segment value="BBBB" fill="#0000ff" />
+                </text>
+              </col>
+            </gui>
+            "##,
+        )
+        .expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+
+        let png = paint_scene_to_png_bytes(&scene, None, None).expect("scene paints");
+        let painted = image::load_from_memory(&png)
+            .expect("painted png decodes")
+            .to_rgba8();
+
+        let mut has_red = false;
+        let mut has_blue = false;
+        for pixel in painted.pixels() {
+            let [r, g, b, _] = pixel.0;
+            has_red |= r > 120 && g < 90 && b < 90;
+            has_blue |= b > 120 && r < 90 && g < 90;
+        }
+
+        assert!(has_red, "the first segment should paint red glyphs");
+        assert!(has_blue, "the second segment should paint blue glyphs");
+    }
+
+    #[test]
+    fn paints_raster_image_fit_modes() {
+        const RED_PNG: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 2, 0, 0, 0, 144, 119, 83, 222, 0, 0, 0, 12, 73, 68, 65, 84, 120, 156, 99, 248, 207,
+            192, 0, 0, 3, 1, 0, 2, 175, 172, 150, 14, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+        ];
+
+        let document = parse_gui_xml(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="100">
+                <img src="assets/red.png" w="100" h="100" fit="cover" />
+              </col>
+            </gui>
+            "##,
+        )
+        .expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+
+        let mut package_assets = std::collections::BTreeMap::new();
+        package_assets.insert("assets/red.png".to_owned(), RED_PNG.to_vec());
+        let cache = AssetCache::new(std::env::temp_dir()).with_package_assets(package_assets);
+
+        let path = std::env::temp_dir().join("dotgui-renderer-raster-test.png");
+        paint_scene_to_png_with_assets(&scene, &path, &cache).expect("png paints");
+
+        let bytes = std::fs::read(&path).expect("png readable");
+        let _ = std::fs::remove_file(&path);
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn paints_stroke_alignments() {
+        let document = parse_gui_xml(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="100" fill="#ffffff" border="2 #000000 solid outside">
+                <rect w="50" h="50" border="2 #ff0000 solid center" />
+              </col>
+            </gui>
+            "##,
+        )
+        .expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+
+        let path = std::env::temp_dir().join("dotgui-renderer-stroke-test.png");
+        paint_scene_to_png(&scene, &path).expect("png paints");
+
+        let bytes = std::fs::read(&path).expect("png readable");
+        let _ = std::fs::remove_file(&path);
+        assert!(!bytes.is_empty());
     }
 }
