@@ -1,5 +1,6 @@
 use crate::{
-    grid, text,
+    grid::{self, GridMode},
+    text,
     text_style::{resolve_text_runs, resolve_token, TextRunStyle},
     ApproxTextMeasurer, GuiDocument, GuiMetadata, GuiNode, LayoutBox, LayoutRect, TextMeasurer,
 };
@@ -82,12 +83,20 @@ pub fn compute_taffy_layout_with_text(
 enum ParentLayout {
     Row,
     Column,
+    /// A `<grid>`, whose children may place themselves with `gc` / `gr`.
     Grid,
+    /// A `<stack direction="grid">`, which predates placement attributes and
+    /// only auto-flows its children.
+    LegacyGrid,
 }
 
 fn parent_layout_of(node: &GuiNode, metadata: &GuiMetadata) -> ParentLayout {
-    if grid::grid_mode(node, metadata).is_some() {
-        ParentLayout::Grid
+    if let Some(mode) = grid::grid_mode(node, metadata) {
+        if matches!(mode, GridMode::LegacyStack) {
+            ParentLayout::LegacyGrid
+        } else {
+            ParentLayout::Grid
+        }
     } else if flex_direction_for(node) == FlexDirection::Row {
         ParentLayout::Row
     } else {
@@ -200,7 +209,7 @@ fn read_children(
 
 fn style_for_node(node: &GuiNode, metadata: &GuiMetadata, parent_layout: ParentLayout) -> Style {
     let mut style = Style {
-        display: display_for(node),
+        display: display_for(node, metadata),
         flex_direction: flex_direction_for(node),
         size: Size {
             width: dimension_attr(node, metadata, "w"),
@@ -238,7 +247,7 @@ fn style_for_node(node: &GuiNode, metadata: &GuiMetadata, parent_layout: ParentL
         ParentLayout::Column => attr_is(node, "h", "fill"),
         // A grid child has no main axis to grow along; `fill` resolves to a
         // percentage of the track it occupies, via `dimension_attr`.
-        ParentLayout::Grid => false,
+        ParentLayout::Grid | ParentLayout::LegacyGrid => false,
     };
     if fills_main_axis {
         style.flex_grow = 1.0;
@@ -272,15 +281,27 @@ fn warn_on_unsupported_tag(node: &GuiNode) {
     }
 }
 
-fn display_for(node: &GuiNode) -> Display {
+fn display_for(node: &GuiNode, metadata: &GuiMetadata) -> Display {
+    if grid::grid_mode(node, metadata).is_some() {
+        return Display::Grid;
+    }
+
     match node.tag.as_str() {
         "row" | "col" | "stack" | "frame" => Display::Flex,
-        "grid" => Display::Grid,
         _ => Display::Block,
     }
 }
 
 fn flex_direction_for(node: &GuiNode) -> FlexDirection {
+    // `<stack>` carries its axis in an attribute; every other container tag
+    // implies one.
+    if node.tag == "stack" {
+        return match node.attributes.get("direction").map(String::as_str) {
+            Some("horizontal") => FlexDirection::Row,
+            _ => FlexDirection::Column,
+        };
+    }
+
     match node.tag.as_str() {
         "row" => FlexDirection::Row,
         _ => FlexDirection::Column,
@@ -1057,6 +1078,54 @@ mod tests {
         // to hug: a fixed height would stretch the auto rows to fill it, as
         // CSS `align-content: normal` does.
         assert_eq!(layout.children[2].rect.y, 18.0);
+    }
+
+    #[test]
+    fn a_stack_takes_its_axis_from_its_direction() {
+        // `<stack>` is the only container whose axis is an attribute rather
+        // than the tag, and it silently laid out as a column before.
+        let horizontal = layout_of(
+            r#"
+            <gui version="0.2">
+              <stack direction="horizontal" w="200" h="40">
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+              </stack>
+            </gui>
+            "#,
+        );
+        assert_eq!(horizontal.children[1].rect.x, 20.0);
+        assert_eq!(horizontal.children[1].rect.y, 0.0);
+
+        let vertical = layout_of(
+            r#"
+            <gui version="0.2">
+              <stack direction="vertical" w="200" h="40">
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+              </stack>
+            </gui>
+            "#,
+        );
+        assert_eq!(vertical.children[1].rect.x, 0.0);
+        assert_eq!(vertical.children[1].rect.y, 20.0);
+    }
+
+    #[test]
+    fn a_stack_can_be_a_grid_in_the_pre_rfc_spelling() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <stack direction="grid" grid-columns="2" grid-col-gap="10" w="210" h="50">
+                <rect h="10" />
+                <rect h="10" />
+              </stack>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.x, 0.0);
+        assert_eq!(layout.children[1].rect.x, 110.0);
     }
 
     #[test]
