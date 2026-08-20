@@ -1,0 +1,42 @@
+<gui version="0.2" name="Effects">
+  <col w="420" p="28" gap="26" fill="#eef1f5">
+    <row w="fill" h="90" radius="16" fill="#ffffff" p="16" align="middle-left" gap="12">
+      <ellipse w="44" h="44" fill="#3b6ea5" />
+      <col gap="4">
+        <text value="Soft drop shadow" font-size="16" font-weight="700" fill="#111111" />
+        <text value="y=8 radius=24 spread=0" font-size="13" fill="#7b8794" />
+      </col>
+      <appearance>
+        <effect type="drop-shadow" x="0" y="8" radius="24" spread="0" color="#00000029" />
+      </appearance>
+    </row>
+
+    <row w="fill" h="90" radius="16" fill="#ffffff" p="16" align="middle-left" gap="12">
+      <col gap="4">
+        <text value="Stacked shadows" font-size="16" font-weight="700" fill="#111111" />
+        <text value="tight ambient plus a wide lift" font-size="13" fill="#7b8794" />
+      </col>
+      <appearance>
+        <effect type="drop-shadow" x="0" y="2" radius="6" spread="0" color="#0000001F" />
+        <effect type="drop-shadow" x="0" y="16" radius="32" spread="-8" color="#00000040" />
+      </appearance>
+    </row>
+
+    <row w="fill" h="90" radius="16" fill="#f4f6f9" p="16" align="middle-left">
+      <text value="Inner shadow" font-size="16" font-weight="700" fill="#111111" />
+      <appearance>
+        <effect type="inner-shadow" x="0" y="4" radius="10" spread="0" color="#00000040" />
+      </appearance>
+    </row>
+
+    <row w="fill" h="90" radius="16" fill="#3b6ea5">
+      <text value="" font-size="1" />
+    </row>
+    <row w="fill" h="70" radius="16" fill="#ffffff55" p="16" align="middle-left" y="-140" abs="true" x="28">
+      <text value="Background blur over the band" font-size="15" font-weight="600" fill="#0d1b2a" />
+      <appearance>
+        <effect type="background-blur" radius="18" />
+      </appearance>
+    </row>
+  </col>
+</gui>

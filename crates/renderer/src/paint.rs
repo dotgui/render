@@ -1,6 +1,6 @@
 use crate::{
-    text, AssetCache, Border, BorderWidths, FontFace, FontStore, PaintContent, Scene, SceneNode,
-    TextSegment,
+    blur, text, AssetCache, Border, BorderWidths, Effect, FontFace, FontStore, PaintContent, Scene,
+    SceneNode, TextSegment,
 };
 use fontdue::{Font, FontSettings};
 use std::{fs, path::Path};
@@ -87,7 +87,10 @@ fn paint_node(
     asset_cache: Option<&AssetCache>,
     fonts: Option<&FontStore>,
 ) {
+    paint_backdrop_effects(pixmap, node);
+    paint_drop_shadows(pixmap, node);
     paint_fill(pixmap, node);
+    paint_inner_shadows(pixmap, node);
     paint_content(pixmap, node, font, asset_cache, fonts);
 
     if node.clip && !node.children.is_empty() {
@@ -155,6 +158,177 @@ fn create_clip_mask(width: u32, height: u32, node: &SceneNode) -> Option<tiny_sk
     };
     mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
     Some(mask)
+}
+
+/// The node's own outline, optionally grown and moved.
+///
+/// Shadows are the same shape as the thing casting them, so they reuse this
+/// rather than re-deriving rounded corners and ellipses.
+fn node_shape_path(
+    node: &SceneNode,
+    inflate: f32,
+    offset_x: f32,
+    offset_y: f32,
+) -> Option<tiny_skia::Path> {
+    let x = node.bounds.x - inflate + offset_x;
+    let y = node.bounds.y - inflate + offset_y;
+    let width = node.bounds.width + inflate * 2.0;
+    let height = paint_height(node) + inflate * 2.0;
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+
+    if node.tag == "ellipse" {
+        return ellipse_path(x, y, width, height);
+    }
+
+    // Growing a rounded rectangle grows its corners with it, which is what
+    // keeps a spread shadow concentric with its box.
+    let radius = node.radius.unwrap_or(0.0);
+    rounded_rect_path(x, y, width, height, (radius + inflate).max(0.0))
+}
+
+/// Effects that read what is already on the canvas, before this node covers it.
+fn paint_backdrop_effects(pixmap: &mut Pixmap, node: &SceneNode) {
+    for effect in &node.effects {
+        match effect.kind.as_str() {
+            "background-blur" | "glass" => {
+                let Some(mask) = create_clip_mask(pixmap.width(), pixmap.height(), node) else {
+                    continue;
+                };
+
+                // Blur a copy of the backdrop, then let it back through the
+                // node's own outline — the same thing `backdrop-filter` does.
+                let mut backdrop = pixmap.clone();
+                blur::blur(&mut backdrop, effect.radius / 2.0);
+                if effect.kind == "glass" {
+                    saturate(&mut backdrop, effect.saturation / 100.0);
+                }
+
+                pixmap.draw_pixmap(
+                    0,
+                    0,
+                    backdrop.as_ref(),
+                    &PixmapPaint::default(),
+                    Transform::identity(),
+                    Some(&mask),
+                );
+            }
+            "layer-blur" => {
+                eprintln!(
+                    "warning: effect type 'layer-blur' is not supported yet and was not drawn"
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+fn paint_drop_shadows(pixmap: &mut Pixmap, node: &SceneNode) {
+    for effect in &node.effects {
+        if effect.kind != "drop-shadow" {
+            continue;
+        }
+        let Some(color) = effect_color(effect, node) else {
+            continue;
+        };
+        let Some(path) = node_shape_path(node, effect.spread, effect.x, effect.y) else {
+            continue;
+        };
+        let Some(mut shadow) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+            continue;
+        };
+
+        let mut paint = Paint::default();
+        paint.set_color(color);
+        paint.anti_alias = true;
+        shadow.fill_path(
+            &path,
+            &paint,
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+        // CSS states shadow blur as a radius; the Gaussian sigma is half it.
+        blur::blur(&mut shadow, effect.radius / 2.0);
+
+        pixmap.draw_pixmap(
+            0,
+            0,
+            shadow.as_ref(),
+            &PixmapPaint::default(),
+            Transform::identity(),
+            None,
+        );
+    }
+}
+
+/// An inset shadow: the blurred *outside* of a shrunken outline, showing only
+/// within the node.
+fn paint_inner_shadows(pixmap: &mut Pixmap, node: &SceneNode) {
+    for effect in &node.effects {
+        if effect.kind != "inner-shadow" {
+            continue;
+        }
+        let Some(color) = effect_color(effect, node) else {
+            continue;
+        };
+        let Some(mask) = create_clip_mask(pixmap.width(), pixmap.height(), node) else {
+            continue;
+        };
+        let Some(mut shadow) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+            continue;
+        };
+
+        // Flood the area, then punch out the offset shape. What survives is
+        // the ring of colour that the blur turns into an inner edge.
+        shadow.fill(color);
+
+        if let Some(hole) = node_shape_path(node, -effect.spread, effect.x, effect.y) {
+            let mut cut = Paint::default();
+            cut.set_color(Color::TRANSPARENT);
+            cut.blend_mode = tiny_skia::BlendMode::Clear;
+            cut.anti_alias = true;
+            shadow.fill_path(&hole, &cut, FillRule::Winding, Transform::identity(), None);
+        }
+
+        blur::blur(&mut shadow, effect.radius / 2.0);
+
+        pixmap.draw_pixmap(
+            0,
+            0,
+            shadow.as_ref(),
+            &PixmapPaint::default(),
+            Transform::identity(),
+            Some(&mask),
+        );
+    }
+}
+
+fn effect_color(effect: &Effect, node: &SceneNode) -> Option<Color> {
+    let color = effect.color.as_deref().unwrap_or("#00000040");
+    parse_color(color, node.opacity * effect.opacity)
+}
+
+/// Scales colour away from (or past) grey, as CSS `saturate()` does.
+fn saturate(pixmap: &mut Pixmap, amount: f32) {
+    if (amount - 1.0).abs() < f32::EPSILON {
+        return;
+    }
+
+    for pixel in pixmap.pixels_mut() {
+        let (r, g, b, a) = (
+            f32::from(pixel.red()),
+            f32::from(pixel.green()),
+            f32::from(pixel.blue()),
+            pixel.alpha(),
+        );
+        // Rec. 601 luma, the same weights CSS filters use.
+        let luma = 0.299 * r + 0.587 * g + 0.114 * b;
+        let mix = |channel: f32| (luma + (channel - luma) * amount).clamp(0.0, f32::from(a)) as u8;
+        *pixel =
+            tiny_skia::PremultipliedColorU8::from_rgba(mix(r), mix(g), mix(b), a).unwrap_or(*pixel);
+    }
 }
 
 fn paint_fill(pixmap: &mut Pixmap, node: &SceneNode) {
@@ -1641,6 +1815,105 @@ mod tests {
 
         assert!(has_red, "the first segment should paint red glyphs");
         assert!(has_blue, "the second segment should paint blue glyphs");
+    }
+
+    /// Renders a document and hands back the pixels.
+    fn render(xml: &str) -> image::RgbaImage {
+        let document = parse_gui_xml(xml).expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+        let png = paint_scene_to_png_bytes(&scene, None, None).expect("scene paints");
+        image::load_from_memory(&png)
+            .expect("painted png decodes")
+            .to_rgba8()
+    }
+
+    const SHADOW_CARD: &str = r##"
+        <gui version="0.2">
+          <col w="80" h="80" fill="#ffffff" p="20">
+            <rect w="40" h="20" fill="#ffffff">
+              <appearance>
+                <effect type="drop-shadow" x="0" y="6" radius="8" color="#000000ff" EXTRA />
+              </appearance>
+            </rect>
+          </col>
+        </gui>
+    "##;
+
+    #[test]
+    fn a_drop_shadow_darkens_the_canvas_below_its_node() {
+        let painted = render(&SHADOW_CARD.replace("EXTRA", ""));
+
+        // The card occupies y=20..40; the shadow is thrown 6px down.
+        let below = painted.get_pixel(40, 48);
+        assert!(
+            below[0] < 240,
+            "expected a shadow under the card, found {below:?}"
+        );
+
+        // Well away from the card the canvas stays white.
+        let corner = painted.get_pixel(2, 2);
+        assert!(corner[0] > 250, "the shadow should not reach the corner");
+    }
+
+    #[test]
+    fn an_invisible_effect_is_not_drawn() {
+        let painted = render(&SHADOW_CARD.replace("EXTRA", r#"visible="false""#));
+
+        assert_eq!(
+            painted.get_pixel(40, 48)[0],
+            255,
+            "visible=\"false\" should leave the canvas untouched"
+        );
+    }
+
+    #[test]
+    fn spread_widens_the_shadow() {
+        let tight = render(&SHADOW_CARD.replace("EXTRA", ""));
+        let wide = render(&SHADOW_CARD.replace("EXTRA", r#"spread="6""#));
+
+        let darkness = |image: &image::RgbaImage| {
+            image
+                .pixels()
+                .map(|pixel| 255u32 - u32::from(pixel[0]))
+                .sum::<u32>()
+        };
+
+        assert!(
+            darkness(&wide) > darkness(&tight),
+            "a positive spread should cast more shadow"
+        );
+    }
+
+    #[test]
+    fn a_background_blur_softens_what_is_behind_it() {
+        // A hard black/white edge behind a frosted panel must come out grey
+        // where the panel covers it.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <grid unit="10" w="100" h="60" fill="#ffffff">
+                <rect gc="1/5" gr="1/6" fill="#000000" />
+                <rect gc="1/10" gr="3/4" fill="#ffffff00">
+                  <appearance>
+                    <effect type="background-blur" radius="20" />
+                  </appearance>
+                </rect>
+              </grid>
+            </gui>
+            "##,
+        );
+
+        // Just right of the black block, inside the panel: blurred, so grey.
+        let inside = painted.get_pixel(52, 25)[0];
+        // The same column above the panel keeps its hard white.
+        let outside = painted.get_pixel(52, 5)[0];
+
+        assert!(
+            (10..245).contains(&inside),
+            "expected a blurred edge inside the panel, found {inside}"
+        );
+        assert_eq!(outside, 255, "outside the panel the edge stays hard");
     }
 
     #[test]
