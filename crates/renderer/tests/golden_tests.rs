@@ -1,26 +1,27 @@
 //! Visual regression tests against committed reference PNGs.
 //!
 //! These run the same path as `cargo run --example render_png`: real font
-//! metrics for layout, then painting. Regenerate the references with
-//! `UPDATE_GOLDENS=1 cargo test -p dotgui-renderer --test golden_tests` and
-//! review the resulting image diff before committing it.
+//! metrics for layout, then painting.
 //!
-//! Goldens are generated on macOS. Text that falls back to a system font paints
-//! differently elsewhere, so the tests are ignored on other platforms rather
-//! than reporting a failure nobody can act on.
+//! **They are a local tool, not a CI gate**, and are ignored by default. Every
+//! one of them depends on something the repository does not control:
 //!
-//! Examples that declare `source="system"` fonts are ignored by default even on
-//! macOS. The host's copy of a system family is not something this repository
-//! controls or may redistribute, and it changes between OS versions — a CI
-//! runner and a developer machine resolve different bytes for `SF Pro Display`.
-//! Those goldens are a local visual reference, not a gate:
+//! - `grain` and `harbor` declare `source="system"` fonts. The host's copy of
+//!   `SF Pro Display` changes with the OS version and cannot be redistributed.
+//! - `checkout` and `arcade` resolve Google fonts through the GitHub API, and
+//!   the examples pull icons from a remote host. Both are unauthenticated and
+//!   rate limited; CI has hit `403` mid-run.
+//!
+//! Nothing is left unchecked by this. Geometry for every example is covered on
+//! every platform by `layout_snapshots.rs`, which needs no fonts and no
+//! network, and painting is covered by the hermetic pixel tests in
+//! `crate::paint`. What the goldens add is a full-page visual reference, which
+//! is worth looking at by hand and not worth a red build.
 //!
 //! ```text
 //! cargo test -p dotgui-renderer --test golden_tests -- --ignored
+//! UPDATE_GOLDENS=1 cargo test -p dotgui-renderer --test golden_tests -- --ignored
 //! ```
-//!
-//! Geometry is still covered everywhere by `layout_snapshots.rs`, and painting
-//! by the goldens whose fonts resolve reproducibly through the Google resolver.
 
 use dotgui_renderer::{
     build_scene, compute_taffy_layout_with_text, paint_scene_to_png_bytes, parse_gui_xml,
@@ -184,26 +185,10 @@ fn write_actual(goldens_dir: &Path, golden_name: &str, png: &[u8]) -> PathBuf {
     path
 }
 
-/// A golden whose fonts resolve reproducibly on any machine.
 macro_rules! golden_test {
     ($name:ident, $file:expr, $golden:expr) => {
         #[test]
-        #[cfg_attr(
-            not(target_os = "macos"),
-            ignore = "golden references are generated on macOS"
-        )]
-        fn $name() {
-            run_golden_test($file, $golden);
-        }
-    };
-}
-
-/// A golden that depends on a `source="system"` family, so its bytes differ
-/// between hosts. Run with `--ignored`.
-macro_rules! system_font_golden_test {
-    ($name:ident, $file:expr, $golden:expr) => {
-        #[test]
-        #[ignore = "depends on a system font whose version differs per host; run with --ignored"]
+        #[ignore = "needs host fonts and network-resolved assets; run with --ignored"]
         fn $name() {
             run_golden_test($file, $golden);
         }
@@ -212,5 +197,5 @@ macro_rules! system_font_golden_test {
 
 golden_test!(golden_checkout, "anvil-ash-checkout.gui", "checkout");
 golden_test!(golden_arcade, "arcade-return-item-android.gui", "arcade");
-system_font_golden_test!(golden_harbor, "harbor-report-post-ios.gui", "harbor");
-system_font_golden_test!(golden_grain, "grain-photo-adjust.gui", "grain");
+golden_test!(golden_harbor, "harbor-report-post-ios.gui", "harbor");
+golden_test!(golden_grain, "grain-photo-adjust.gui", "grain");
