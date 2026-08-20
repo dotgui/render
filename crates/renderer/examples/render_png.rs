@@ -43,6 +43,12 @@ fn main() {
         eprintln!("warning: failed to resolve declared fonts: {err}");
         FontStore::default()
     });
+    // A render that quietly used the wrong typeface is worse than one that
+    // says so.
+    for warning in fonts.warnings() {
+        eprintln!("warning: {warning}");
+    }
+
     let layout = compute_taffy_layout_with_text(&document, &fonts).unwrap_or_else(|err| {
         eprintln!("failed to lay out {input}: {err}");
         process::exit(1);

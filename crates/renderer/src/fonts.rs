@@ -1,6 +1,5 @@
 use crate::{AssetCache, AssetError, FontInfo, GuiDocument, TextMeasurer};
 use fontdue::{Font, FontSettings};
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::PathBuf, rc::Rc};
 use thiserror::Error;
@@ -21,6 +20,7 @@ pub enum FontError {
 #[derive(Default)]
 pub struct FontStore {
     fonts: BTreeMap<FontFaceKey, Rc<FontFace>>,
+    warnings: Vec<String>,
 }
 
 pub struct FontFace {
@@ -129,39 +129,60 @@ impl FontStore {
         let mut system_faces = BTreeMap::<String, Vec<SystemFace>>::new();
 
         for (family, info) in &document.metadata.fonts {
-            for weight in declared_weights(info) {
-                for style in declared_styles(info) {
+            let weights = declared_weights(info);
+            let styles = declared_styles(info);
+
+            // One request covers the whole family, so this is outside the loop.
+            let google_faces = if info.source == "google" {
+                google_font_faces(family, &weights, &styles, cache)?
+            } else {
+                BTreeMap::new()
+            };
+
+            for weight in &weights {
+                for style in &styles {
+                    let weight_key = normalize_weight(weight);
+                    let style_key = normalize_style(style);
+
                     let source = match info.source.as_str() {
-                        "google" => google_font_ttf_url(family, &weight, &style, cache)?
+                        "google" => nearest_face(&google_faces, &weight_key, &style_key)
+                            .cloned()
                             .map(FontSource::Google),
                         "system" => {
-                            let candidates = system_faces
-                                .entry(family.clone())
-                                .or_insert_with(|| system_font_candidates(family));
-                            choose_system_face(candidates, &weight, &style)
-                                .cloned()
-                                .map(FontSource::System)
+                            let resolved = resolve_system_family(family, &mut system_faces);
+                            if let Some((matched_family, face)) = resolved {
+                                if matched_family != *family {
+                                    store.warnings.push(format!(
+                                        "'{family}' is not installed; rendered with '{matched_family}'"
+                                    ));
+                                }
+                                choose_system_face(&face, weight, style)
+                                    .cloned()
+                                    .map(FontSource::System)
+                            } else {
+                                None
+                            }
                         }
                         _ => None,
                     };
 
                     let Some(source) = source else {
-                        eprintln!(
-                            "warning: {} font family '{family}' (weight {weight}, style {style}) could not be resolved",
+                        store.warnings.push(format!(
+                            "{} font '{family}' (weight {weight}, style {style}) could not be resolved",
                             info.source
-                        );
+                        ));
                         continue;
                     };
 
                     // Weight is part of the key because variable faces are
                     // instanced per weight from the same bytes.
-                    let loaded_key = (source.cache_key(), weight.clone());
+                    let loaded_key = (source.cache_key(), weight_key.clone());
                     let font = if let Some(font) = loaded_fonts.get(&loaded_key) {
                         Rc::clone(font)
                     } else {
                         let (bytes, collection_index) = source.load(cache)?;
                         let font =
-                            Rc::new(FontFace::new(bytes, &weight, collection_index).map_err(
+                            Rc::new(FontFace::new(bytes, weight, collection_index).map_err(
                                 |message| FontError::Load {
                                     family: family.clone(),
                                     message,
@@ -173,12 +194,22 @@ impl FontStore {
 
                     store
                         .fonts
-                        .insert(FontFaceKey::new(family, &weight, &style), font);
+                        .insert(FontFaceKey::new(family, weight, style), font);
                 }
             }
         }
 
         Ok(store)
+    }
+
+    /// What the store could not resolve, and what it used instead.
+    ///
+    /// A renderer running where a declared font is unavailable — a Linux server
+    /// asked for `SF Pro Display`, say — still produces output, and the caller
+    /// needs to be able to say so rather than silently shipping the wrong
+    /// typeface.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 
     pub fn get(
@@ -232,148 +263,137 @@ impl TextMeasurer for FontStore {
     }
 }
 
-fn google_font_ttf_url(
+/// Resolves every declared face of a Google family in one request.
+///
+/// This is the source the HTML renderer uses: the Google Fonts CSS API, which
+/// answers with one `@font-face` per requested weight and style. Walking the
+/// `google/fonts` GitHub repository instead costs several API calls per family
+/// and is rate limited to 60 an hour for anonymous callers — enough to fail a
+/// CI run partway through.
+///
+/// Callers without `woff2` support, which this renderer is, are served
+/// `format('truetype')` URLs, so the referenced files load directly.
+fn google_font_faces(
     family: &str,
-    weight: &str,
-    style: &str,
+    weights: &[String],
+    styles: &[String],
     cache: &AssetCache,
-) -> Result<Option<String>, FontError> {
-    let slug = google_family_slug(family);
-    if slug.is_empty() {
-        return Ok(None);
+) -> Result<BTreeMap<(String, String), String>, FontError> {
+    let Some(url) = google_css_url(family, weights, styles) else {
+        return Ok(BTreeMap::new());
+    };
+
+    let css = match cache.resolve(&url) {
+        Ok(asset) => asset.bytes,
+        // A family Google does not publish answers 400. That is a missing
+        // font, not a broken renderer, so the caller reports and carries on.
+        Err(AssetError::Fetch { .. }) => return Ok(BTreeMap::new()),
+        Err(err) => return Err(FontError::Asset(err)),
+    };
+
+    let css = String::from_utf8(css).map_err(|err| FontError::GoogleMetadata {
+        family: family.to_owned(),
+        message: err.to_string(),
+    })?;
+
+    Ok(parse_font_face_css(&css))
+}
+
+/// Builds a CSS API request covering every declared weight and style at once.
+///
+/// `family=Roboto:ital,wght@0,400;0,700;1,400` — the axis list has to be
+/// sorted or the API rejects it.
+fn google_css_url(family: &str, weights: &[String], styles: &[String]) -> Option<String> {
+    let family_param = family.trim().replace(' ', "+");
+    if family_param.is_empty() {
+        return None;
     }
 
-    for license_dir in ["ofl", "apache", "ufl"] {
-        let entries = match google_font_entries(license_dir, &slug, family, cache) {
-            Ok(entries) => entries,
-            Err(FontError::Asset(AssetError::Fetch { message, .. }))
-                if is_missing_google_font_directory(&message) =>
-            {
-                continue;
-            }
-            Err(err) => return Err(err),
+    let mut axes = Vec::new();
+    for style in styles {
+        let italic = i32::from(normalize_style(style) == "italic");
+        for weight in weights {
+            axes.push((
+                italic,
+                normalize_weight(weight).parse::<u16>().unwrap_or(400),
+            ));
+        }
+    }
+    axes.sort_unstable();
+    axes.dedup();
+
+    let spec = axes
+        .iter()
+        .map(|(italic, weight)| format!("{italic},{weight}"))
+        .collect::<Vec<_>>()
+        .join(";");
+
+    Some(format!(
+        "https://fonts.googleapis.com/css2?family={family_param}:ital,wght@{spec}"
+    ))
+}
+
+/// Pulls `(weight, style) -> url` out of the `@font-face` blocks of a
+/// stylesheet.
+fn parse_font_face_css(css: &str) -> BTreeMap<(String, String), String> {
+    let mut faces = BTreeMap::new();
+
+    for block in css.split("@font-face").skip(1) {
+        let Some(block) = block.split('}').next() else {
+            continue;
         };
-        if let Some(url) = select_google_ttf_url(&entries, weight, style) {
-            return Ok(Some(url));
+
+        let mut style = "normal".to_owned();
+        let mut weight = "400".to_owned();
+        let mut url = None;
+
+        for declaration in block.split(';') {
+            let Some((property, value)) = declaration.split_once(':') else {
+                continue;
+            };
+            match property.trim() {
+                "font-style" => style = normalize_style(value.trim()),
+                // A variable face answers with a range; its first value is the
+                // lightest weight it can be instanced at.
+                "font-weight" => {
+                    weight = value.split_whitespace().next().unwrap_or("400").to_owned()
+                }
+                "src" => {
+                    url = value
+                        .split_once("url(")
+                        .and_then(|(_, rest)| rest.split_once(')'))
+                        .map(|(link, _)| link.trim().trim_matches('"').to_owned())
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(url) = url {
+            faces.insert((normalize_weight(&weight), style), url);
         }
     }
 
-    Ok(None)
+    faces
 }
 
-fn google_font_entries(
-    license_dir: &str,
-    slug: &str,
-    family: &str,
-    cache: &AssetCache,
-) -> Result<Vec<GoogleFontEntry>, FontError> {
-    let base_url =
-        format!("https://api.github.com/repos/google/fonts/contents/{license_dir}/{slug}?ref=main");
-    let mut entries = fetch_google_font_entries(&base_url, family, cache)?;
+/// Picks the closest published face when the exact weight is not available.
+fn nearest_face<'a>(
+    faces: &'a BTreeMap<(String, String), String>,
+    weight: &str,
+    style: &str,
+) -> Option<&'a String> {
+    if let Some(url) = faces.get(&(weight.to_owned(), style.to_owned())) {
+        return Some(url);
+    }
 
-    let static_urls = entries
+    let target = weight.parse::<i32>().unwrap_or(400);
+    faces
         .iter()
-        .filter(|entry| entry.entry_type == "dir" && entry.name == "static")
-        .map(|entry| {
-            format!(
-                "https://api.github.com/repos/google/fonts/contents/{}?ref=main",
-                entry.path
-            )
+        .filter(|((_, face_style), _)| face_style == style)
+        .min_by_key(|((face_weight, _), _)| {
+            (face_weight.parse::<i32>().unwrap_or(400) - target).abs()
         })
-        .collect::<Vec<_>>();
-
-    for url in static_urls {
-        entries.extend(fetch_google_font_entries(&url, family, cache)?);
-    }
-
-    Ok(entries)
-}
-
-fn fetch_google_font_entries(
-    url: &str,
-    family: &str,
-    cache: &AssetCache,
-) -> Result<Vec<GoogleFontEntry>, FontError> {
-    let asset = cache.resolve(url)?;
-    serde_json::from_slice(&asset.bytes).map_err(|err| FontError::GoogleMetadata {
-        family: family.to_owned(),
-        message: err.to_string(),
-    })
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct GoogleFontEntry {
-    name: String,
-    path: String,
-    #[serde(rename = "type")]
-    entry_type: String,
-    download_url: Option<String>,
-}
-
-fn select_google_ttf_url(entries: &[GoogleFontEntry], weight: &str, style: &str) -> Option<String> {
-    let normalized_style = normalize_style(style);
-    let normalized_weight = normalize_weight(weight);
-
-    entries
-        .iter()
-        .filter_map(|entry| {
-            let url = entry.download_url.as_ref()?;
-            let name = entry.name.to_ascii_lowercase();
-            if !name.ends_with(".ttf") {
-                return None;
-            }
-
-            if normalized_style == "italic" && !name.contains("italic") {
-                return None;
-            }
-            if normalized_style == "normal" && name.contains("italic") {
-                return None;
-            }
-
-            Some((font_file_score(&name, &normalized_weight), url))
-        })
-        .min_by_key(|(score, _)| *score)
-        .map(|(_, url)| url.clone())
-}
-
-fn font_file_score(name: &str, weight: &str) -> u8 {
-    if !name.contains('[') && static_file_matches_weight(name, weight) {
-        return 0;
-    }
-    if name.contains("[wght]") || name.contains(",wght]") || name.contains("wght,") {
-        return 10;
-    }
-    if !name.contains('[') {
-        return 20;
-    }
-    30
-}
-
-fn static_file_matches_weight(name: &str, weight: &str) -> bool {
-    match weight {
-        "100" => name.contains("thin"),
-        "200" => name.contains("extralight") || name.contains("ultralight"),
-        "300" => name.contains("light"),
-        "400" => name.contains("regular") || !name.contains('-'),
-        "500" => name.contains("medium"),
-        "600" => name.contains("semibold"),
-        "700" => name.contains("bold") && !name.contains("extrabold"),
-        "800" => name.contains("extrabold") || name.contains("ultrabold"),
-        "900" => name.contains("black") || name.contains("heavy"),
-        _ => false,
-    }
-}
-
-fn google_family_slug(family: &str) -> String {
-    family
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .flat_map(|ch| ch.to_lowercase())
-        .collect()
-}
-
-fn is_missing_google_font_directory(message: &str) -> bool {
-    message.contains("404") || message.to_ascii_lowercase().contains("not found")
+        .map(|(_, url)| url)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -465,6 +485,39 @@ struct SystemFace {
     italic: bool,
     /// Variable faces carry a `wght` axis, so they can serve any weight.
     variable: bool,
+}
+
+/// Families to try when a declared `source="system"` family is not installed.
+///
+/// The HTML renderer emits the CSS stack
+/// `system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`, so
+/// the browser lands on the host's UI font. Nothing resolves those generic
+/// names off a filesystem, so the equivalent concrete families are tried here.
+const SYSTEM_UI_FALLBACKS: &[&str] = &[
+    "SF Pro",      // macOS
+    "Segoe UI",    // Windows
+    "DejaVu Sans", // most Linux distributions
+    "Liberation Sans",
+    "Arial",
+];
+
+/// Finds the declared family, or the nearest platform UI font.
+///
+/// Returns which family actually matched so the caller can report a
+/// substitution.
+fn resolve_system_family(
+    family: &str,
+    cache: &mut BTreeMap<String, Vec<SystemFace>>,
+) -> Option<(String, Vec<SystemFace>)> {
+    for candidate in std::iter::once(family).chain(SYSTEM_UI_FALLBACKS.iter().copied()) {
+        let faces = cache
+            .entry(candidate.to_owned())
+            .or_insert_with(|| system_font_candidates(candidate));
+        if !faces.is_empty() {
+            return Some((candidate.to_owned(), faces.clone()));
+        }
+    }
+    None
 }
 
 fn system_font_dirs() -> Vec<PathBuf> {
@@ -677,49 +730,79 @@ mod tests {
     }
 
     #[test]
-    fn google_family_slug_matches_repository_directory() {
-        assert_eq!(google_family_slug("Roboto"), "roboto");
-        assert_eq!(google_family_slug("Noto Sans"), "notosans");
-    }
+    fn google_css_request_covers_every_declared_face_at_once() {
+        let url = google_css_url(
+            "Open Sans",
+            &["700".to_owned(), "400".to_owned()],
+            &["normal".to_owned(), "italic".to_owned()],
+        )
+        .expect("a family produces a request");
 
-    #[test]
-    fn google_ttf_selection_prefers_exact_static_face() {
-        let entries = vec![
-            google_entry("Roboto[wght].ttf"),
-            google_entry("Roboto-Regular.ttf"),
-            google_entry("Roboto-Bold.ttf"),
-        ];
-
+        // Spaces become `+`, and the axis list has to be sorted or the API
+        // rejects it.
         assert_eq!(
-            select_google_ttf_url(&entries, "700", "normal").as_deref(),
-            Some("https://example.com/Roboto-Bold.ttf")
+            url,
+            "https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,400;0,700;1,400;1,700"
         );
     }
 
     #[test]
-    fn google_ttf_selection_keeps_italic_separate() {
-        let entries = vec![
-            google_entry("Inter[opsz,wght].ttf"),
-            google_entry("Inter-Italic[opsz,wght].ttf"),
-        ];
+    fn font_face_css_yields_a_url_per_weight_and_style() {
+        let css = r#"
+            @font-face {
+              font-family: 'Roboto';
+              font-style: normal;
+              font-weight: 400;
+              src: url(https://fonts.gstatic.com/s/roboto/v51/regular.ttf) format('truetype');
+            }
+            @font-face {
+              font-family: 'Roboto';
+              font-style: italic;
+              font-weight: 700;
+              src: url(https://fonts.gstatic.com/s/roboto/v51/bolditalic.ttf) format('truetype');
+            }
+        "#;
 
+        let faces = parse_font_face_css(css);
+        assert_eq!(faces.len(), 2);
         assert_eq!(
-            select_google_ttf_url(&entries, "500", "italic").as_deref(),
-            Some("https://example.com/Inter-Italic[opsz,wght].ttf")
+            faces.get(&("400".to_owned(), "normal".to_owned())).unwrap(),
+            "https://fonts.gstatic.com/s/roboto/v51/regular.ttf"
         );
         assert_eq!(
-            select_google_ttf_url(&entries, "500", "normal").as_deref(),
-            Some("https://example.com/Inter[opsz,wght].ttf")
+            faces.get(&("700".to_owned(), "italic".to_owned())).unwrap(),
+            "https://fonts.gstatic.com/s/roboto/v51/bolditalic.ttf"
         );
     }
 
-    fn google_entry(name: &str) -> GoogleFontEntry {
-        GoogleFontEntry {
-            name: name.to_owned(),
-            path: format!("ofl/test/{name}"),
-            entry_type: "file".to_owned(),
-            download_url: Some(format!("https://example.com/{name}")),
-        }
+    #[test]
+    fn a_variable_face_is_keyed_by_the_start_of_its_weight_range() {
+        let css = r#"
+            @font-face {
+              font-style: normal;
+              font-weight: 100 900;
+              src: url(https://fonts.gstatic.com/s/inter/variable.ttf) format('truetype');
+            }
+        "#;
+
+        let faces = parse_font_face_css(css);
+        assert!(faces.contains_key(&("100".to_owned(), "normal".to_owned())));
+    }
+
+    #[test]
+    fn an_unpublished_weight_falls_back_to_the_nearest_one() {
+        let mut faces = BTreeMap::new();
+        faces.insert(
+            ("400".to_owned(), "normal".to_owned()),
+            "regular".to_owned(),
+        );
+        faces.insert(("700".to_owned(), "normal".to_owned()), "bold".to_owned());
+        faces.insert(("400".to_owned(), "italic".to_owned()), "italic".to_owned());
+
+        assert_eq!(nearest_face(&faces, "600", "normal").unwrap(), "bold");
+        assert_eq!(nearest_face(&faces, "300", "normal").unwrap(), "regular");
+        // Style is never traded away for a closer weight.
+        assert_eq!(nearest_face(&faces, "700", "italic").unwrap(), "italic");
     }
 
     #[test]

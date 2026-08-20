@@ -270,7 +270,24 @@ Google fonts:
 </fonts>
 ```
 
-The renderer resolves declared Google font faces through `.gui-render/cache`.
+Google families resolve through the Google Fonts CSS API — the same source the
+HTML renderer uses — with one request per family covering every declared weight
+and style, cached under `.gui-render/cache`.
+
+`source="system"` families are looked up in the host's font directories. When
+the declared family is not installed the renderer falls back to the platform UI
+font, mirroring the CSS stack the HTML renderer emits, and records what it
+substituted:
+
+```text
+warning: 'SF Pro Display' is not installed; rendered with 'DejaVu Sans'
+```
+
+Read those through `FontStore::warnings()`. A render that quietly used the wrong
+typeface is worse than one that says so — which matters most when rendering
+somewhere the declared fonts cannot exist, such as a Linux server asked for an
+Apple system font.
+
 Text only uses declared family, weight, and style combinations. If a requested
 face was not declared, the renderer falls back.
 
