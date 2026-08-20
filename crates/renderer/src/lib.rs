@@ -13,22 +13,21 @@ mod paint;
 mod parser;
 mod scene;
 mod taffy_layout;
+mod text;
+mod text_style;
 
 pub use assets::{AssetCache, AssetError, ResolvedAsset};
 pub use fonts::{FontError, FontFace, FontStore};
-pub use layout::{
-    compute_layout, compute_layout_with_text, ApproxTextMeasurer, LayoutBox, LayoutRect,
-    TextMeasurer,
-};
+pub use layout::{ApproxTextMeasurer, LayoutBox, LayoutRect, TextMeasurer};
 pub use model::{FontInfo, GuiDocument, GuiMetadata, GuiNode};
 pub use package::{read_gui_package, read_gui_package_xml, GuiPackage, PackageError};
 pub use paint::{
-    paint_scene_to_png, paint_scene_to_png_with_assets, paint_scene_to_png_with_assets_and_fonts,
-    paint_scene_to_png_bytes, PaintError,
+    paint_scene_to_png, paint_scene_to_png_bytes, paint_scene_to_png_with_assets,
+    paint_scene_to_png_with_assets_and_fonts, PaintError,
 };
 pub use parser::{parse_gui_xml, ParseError};
-pub use scene::{build_scene, Border, BorderWidths, PaintContent, Scene, SceneNode};
-pub use taffy_layout::{compute_taffy_layout, TaffyLayoutError};
+pub use scene::{build_scene, Border, BorderWidths, PaintContent, Scene, SceneNode, TextSegment};
+pub use taffy_layout::{compute_taffy_layout, compute_taffy_layout_with_text, TaffyLayoutError};
 
 #[cfg(test)]
 mod examples_tests {
@@ -41,9 +40,11 @@ mod examples_tests {
             .join("../..")
             .join("examples");
 
-        if !examples_dir.exists() {
-            return;
-        }
+        assert!(
+            examples_dir.exists(),
+            "{} is missing; this test would otherwise pass without checking anything",
+            examples_dir.display()
+        );
 
         let mut count = 0;
         for entry in fs::read_dir(&examples_dir).expect("examples dir is readable") {
@@ -70,9 +71,11 @@ mod examples_tests {
             .join("../..")
             .join("examples");
 
-        if !examples_dir.exists() {
-            return;
-        }
+        assert!(
+            examples_dir.exists(),
+            "{} is missing; this test would otherwise pass without checking anything",
+            examples_dir.display()
+        );
 
         let mut count = 0;
         for entry in fs::read_dir(&examples_dir).expect("examples dir is readable") {
@@ -102,9 +105,11 @@ mod examples_tests {
             .join("../..")
             .join("examples");
 
-        if !examples_dir.exists() {
-            return;
-        }
+        assert!(
+            examples_dir.exists(),
+            "{} is missing; this test would otherwise pass without checking anything",
+            examples_dir.display()
+        );
 
         let mut count = 0;
         for entry in fs::read_dir(&examples_dir).expect("examples dir is readable") {

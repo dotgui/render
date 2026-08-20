@@ -1,7 +1,8 @@
 use crate::{AssetCache, AssetError, FontInfo, GuiDocument, TextMeasurer};
 use fontdue::{Font, FontSettings};
 use serde::Deserialize;
-use std::{collections::BTreeMap, rc::Rc};
+use sha2::{Digest, Sha256};
+use std::{collections::BTreeMap, path::PathBuf, rc::Rc};
 use thiserror::Error;
 use ttf_parser::{Face, Tag};
 
@@ -80,6 +81,22 @@ impl FontFace {
             .unwrap_or(font_size)
     }
 
+    /// Short content hash of the loaded face.
+    ///
+    /// Two hosts that resolve the same declared family can still end up with
+    /// different files — a newer macOS, a re-fetched Google face. Comparing
+    /// fingerprints turns "the pixels changed" into "the font changed".
+    pub fn fingerprint(&self) -> String {
+        let mut hash = Sha256::new();
+        hash.update(self.bytes.as_slice());
+        hash.update(self.collection_index.to_le_bytes());
+        hash.finalize()
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
     pub fn variable_face(&self) -> Option<Face<'_>> {
         let mut face = Face::parse(&self.bytes, self.collection_index).ok()?;
         let _ = face.set_variation(Tag::from_bytes(b"wght"), self.weight);
@@ -107,60 +124,56 @@ impl FontStore {
     pub fn from_document(document: &GuiDocument, cache: &AssetCache) -> Result<Self, FontError> {
         let mut store = Self::default();
         let mut loaded_fonts = BTreeMap::<(String, String), Rc<FontFace>>::new();
+        // Scanning the host's font directories is expensive, so it happens once
+        // per family instead of once per declared weight/style combination.
+        let mut system_faces = BTreeMap::<String, Vec<SystemFace>>::new();
 
         for (family, info) in &document.metadata.fonts {
-            if info.source != "google" && info.source != "system" {
-                continue;
-            }
-
             for weight in declared_weights(info) {
                 for style in declared_styles(info) {
-                    if info.source == "google" {
-                        if let Some(url) = google_font_ttf_url(family, &weight, &style, cache)? {
-                            let loaded_key = (url.clone(), weight.clone());
-                            let font = if let Some(font) = loaded_fonts.get(&loaded_key) {
-                                Rc::clone(font)
-                            } else {
-                                let asset = cache.resolve(&url)?;
-                                let font = Rc::new(FontFace::new(asset.bytes, &weight, 0).map_err(
-                                    |message| FontError::Load {
-                                        family: family.clone(),
-                                        message,
-                                    },
-                                )?);
-                                loaded_fonts.insert(loaded_key, Rc::clone(&font));
-                                font
-                            };
-
-                            store
-                                .fonts
-                                .insert(FontFaceKey::new(family, &weight, &style), font);
-                        } else {
-                            eprintln!("warning: Google font family '{}' (weight {}, style {}) could not be resolved", family, weight, style);
+                    let source = match info.source.as_str() {
+                        "google" => google_font_ttf_url(family, &weight, &style, cache)?
+                            .map(FontSource::Google),
+                        "system" => {
+                            let candidates = system_faces
+                                .entry(family.clone())
+                                .or_insert_with(|| system_font_candidates(family));
+                            choose_system_face(candidates, &weight, &style)
+                                .cloned()
+                                .map(FontSource::System)
                         }
-                    } else if info.source == "system" {
-                        if let Some((bytes, collection_index)) = find_system_font(family, &weight, &style) {
-                            let loaded_key = (format!("system://{family}/{collection_index}"), weight.clone());
-                            let font = if let Some(font) = loaded_fonts.get(&loaded_key) {
-                                Rc::clone(font)
-                            } else {
-                                let font = Rc::new(FontFace::new(bytes, &weight, collection_index).map_err(
-                                    |message| FontError::Load {
-                                        family: family.clone(),
-                                        message,
-                                    },
-                                )?);
-                                loaded_fonts.insert(loaded_key, Rc::clone(&font));
-                                font
-                            };
+                        _ => None,
+                    };
 
-                            store
-                                .fonts
-                                .insert(FontFaceKey::new(family, &weight, &style), font);
-                        } else {
-                            eprintln!("warning: System font family '{}' (weight {}, style {}) was not found", family, weight, style);
-                        }
-                    }
+                    let Some(source) = source else {
+                        eprintln!(
+                            "warning: {} font family '{family}' (weight {weight}, style {style}) could not be resolved",
+                            info.source
+                        );
+                        continue;
+                    };
+
+                    // Weight is part of the key because variable faces are
+                    // instanced per weight from the same bytes.
+                    let loaded_key = (source.cache_key(), weight.clone());
+                    let font = if let Some(font) = loaded_fonts.get(&loaded_key) {
+                        Rc::clone(font)
+                    } else {
+                        let (bytes, collection_index) = source.load(cache)?;
+                        let font =
+                            Rc::new(FontFace::new(bytes, &weight, collection_index).map_err(
+                                |message| FontError::Load {
+                                    family: family.clone(),
+                                    message,
+                                },
+                            )?);
+                        loaded_fonts.insert(loaded_key, Rc::clone(&font));
+                        font
+                    };
+
+                    store
+                        .fonts
+                        .insert(FontFaceKey::new(family, &weight, &style), font);
                 }
             }
         }
@@ -184,6 +197,21 @@ impl FontStore {
 
     pub fn is_empty(&self) -> bool {
         self.fonts.is_empty()
+    }
+
+    /// Fingerprints of every loaded face, keyed by `family/weight/style`.
+    ///
+    /// Lets a caller record which font files a render was produced with.
+    pub fn fingerprints(&self) -> BTreeMap<String, String> {
+        self.fonts
+            .iter()
+            .map(|(key, face)| {
+                (
+                    format!("{}/{}/{}", key.family, key.weight, key.style),
+                    face.fingerprint(),
+                )
+            })
+            .collect()
     }
 }
 
@@ -398,86 +426,214 @@ fn fallback_text_width(value: &str, font_size: f32) -> f32 {
     value.chars().count() as f32 * font_size * 0.55
 }
 
-fn find_system_font(family: &str, weight: &str, style: &str) -> Option<(Vec<u8>, u32)> {
-    let slug = family.to_ascii_lowercase().replace(' ', "").replace('-', "");
-    let target_weight = normalize_weight(weight).parse::<u16>().unwrap_or(400);
-    let target_italic = style == "italic";
+/// Where a declared font face's bytes come from.
+enum FontSource {
+    Google(String),
+    System(SystemFace),
+}
 
-    let dirs = [
-        "/System/Library/Fonts",
-        "/System/Library/Fonts/Supplemental",
-        "/Library/Fonts",
-    ];
+impl FontSource {
+    /// Identity used to avoid loading the same file twice.
+    fn cache_key(&self) -> String {
+        match self {
+            FontSource::Google(url) => url.clone(),
+            FontSource::System(face) => format!("system://{}#{}", face.path.display(), face.index),
+        }
+    }
 
-    let mut candidates = Vec::new();
+    fn load(&self, cache: &AssetCache) -> Result<(Vec<u8>, u32), FontError> {
+        match self {
+            FontSource::Google(url) => Ok((cache.resolve(url)?.bytes, 0)),
+            FontSource::System(face) => {
+                let bytes = std::fs::read(&face.path).map_err(|err| FontError::Load {
+                    family: face.path.display().to_string(),
+                    message: err.to_string(),
+                })?;
+                Ok((bytes, face.index))
+            }
+        }
+    }
+}
 
-    for dir in dirs {
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(_) => continue,
+/// A font face found on the host, identified without holding its bytes.
+#[derive(Debug, Clone)]
+struct SystemFace {
+    path: PathBuf,
+    /// Index within a `.ttc` collection; `0` for single-face files.
+    index: u32,
+    weight: u16,
+    italic: bool,
+    /// Variable faces carry a `wght` axis, so they can serve any weight.
+    variable: bool,
+}
+
+fn system_font_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = if cfg!(target_os = "macos") {
+        [
+            "/System/Library/Fonts",
+            "/System/Library/Fonts/Supplemental",
+            "/Library/Fonts",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect()
+    } else if cfg!(target_os = "windows") {
+        vec![PathBuf::from(r"C:\Windows\Fonts")]
+    } else {
+        [
+            "/usr/share/fonts",
+            "/usr/local/share/fonts",
+            "/usr/share/fonts/truetype",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect()
+    };
+
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        dirs.push(home.join("Library/Fonts"));
+        dirs.push(home.join(".local/share/fonts"));
+        dirs.push(home.join(".fonts"));
+    }
+
+    dirs
+}
+
+/// Files holding a well-known UI family whose name matches neither the filename
+/// nor the family recorded inside the font.
+///
+/// macOS ships "SF Pro" as `.SF NS` inside `SFNS.ttf`, so searching by name
+/// never finds the most commonly declared family on the platform.
+fn aliased_font_files(slug: &str) -> &'static [&'static str] {
+    match slug {
+        "sfpro" | "sfprodisplay" | "sfprotext" | "sfns" | "systemfont" | "appleystem" => &[
+            "/System/Library/Fonts/SFNS.ttf",
+            "/System/Library/Fonts/SFNSItalic.ttf",
+        ],
+        "sfprorounded" => &["/System/Library/Fonts/SFNSRounded.ttf"],
+        "sfcompact" | "sfcompactdisplay" | "sfcompacttext" => &[
+            "/System/Library/Fonts/SFCompact.ttf",
+            "/System/Library/Fonts/SFCompactItalic.ttf",
+        ],
+        "sfmono" => &[
+            "/System/Library/Fonts/SFNSMono.ttf",
+            "/System/Library/Fonts/SFNSMonoItalic.ttf",
+        ],
+        "newyork" => &["/System/Library/Fonts/NewYork.ttf"],
+        _ => &[],
+    }
+}
+
+fn family_slug(family: &str) -> String {
+    family
+        .to_ascii_lowercase()
+        .replace([' ', '-', '_', '.'], "")
+}
+
+/// Every face on the host that could serve `family`, in no particular order.
+fn system_font_candidates(family: &str) -> Vec<SystemFace> {
+    let slug = family_slug(family);
+    let mut paths: Vec<PathBuf> = aliased_font_files(&slug)
+        .iter()
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .collect();
+
+    for dir in system_font_dirs() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
         };
         for entry in entries.filter_map(Result::ok) {
             let path = entry.path();
             if !path.is_file() {
                 continue;
             }
-            let Some(name) = path.file_name().and_then(|n| n.to_str()).map(|n| n.to_ascii_lowercase()) else {
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            if name.ends_with(".ttf") || name.ends_with(".otf") || name.ends_with(".ttc") {
-                let name_slug = name.replace(' ', "").replace('-', "");
-                if name_slug.contains(&slug) {
-                    candidates.push(path);
-                }
+            let lowercase = name.to_ascii_lowercase();
+            if !(lowercase.ends_with(".ttf")
+                || lowercase.ends_with(".otf")
+                || lowercase.ends_with(".ttc"))
+            {
+                continue;
+            }
+            if family_slug(name).contains(&slug) && !paths.contains(&path) {
+                paths.push(path);
             }
         }
     }
 
-    let mut best_bytes = None;
-    let mut best_index = 0;
-    let mut best_score = -1;
-
-    for path in candidates {
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(_) => continue,
+    let mut candidates = Vec::new();
+    for path in paths {
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
         };
-        let num_fonts = ttf_parser::fonts_in_collection(&bytes).unwrap_or(1);
-        for index in 0..num_fonts {
-            if let Ok(face) = Face::parse(&bytes, index) {
-                let mut face_family = None;
-                for name in face.names() {
-                    let name_id = name.name_id;
-                    // Name ID 16: Typographic Family, Name ID 1: Font Family
-                    if name_id == 16 || (name_id == 1 && face_family.is_none()) {
-                        if let Some(s) = name.to_string() {
-                            face_family = Some(s);
-                        }
-                    }
-                }
-                if let Some(face_family) = face_family {
-                    let face_slug = face_family.to_ascii_lowercase().replace(' ', "").replace('-', "");
-                    if face_slug == slug || face_slug.contains(&slug) || slug.contains(&face_slug) {
-                        let face_weight = face.weight().to_number();
-                        let face_italic = face.is_italic();
-                        
-                        let style_score = if face_italic == target_italic { 10 } else { 0 };
-                        let weight_diff = (face_weight as i32 - target_weight as i32).abs();
-                        let weight_score = 1000 - weight_diff;
-                        let score = style_score + weight_score;
+        let aliased = aliased_font_files(&slug)
+            .iter()
+            .any(|alias| path == PathBuf::from(alias));
 
-                        if score > best_score {
-                            best_score = score;
-                            best_bytes = Some(bytes.clone());
-                            best_index = index;
-                        }
-                    }
-                }
+        let face_count = ttf_parser::fonts_in_collection(&bytes).unwrap_or(1);
+        for index in 0..face_count {
+            let Ok(face) = Face::parse(&bytes, index) else {
+                continue;
+            };
+            // An aliased file is trusted by path; everything else has to name
+            // the family the document asked for.
+            if !aliased && !face_family_matches(&face, &slug) {
+                continue;
             }
+            candidates.push(SystemFace {
+                path: path.clone(),
+                index,
+                weight: face.weight().to_number(),
+                italic: face.is_italic(),
+                variable: face.is_variable(),
+            });
         }
     }
 
-    best_bytes.map(|bytes| (bytes, best_index))
+    candidates
+}
+
+fn face_family_matches(face: &Face<'_>, slug: &str) -> bool {
+    // Name ID 16 is the typographic family, 1 the legacy family name.
+    let mut names = face
+        .names()
+        .into_iter()
+        .filter(|name| name.name_id == 16 || name.name_id == 1)
+        .filter_map(|name| name.to_string());
+
+    names.any(|name| {
+        let face_slug = family_slug(&name);
+        face_slug == *slug || face_slug.contains(slug) || slug.contains(&face_slug)
+    })
+}
+
+fn choose_system_face<'a>(
+    candidates: &'a [SystemFace],
+    weight: &str,
+    style: &str,
+) -> Option<&'a SystemFace> {
+    let target_weight = normalize_weight(weight).parse::<u16>().unwrap_or(400);
+    let target_italic = style == "italic";
+
+    candidates.iter().max_by_key(|face| {
+        // Matching the style matters more than matching the weight, and a
+        // variable face can be instanced to whatever weight was asked for.
+        let style_score = if face.italic == target_italic {
+            10_000
+        } else {
+            0
+        };
+        let weight_score = if face.variable {
+            1_000
+        } else {
+            1_000 - i32::from(face.weight).abs_diff(i32::from(target_weight)) as i32
+        };
+        style_score + weight_score
+    })
 }
 
 #[cfg(test)]
@@ -567,13 +723,55 @@ mod tests {
     }
 
     #[test]
-    fn resolves_system_font_georgia() {
-        let res = find_system_font("Georgia", "400", "normal");
-        if cfg!(target_os = "macos") {
-            assert!(res.is_some(), "Should find Georgia on macOS system fonts");
-            let (bytes, index) = res.unwrap();
-            assert!(bytes.len() > 0);
-            assert_eq!(index, 0);
-        }
+    #[cfg_attr(not(target_os = "macos"), ignore = "searches macOS font directories")]
+    fn resolves_a_system_font_by_name() {
+        let candidates = system_font_candidates("Georgia");
+        assert!(
+            !candidates.is_empty(),
+            "Georgia should be discoverable in the macOS font directories"
+        );
+        assert!(choose_system_face(&candidates, "400", "normal").is_some());
+    }
+
+    #[test]
+    #[cfg_attr(not(target_os = "macos"), ignore = "searches macOS font directories")]
+    fn resolves_the_apple_ui_family_through_its_alias() {
+        // "SF Pro Display" is stored as `.SF NS` in SFNS.ttf, so it is only
+        // reachable through the alias table.
+        let candidates = system_font_candidates("SF Pro Display");
+        assert!(
+            !candidates.is_empty(),
+            "SF Pro Display should resolve to the system UI font"
+        );
+
+        let chosen = choose_system_face(&candidates, "600", "normal")
+            .expect("a face should be chosen for weight 600");
+        assert!(
+            chosen.variable,
+            "the macOS UI font is variable, so one face serves every weight"
+        );
+    }
+
+    #[test]
+    fn face_selection_prefers_the_requested_style() {
+        let candidates = vec![
+            SystemFace {
+                path: PathBuf::from("/fonts/regular.ttf"),
+                index: 0,
+                weight: 700,
+                italic: false,
+                variable: false,
+            },
+            SystemFace {
+                path: PathBuf::from("/fonts/italic.ttf"),
+                index: 0,
+                weight: 400,
+                italic: true,
+                variable: false,
+            },
+        ];
+
+        let chosen = choose_system_face(&candidates, "700", "italic").expect("a face is chosen");
+        assert_eq!(chosen.path, PathBuf::from("/fonts/italic.ttf"));
     }
 }

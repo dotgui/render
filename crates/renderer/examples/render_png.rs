@@ -1,8 +1,8 @@
 use std::{env, fs, path::Path, process};
 
 use dotgui_renderer::{
-    build_scene, compute_layout_with_text, paint_scene_to_png_with_assets_and_fonts, parse_gui_xml,
-    read_gui_package, AssetCache, FontStore,
+    build_scene, compute_taffy_layout_with_text, paint_scene_to_png_with_assets_and_fonts,
+    parse_gui_xml, read_gui_package, AssetCache, FontStore,
 };
 
 fn main() {
@@ -43,7 +43,10 @@ fn main() {
         eprintln!("warning: failed to resolve declared fonts: {err}");
         FontStore::default()
     });
-    let layout = compute_layout_with_text(&document, &fonts);
+    let layout = compute_taffy_layout_with_text(&document, &fonts).unwrap_or_else(|err| {
+        eprintln!("failed to lay out {input}: {err}");
+        process::exit(1);
+    });
     let scene = build_scene(&document, &layout);
     paint_scene_to_png_with_assets_and_fonts(&scene, &output, &cache, &fonts).unwrap_or_else(
         |err| {

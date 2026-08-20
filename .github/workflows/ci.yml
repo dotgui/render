@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo registry and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Layout snapshots (tests/layout_snapshots.rs) are font-independent and
+      # run everywhere. The golden PNGs depend on the host's fonts, so they are
+      # ignored off macOS and report as ignored, not as passing.
+      - run: cargo test --workspace
+
+  wasm:
+    name: wasm32 build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo registry and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
+
+      - run: rustup target add wasm32-unknown-unknown
+
+      # The browser build turns the `net` feature off; this job exists because
+      # the native tests cannot catch a dependency that fails to cross-compile.
+      - run: cargo build -p dotgui-renderer-wasm --target wasm32-unknown-unknown
+
+      - name: Check the renderer builds without network support
+        run: cargo check -p dotgui-renderer --no-default-features

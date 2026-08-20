@@ -1,4 +1,7 @@
-use crate::{GuiDocument, GuiMetadata, LayoutBox, LayoutRect};
+use crate::{
+    text_style::{resolve_text_runs, resolve_token},
+    GuiDocument, GuiMetadata, LayoutBox, LayoutRect,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -54,22 +57,32 @@ impl BorderWidths {
     }
 }
 
+/// One run of a `<text>` node, with every font property already resolved.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TextSegment {
+    pub value: String,
+    pub font_family: Option<String>,
+    pub font_weight: Option<String>,
+    pub font_style: Option<String>,
+    pub font_size: f32,
+    pub line_height: f32,
+    pub letter_spacing: f32,
+    pub color: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PaintContent {
     None,
     Text {
+        /// The full string with styling flattened away, for consumers that
+        /// only need the words.
         value: String,
-        font_family: Option<String>,
-        font_source: Option<String>,
-        font_weight: Option<String>,
-        font_style: Option<String>,
-        font_size: f32,
-        line_height: f32,
-        can_wrap: bool,
+        /// The styled runs this text is drawn as. Always at least one; a
+        /// `<text>` without `<segment>` children has exactly one.
+        segments: Vec<TextSegment>,
         max_lines: Option<usize>,
         truncate: bool,
         text_align: Option<String>,
-        letter_spacing: f32,
     },
     Image {
         src: String,
@@ -104,6 +117,7 @@ fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata) -> SceneNode {
         children: layout
             .children
             .iter()
+            .filter(|child| child.tag != "segment")
             .map(|child| build_scene_node(child, metadata))
             .collect(),
     }
@@ -111,46 +125,31 @@ fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata) -> SceneNode {
 
 fn content_for(layout: &LayoutBox, metadata: &GuiMetadata) -> PaintContent {
     match layout.tag.as_str() {
-        "text" => layout
-            .attributes
-            .get("value")
-            .cloned()
-            .map(|value| {
-                let font_size = text_style_number(layout, metadata, "font-size")
-                    .or_else(|| text_style_number(layout, metadata, "size"))
-                    .unwrap_or(16.0);
-                let line_height =
-                    text_style_number(layout, metadata, "line-height").unwrap_or(font_size * 1.2);
-                let font_family = text_style_value(layout, metadata, "font-family");
-                let font_weight = text_style_value(layout, metadata, "font-weight");
-                let font_style = text_style_value(layout, metadata, "font-style");
-                let font_source = font_family
-                    .as_ref()
-                    .and_then(|family| metadata.fonts.get(family))
-                    .map(|font| font.source.clone());
-                let can_wrap = layout.attributes.contains_key("w")
-                    || text_width_estimate(&value, font_size) > layout.rect.width + 0.5;
-                let max_lines = max_text_lines(layout);
-                let truncate = attr(layout, "truncate").is_some_and(|value| value != "false")
-                    || attr(layout, "overflow").is_some_and(|value| value == "ellipsis");
-                let text_align = attr(layout, "align").map(ToOwned::to_owned);
-                let letter_spacing = text_style_number(layout, metadata, "letter-spacing").unwrap_or(0.0);
-                PaintContent::Text {
-                    value,
-                    font_family,
-                    font_source,
-                    font_weight,
-                    font_style,
-                    font_size,
-                    line_height,
-                    can_wrap,
-                    max_lines,
-                    truncate,
-                    text_align,
-                    letter_spacing,
-                }
-            })
-            .unwrap_or(PaintContent::None),
+        "text" => {
+            let runs = resolve_text_runs(layout, metadata);
+            let value: String = runs.iter().map(|run| run.value.as_str()).collect();
+            let segments = runs
+                .into_iter()
+                .map(|run| TextSegment {
+                    value: run.value,
+                    font_family: run.style.font_family,
+                    font_weight: run.style.font_weight,
+                    font_style: run.style.font_style,
+                    font_size: run.style.font_size,
+                    line_height: run.style.line_height,
+                    letter_spacing: run.style.letter_spacing,
+                    color: run.style.color,
+                })
+                .collect();
+
+            PaintContent::Text {
+                value,
+                segments,
+                max_lines: max_text_lines(layout),
+                truncate: truncates(layout),
+                text_align: attr(layout, "align").map(ToOwned::to_owned),
+            }
+        }
         "img" => layout
             .attributes
             .get("src")
@@ -236,62 +235,29 @@ fn attr<'a>(layout: &'a LayoutBox, name: &str) -> Option<&'a str> {
     layout.attributes.get(name).map(String::as_str)
 }
 
-fn resolve_token(value: &str, metadata: &GuiMetadata) -> String {
-    value
-        .split_whitespace()
-        .map(|part| {
-            if let Some(name) = part.strip_prefix('$') {
-                metadata
-                    .tokens
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_else(|| part.to_owned())
-            } else {
-                part.to_owned()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 fn parse_number(value: &str) -> Option<f32> {
     value.trim().trim_end_matches("px").parse::<f32>().ok()
 }
 
-fn text_style_number(layout: &LayoutBox, metadata: &GuiMetadata, name: &str) -> Option<f32> {
-    attr(layout, name).and_then(parse_number).or_else(|| {
-        let style_name = attr(layout, "text-style").or_else(|| attr(layout, "style"))?;
-        let style = metadata.styles.get(style_name)?;
-        style.get(name).and_then(|value| parse_number(value))
-    })
-}
-
-fn text_style_value(layout: &LayoutBox, metadata: &GuiMetadata, name: &str) -> Option<String> {
-    attr(layout, name).map(str::to_owned).or_else(|| {
-        let style_name = attr(layout, "text-style").or_else(|| attr(layout, "style"))?;
-        let style = metadata.styles.get(style_name)?;
-        style.get(name).cloned()
-    })
-}
-
-fn text_width_estimate(value: &str, font_size: f32) -> f32 {
-    value.chars().count() as f32 * font_size * 0.55
-}
-
+/// Resolves how many lines a `<text>` node may occupy.
+///
+/// Kept in step with `crate::taffy_layout`, which reserves height for exactly
+/// this many lines: an explicit `max-lines` wins over `truncate`, which on its
+/// own means a single ellipsized line.
 fn max_text_lines(layout: &LayoutBox) -> Option<usize> {
-    let max_lines = attr(layout, "max-lines")
+    let explicit = attr(layout, "max-lines")
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|lines| *lines > 0);
-
-    if max_lines.is_some() {
-        return max_lines;
+    if explicit.is_some() {
+        return explicit;
     }
 
-    if attr(layout, "truncate").is_some_and(|value| value != "false") {
-        return Some(1);
-    }
+    truncates(layout).then_some(1)
+}
 
-    None
+fn truncates(layout: &LayoutBox) -> bool {
+    attr(layout, "truncate").is_some_and(|value| value != "false")
+        || attr(layout, "overflow").is_some_and(|value| value == "ellipsis")
 }
 
 #[cfg(test)]
@@ -332,17 +298,19 @@ mod tests {
             scene.root.children[0].content,
             PaintContent::Text {
                 value: "Hello".to_owned(),
-                font_family: None,
-                font_source: None,
-                font_weight: None,
-                font_style: None,
-                font_size: 16.0,
-                line_height: 19.2,
-                can_wrap: false,
+                segments: vec![TextSegment {
+                    value: "Hello".to_owned(),
+                    font_family: None,
+                    font_weight: None,
+                    font_style: None,
+                    font_size: 16.0,
+                    line_height: 19.2,
+                    letter_spacing: 0.0,
+                    color: None,
+                }],
                 max_lines: None,
                 truncate: false,
                 text_align: None,
-                letter_spacing: 0.0,
             }
         );
         assert_eq!(
@@ -379,17 +347,19 @@ mod tests {
             scene.root.children[0].content,
             PaintContent::Text {
                 value: "Roboto title".to_owned(),
-                font_family: Some("Roboto".to_owned()),
-                font_source: Some("google".to_owned()),
-                font_weight: Some("500".to_owned()),
-                font_style: None,
-                font_size: 22.0,
-                line_height: 28.0,
-                can_wrap: false,
+                segments: vec![TextSegment {
+                    value: "Roboto title".to_owned(),
+                    font_family: Some("Roboto".to_owned()),
+                    font_weight: Some("500".to_owned()),
+                    font_style: None,
+                    font_size: 22.0,
+                    line_height: 28.0,
+                    letter_spacing: 0.0,
+                    color: None,
+                }],
                 max_lines: None,
                 truncate: false,
                 text_align: None,
-                letter_spacing: 0.0,
             }
         );
     }
@@ -416,19 +386,63 @@ mod tests {
             scene.root.children[0].content,
             PaintContent::Text {
                 value: "Long message preview".to_owned(),
-                font_family: None,
-                font_source: None,
-                font_weight: None,
-                font_style: None,
-                font_size: 14.0,
-                line_height: 20.0,
-                can_wrap: true,
+                segments: vec![TextSegment {
+                    value: "Long message preview".to_owned(),
+                    font_family: None,
+                    font_weight: None,
+                    font_style: None,
+                    font_size: 14.0,
+                    line_height: 20.0,
+                    letter_spacing: 0.0,
+                    color: None,
+                }],
                 max_lines: Some(1),
                 truncate: true,
                 text_align: Some("right".to_owned()),
-                letter_spacing: 0.0,
             }
         );
+    }
+
+    #[test]
+    fn scene_carries_segments_without_making_them_nodes() {
+        let document = parse_gui_xml(
+            r##"
+            <gui version="0.2">
+              <tokens><color name="accent" value="#7ee2b8" /></tokens>
+              <col w="200">
+                <text font-size="14" fill="#111111">
+                  <segment value="Total " />
+                  <segment value="$12" font-weight="700" fill="$accent" />
+                </text>
+              </col>
+            </gui>
+            "##,
+        )
+        .expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+
+        let text = &scene.root.children[0];
+        assert!(
+            text.children.is_empty(),
+            "segments are text content, not paintable nodes"
+        );
+
+        let PaintContent::Text {
+            value, segments, ..
+        } = &text.content
+        else {
+            panic!("expected text content, got {:?}", text.content);
+        };
+
+        assert_eq!(value, "Total $12");
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].color.as_deref(), Some("#111111"));
+        assert_eq!(segments[0].font_weight, None);
+        assert_eq!(segments[1].color.as_deref(), Some("#7ee2b8"));
+        assert_eq!(segments[1].font_weight.as_deref(), Some("700"));
+        // Inherited from the parent rather than defaulted.
+        assert_eq!(segments[1].font_size, 14.0);
     }
 
     #[test]

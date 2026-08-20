@@ -193,6 +193,7 @@ fn is_remote_url(src: &str) -> bool {
     src.starts_with("https://") || src.starts_with("http://")
 }
 
+#[cfg(feature = "net")]
 fn fetch_url(url: &str) -> Result<Vec<u8>, AssetError> {
     let response = ureq::get(url).call().map_err(|err| AssetError::Fetch {
         url: url.to_owned(),
@@ -203,6 +204,15 @@ fn fetch_url(url: &str) -> Result<Vec<u8>, AssetError> {
     body.read_to_vec().map_err(|err| AssetError::Fetch {
         url: url.to_owned(),
         message: err.to_string(),
+    })
+}
+
+#[cfg(not(feature = "net"))]
+fn fetch_url(url: &str) -> Result<Vec<u8>, AssetError> {
+    Err(AssetError::Fetch {
+        url: url.to_owned(),
+        message: "network support is disabled; build with the \"net\" feature or                   supply this asset through the .gui package"
+            .to_owned(),
     })
 }
 

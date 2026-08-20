@@ -1,6 +1,6 @@
 use std::{env, fs, path::Path, process};
 
-use dotgui_renderer::{compute_layout, parse_gui_xml, read_gui_package_xml};
+use dotgui_renderer::{compute_taffy_layout, parse_gui_xml, read_gui_package_xml};
 
 fn main() {
     let path = env::args().nth(1).unwrap_or_else(|| {
@@ -30,7 +30,10 @@ fn main() {
         process::exit(1);
     });
 
-    let layout = compute_layout(&document);
+    let layout = compute_taffy_layout(&document).unwrap_or_else(|err| {
+        eprintln!("failed to lay out {path}: {err}");
+        process::exit(1);
+    });
     println!(
         "{}",
         serde_json::to_string_pretty(&layout).expect("layout serializes to json")
