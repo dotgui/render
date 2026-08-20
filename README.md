@@ -302,6 +302,29 @@ The renderer cache lives at:
 It is ignored by git. It can be deleted at any time; the renderer will recreate
 it as needed.
 
+## What The Tests Cover
+
+Three layers, deliberately split by what each one can promise:
+
+| Layer | Covers | Runs in CI |
+|---|---|---|
+| Unit tests | line breaking, font selection, grid translation, premultiplied alpha, per-segment colour | yes |
+| Layout snapshots | the box tree of every example — position and size of every node | yes |
+| Golden images | full-page appearance | no, by design |
+
+The golden images are a local tool. They cannot be made reliable on a build
+machine: two of the examples declare `source="system"` fonts, whose bytes
+differ per host and cannot be redistributed, and the other two resolve Google
+fonts and remote icons over the network, which is rate limited. Both failure
+modes have happened. Making them hermetic would mean vendoring third-party
+fonts and icons into this repository, which is not worth it — the layout
+snapshots already catch geometry regressions on every platform, and the unit
+tests cover painting behaviour. What the goldens add is a picture to look at,
+which is worth having and not worth a red build.
+
+So a green build means: nothing moved, and painting still behaves. It does not
+mean anyone looked. Run the goldens by hand when changing anything visual.
+
 ## Backlog
 
 ### Preview And Developer Experience

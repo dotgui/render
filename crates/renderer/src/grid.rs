@@ -17,8 +17,11 @@
 use crate::{text_style::resolve_token, GuiMetadata, GuiNode};
 use taffy::prelude::*;
 
-/// Which grid shape a `<grid>` element declares.
+/// Which grid shape an element declares.
 pub(crate) enum GridMode {
+    /// `<stack direction="grid">` — the pre-RFC spelling, which sizes tracks
+    /// with `grid-columns` / `grid-rows` and gives children no placement.
+    LegacyStack,
     /// `unit="8"` — a coordinate space of fixed square tracks.
     Unit(f32),
     /// `cols` / `rows` — explicit track templates.
@@ -33,6 +36,9 @@ pub(crate) enum GridMode {
 /// validation error, and the reference renderer resolves it the same way, so
 /// this warns rather than changing the geometry.
 pub(crate) fn grid_mode(node: &GuiNode, metadata: &GuiMetadata) -> Option<GridMode> {
+    if node.tag == "stack" && attr(node, metadata, "direction").as_deref() == Some("grid") {
+        return Some(GridMode::LegacyStack);
+    }
     if node.tag != "grid" {
         return None;
     }
@@ -63,6 +69,20 @@ pub(crate) fn apply_container(
     mode: &GridMode,
 ) {
     match mode {
+        GridMode::LegacyStack => {
+            if let Some(columns) = number(node, metadata, "grid-columns") {
+                style.grid_template_columns = evenly_sized_tracks(columns as u16);
+            }
+            if let Some(rows) = number(node, metadata, "grid-rows") {
+                style.grid_template_rows = evenly_sized_tracks(rows as u16);
+            }
+            if let Some(gap) = number(node, metadata, "grid-col-gap") {
+                style.gap.width = length(gap);
+            }
+            if let Some(gap) = number(node, metadata, "grid-row-gap") {
+                style.gap.height = length(gap);
+            }
+        }
         GridMode::Unit(unit) => {
             // The canvas size divided by the unit gives the coordinate space.
             // Without a size there is nothing to divide, so no tracks are set
