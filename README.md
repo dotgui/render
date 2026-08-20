@@ -165,6 +165,55 @@ Inventory tags and attributes across examples:
 cargo run -q -p dotgui-renderer --example inventory examples
 ```
 
+## Grid
+
+`<grid>` has three shapes, chosen by which attributes are present (RFC-0032).
+
+**Track grid** — the parent declares track sizes:
+
+```xml
+<grid cols="200 1fr" rows="56 1fr" gap="0" w="fill" h="fill">
+  <row gc="1/-1" gr="1" h="fill">…</row>   <!-- header, spans all columns -->
+  <col gc="1" gr="2">…</col>               <!-- sidebar -->
+  <col gc="2" gr="2">…</col>               <!-- content -->
+</grid>
+```
+
+```text
+cols="3"         →  three equal columns
+cols="240 1fr"   →  240px then the remaining space
+cols="auto 1fr"  →  content-sized then the rest
+cols="fill 200"  →  as many >=200px columns as fit
+```
+
+A bare integer means different things by position: alone it is a track *count*,
+inside a list it is a pixel *size*.
+
+**Unit grid** — the parent declares a unit size, becoming a snapped coordinate
+space of `w / unit` by `h / unit` squares. For freely placed and overlapping
+elements; children at the same coordinates stack in document order.
+
+```xml
+<grid unit="8" w="320" h="400">
+  <img gc="1/40" gr="1/14" fit="cover" src="$cover" />        <!-- fills the span -->
+  <img gc="13" gr="9" w="128" h="128" radius="64" src="$me" /><!-- fixed px size -->
+</grid>
+```
+
+**Auto flow** — `columns="N"` remains valid as the legacy spelling of `cols="N"`.
+
+### Placement
+
+`gc` and `gr` are grid-column and grid-row, named to avoid colliding with the
+`<col>` and `<row>` tags. Both accept a line (`"3"`) or an inclusive range
+(`"2/5"` is columns 2 through 5). Negative indices count from the end, so
+`gc="1/-1"` spans every column. `col-span` and `row-span` span a count from the
+current position, and `col-span="all"` reaches the last line.
+
+`w` and `h` are always pixels, in every mode. A child fills its span when the
+matching axis carries a range and no explicit size is given; an explicit `w` or
+`h` always wins.
+
 ## Rich Text
 
 A `<text>` node can be split into styled runs with `<segment>`:
@@ -251,7 +300,6 @@ it as needed.
 
 - Continue matching the HTML renderer's row/col/stack behavior.
 - Improve fill/hug behavior in nested mixed-axis layouts.
-- Add grid layout support.
 - Improve frame/group absolute positioning semantics.
 
 ### Text Fidelity

@@ -1,5 +1,5 @@
 use crate::{
-    text,
+    grid, text,
     text_style::{resolve_text_runs, resolve_token, TextRunStyle},
     ApproxTextMeasurer, GuiDocument, GuiMetadata, GuiNode, LayoutBox, LayoutRect, TextMeasurer,
 };
@@ -54,7 +54,7 @@ pub fn compute_taffy_layout_with_text(
         &mut tree,
         &document.root,
         &document.metadata,
-        FlexDirection::Column,
+        ParentLayout::Column,
     )?;
 
     let width = number_attr(&document.root, &document.metadata, "w");
@@ -76,13 +76,32 @@ pub fn compute_taffy_layout_with_text(
     read_layout(&tree, &built, 0.0, 0.0).map_err(TaffyLayoutError::from)
 }
 
+/// What kind of container a node sits inside, which decides how `fill` and the
+/// grid placement attributes are read.
+#[derive(Clone, Copy, PartialEq)]
+enum ParentLayout {
+    Row,
+    Column,
+    Grid,
+}
+
+fn parent_layout_of(node: &GuiNode, metadata: &GuiMetadata) -> ParentLayout {
+    if grid::grid_mode(node, metadata).is_some() {
+        ParentLayout::Grid
+    } else if flex_direction_for(node) == FlexDirection::Row {
+        ParentLayout::Row
+    } else {
+        ParentLayout::Column
+    }
+}
+
 fn build_node<'a>(
     tree: &mut TaffyTree<TextContext>,
     node: &'a GuiNode,
     metadata: &GuiMetadata,
-    parent_direction: FlexDirection,
+    parent_layout: ParentLayout,
 ) -> Result<BuiltNode<'a>, TaffyError> {
-    let direction = flex_direction_for(node);
+    let layout = parent_layout_of(node, metadata);
     // `appearance` describes the parent's paint and `segment` is text content;
     // neither is a box. Keeping segments out also leaves `<text>` childless, so
     // Taffy still calls the measure function on it.
@@ -90,7 +109,7 @@ fn build_node<'a>(
         .children
         .iter()
         .filter(|child| child.tag != "appearance" && child.tag != "segment")
-        .map(|child| build_node(tree, child, metadata, direction))
+        .map(|child| build_node(tree, child, metadata, layout))
         .collect::<Result<Vec<_>, _>>()?;
     let child_ids = children
         .iter()
@@ -99,7 +118,7 @@ fn build_node<'a>(
 
     warn_on_unsupported_tag(node);
 
-    let style = style_for_node(node, metadata, parent_direction);
+    let style = style_for_node(node, metadata, parent_layout);
     let node_id = if !child_ids.is_empty() {
         tree.new_with_children(style, &child_ids)?
     } else if let Some(context) = text_context(node, metadata) {
@@ -179,11 +198,7 @@ fn read_children(
     Ok(children)
 }
 
-fn style_for_node(
-    node: &GuiNode,
-    metadata: &GuiMetadata,
-    parent_direction: FlexDirection,
-) -> Style {
+fn style_for_node(node: &GuiNode, metadata: &GuiMetadata, parent_layout: ParentLayout) -> Style {
     let mut style = Style {
         display: display_for(node),
         flex_direction: flex_direction_for(node),
@@ -205,10 +220,7 @@ fn style_for_node(
             top: length(padding_side(node, metadata, Side::Top)),
             bottom: length(padding_side(node, metadata, Side::Bottom)),
         },
-        gap: Size {
-            width: gap_dimension(node, metadata),
-            height: gap_dimension(node, metadata),
-        },
+        gap: gap_size(node, metadata),
         align_items: align_items_for(node),
         justify_content: justify_content_for(node),
         // A declared size is a fixed size, as in a design tool: only `fill`
@@ -221,15 +233,23 @@ fn style_for_node(
     // is "take the free space", i.e. flex-grow. Across it, stretching to the
     // parent's width/height is what `dimension_attr` already returns, and
     // growing there would collapse the box's own size contribution.
-    let fills_main_axis = if parent_direction == FlexDirection::Row {
-        attr_is(node, "w", "fill")
-    } else {
-        attr_is(node, "h", "fill")
+    let fills_main_axis = match parent_layout {
+        ParentLayout::Row => attr_is(node, "w", "fill"),
+        ParentLayout::Column => attr_is(node, "h", "fill"),
+        // A grid child has no main axis to grow along; `fill` resolves to a
+        // percentage of the track it occupies, via `dimension_attr`.
+        ParentLayout::Grid => false,
     };
     if fills_main_axis {
         style.flex_grow = 1.0;
         style.flex_shrink = 1.0;
         style.flex_basis = zero();
+    }
+    if let Some(mode) = grid::grid_mode(node, metadata) {
+        grid::apply_container(&mut style, node, metadata, &mode);
+    }
+    if parent_layout == ParentLayout::Grid {
+        grid::apply_placement(&mut style, node, metadata);
     }
     if is_absolute(node) {
         style.position = Position::Absolute;
@@ -288,15 +308,31 @@ fn dimension_attr(node: &GuiNode, metadata: &GuiMetadata, name: &str) -> Dimensi
     }
 }
 
-fn gap_dimension(node: &GuiNode, metadata: &GuiMetadata) -> LengthPercentage {
-    if node
-        .attributes
-        .get("gap")
-        .is_some_and(|value| value == "auto")
-    {
-        zero()
-    } else {
-        number_attr(node, metadata, "gap").map_or(zero(), length)
+/// `gap="16"` is uniform; `gap="16 8"` is column gap then row gap.
+///
+/// `gap="auto"` means "push the children apart", handled as zero spacing plus
+/// space-between justification.
+fn gap_size(node: &GuiNode, metadata: &GuiMetadata) -> Size<LengthPercentage> {
+    let Some(raw) = node.attributes.get("gap") else {
+        return Size {
+            width: zero(),
+            height: zero(),
+        };
+    };
+
+    let resolved = resolve_token(raw, metadata);
+    let mut values = resolved.split_whitespace().map(|part| {
+        if part == "auto" {
+            return zero();
+        }
+        parse_number(part).map_or(zero(), length)
+    });
+
+    let column = values.next().unwrap_or(zero());
+    let row = values.next().unwrap_or(column);
+    Size {
+        width: column,
+        height: row,
     }
 }
 
@@ -806,6 +842,221 @@ mod tests {
         assert!(text.rect.width > 0.0);
         assert!(text.children.iter().all(|child| child.tag == "segment"));
         assert!(text.children.iter().all(|child| child.rect.width == 0.0));
+    }
+
+    // ── RFC-0032 grid ────────────────────────────────────────────────────
+
+    #[test]
+    fn track_grid_splits_equal_columns() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <grid cols="3" w="300" h="50">
+                <rect h="10" gc="1" />
+                <rect h="10" gc="2" />
+                <rect h="10" gc="3" />
+              </grid>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.x, 0.0);
+        assert_eq!(layout.children[1].rect.x, 100.0);
+        assert_eq!(layout.children[2].rect.x, 200.0);
+    }
+
+    #[test]
+    fn track_grid_mixes_pixel_and_fraction_tracks() {
+        // A bare integer inside a track list is a pixel size, not a count.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <grid cols="200 1fr" w="500" h="50">
+                <rect h="10" gc="1" />
+                <rect h="10" gc="2" />
+              </grid>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[1].rect.x, 200.0);
+    }
+
+    #[test]
+    fn track_grid_fills_responsive_columns() {
+        // "fill 200" is repeat(auto-fill, minmax(200px, 1fr)): 500px fits two.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <grid cols="fill 200" w="500" h="50">
+                <rect h="10" gc="1/-1" />
+                <rect h="10" gc="2" />
+              </grid>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.width, 500.0);
+        assert_eq!(layout.children[1].rect.x, 250.0);
+    }
+
+    #[test]
+    fn grid_ranges_are_inclusive() {
+        // gc="2/3" is columns 2 and 3, i.e. CSS 2 / 4.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <grid cols="4" w="400" h="50">
+                <rect h="10" gc="2/3" />
+              </grid>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.x, 100.0);
+        assert_eq!(layout.children[0].rect.width, 200.0);
+    }
+
+    #[test]
+    fn a_negative_range_end_reaches_the_last_column() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <grid cols="4" w="400" h="50">
+                <rect h="10" gc="1/-1" />
+              </grid>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.width, 400.0);
+    }
+
+    #[test]
+    fn a_range_fills_its_span_only_without_an_explicit_size() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <grid cols="4" w="400" h="50">
+                <rect h="10" gc="1/2" />
+                <rect h="10" gc="3/4" w="30" />
+              </grid>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.width, 200.0, "range fills the span");
+        assert_eq!(layout.children[1].rect.width, 30.0, "explicit w wins");
+    }
+
+    #[test]
+    fn col_span_spans_from_the_current_position() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <grid cols="4" w="400" h="50">
+                <rect h="10" gc="2" col-span="2" />
+              </grid>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.x, 100.0);
+        assert_eq!(layout.children[0].rect.width, 200.0);
+    }
+
+    #[test]
+    fn unit_grid_places_children_on_a_snapped_coordinate_space() {
+        // unit=8 over 320x400 is a 40 by 50 space; column 13 starts at 96px.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <grid unit="8" w="320" h="400">
+                <rect gc="13" gr="9" w="128" h="128" />
+              </grid>
+            </gui>
+            "#,
+        );
+
+        let child = &layout.children[0];
+        assert_eq!(child.rect.x, 96.0);
+        assert_eq!(child.rect.y, 64.0);
+        assert_eq!(child.rect.width, 128.0);
+        assert_eq!(child.rect.height, 128.0);
+    }
+
+    #[test]
+    fn unit_grid_ranges_fill_their_span() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <grid unit="8" w="320" h="400">
+                <rect gc="1/40" gr="1/14" />
+              </grid>
+            </gui>
+            "#,
+        );
+
+        let child = &layout.children[0];
+        assert_eq!(child.rect.width, 320.0);
+        assert_eq!(child.rect.height, 112.0);
+    }
+
+    #[test]
+    fn unit_grid_children_may_overlap() {
+        // Document order is paint order, so overlapping is how layering works.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <grid unit="8" w="320" h="320">
+                <rect gc="5" gr="5" w="64" h="64" />
+                <rect gc="5" gr="5" w="32" h="32" />
+              </grid>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.x, layout.children[1].rect.x);
+        assert_eq!(layout.children[0].rect.y, layout.children[1].rect.y);
+    }
+
+    #[test]
+    fn legacy_columns_attribute_still_works() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <grid columns="2" w="200" h="50">
+                <rect h="10" />
+                <rect h="10" />
+              </grid>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.x, 0.0);
+        assert_eq!(layout.children[1].rect.x, 100.0);
+    }
+
+    #[test]
+    fn two_value_gap_sets_column_then_row_spacing() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <grid cols="2" w="216" gap="16 8">
+                <rect h="10" />
+                <rect h="10" />
+                <rect h="10" />
+              </grid>
+            </gui>
+            "#,
+        );
+
+        // Columns: (216 - 16) / 2 = 100 each, second starting at 116.
+        assert_eq!(layout.children[1].rect.x, 116.0);
+        // Third wraps to row two, 8px below the first row. The grid is left
+        // to hug: a fixed height would stretch the auto rows to fill it, as
+        // CSS `align-content: normal` does.
+        assert_eq!(layout.children[2].rect.y, 18.0);
     }
 
     #[test]
