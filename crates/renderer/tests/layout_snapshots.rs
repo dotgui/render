@@ -142,6 +142,12 @@ fn write_node(out: &mut String, node: &LayoutBox, depth: usize) {
         indent = depth * 2,
     );
     for child in &node.children {
+        // `<segment>` and `<appearance>` ride in the box tree to reach the
+        // scene, but carry no geometry. A snapshot of positions and sizes has
+        // nothing to say about them.
+        if child.tag == "segment" || child.tag == "appearance" {
+            continue;
+        }
         write_node(out, child, depth + 1);
     }
 }

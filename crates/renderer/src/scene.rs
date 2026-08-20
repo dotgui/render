@@ -19,8 +19,31 @@ pub struct SceneNode {
     pub radius: Option<f32>,
     pub opacity: f32,
     pub clip: bool,
+    /// Visual effects from `<appearance>`, in document order.
+    pub effects: Vec<Effect>,
     pub content: PaintContent,
     pub children: Vec<SceneNode>,
+}
+
+/// One entry of a node's effect stack (RFC-0027).
+///
+/// The fields mirror CSS `box-shadow` and `backdrop-filter`, because that is
+/// what the format's values mean and what the reference renderer emits.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Effect {
+    /// `drop-shadow`, `inner-shadow`, `layer-blur`, `background-blur`, `glass`.
+    pub kind: String,
+    pub x: f32,
+    pub y: f32,
+    /// Blur radius. Twice the Gaussian sigma, as in CSS.
+    pub radius: f32,
+    /// Grows the shadow shape before blurring; negative values shrink it.
+    pub spread: f32,
+    pub color: Option<String>,
+    /// Multiplied into the colour's alpha.
+    pub opacity: f32,
+    /// Backdrop saturation percentage, for `glass`.
+    pub saturation: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -113,14 +136,47 @@ fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata) -> SceneNode {
             .and_then(parse_number)
             .unwrap_or(1.0),
         clip: attr(layout, "clip").is_some_and(|value| value != "false"),
+        effects: effects_for(layout, metadata),
         content: content_for(layout, metadata),
         children: layout
             .children
             .iter()
-            .filter(|child| child.tag != "segment")
+            .filter(|child| child.tag != "segment" && child.tag != "appearance")
             .map(|child| build_scene_node(child, metadata))
             .collect(),
     }
+}
+
+/// Reads the ordered effect stack out of a node's `<appearance>` block.
+fn effects_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Effect> {
+    layout
+        .children
+        .iter()
+        .filter(|child| child.tag == "appearance")
+        .flat_map(|appearance| appearance.children.iter())
+        .filter(|child| child.tag == "effect")
+        // `visible="false"` keeps an effect in the document without drawing it.
+        .filter(|effect| attr(effect, "visible") != Some("false"))
+        .filter_map(|effect| {
+            let number = |name: &str, fallback: f32| {
+                attr(effect, name)
+                    .map(|value| resolve_token(value, metadata))
+                    .and_then(|value| parse_number(&value))
+                    .unwrap_or(fallback)
+            };
+
+            Some(Effect {
+                kind: attr(effect, "type")?.to_owned(),
+                x: number("x", 0.0),
+                y: number("y", 0.0),
+                radius: number("radius", 0.0),
+                spread: number("spread", 0.0),
+                color: attr(effect, "color").map(|value| resolve_token(value, metadata)),
+                opacity: number("opacity", 1.0),
+                saturation: number("saturation", 180.0),
+            })
+        })
+        .collect()
 }
 
 fn content_for(layout: &LayoutBox, metadata: &GuiMetadata) -> PaintContent {

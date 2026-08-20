@@ -163,6 +163,35 @@ Inventory tags and attributes across examples:
 cargo run -q -p dotgui-renderer --example inventory examples
 ```
 
+## Effects
+
+`<appearance>` carries an ordered effect stack (RFC-0027), drawn in document
+order:
+
+```xml
+<row w="fill" h="90" radius="16" fill="$surface">
+  <appearance>
+    <effect type="drop-shadow" x="0" y="2" radius="6" spread="0" color="#0000001F" />
+    <effect type="drop-shadow" x="0" y="16" radius="32" spread="-8" color="#00000029" />
+  </appearance>
+</row>
+```
+
+| Type | Behaviour |
+|---|---|
+| `drop-shadow` | the node's outline, grown by `spread`, moved by `x`/`y`, blurred, drawn behind |
+| `inner-shadow` | the same shape inverted and clipped to the node, drawn over the fill |
+| `background-blur` | blurs whatever is already painted behind the node |
+| `glass` | background blur plus a `saturation` percentage |
+| `layer-blur` | not implemented; reported rather than dropped silently |
+
+`radius` is a blur radius as in CSS, which is twice the Gaussian sigma, and
+`opacity` multiplies into the colour's alpha. `visible="false"` keeps an effect
+in the document without drawing it.
+
+Blur is three successive box blurs, the approximation the SVG filter spec
+prescribes and browsers use.
+
 ## Grid
 
 `<grid>` has three shapes, chosen by which attributes are present (RFC-0032).
@@ -362,7 +391,8 @@ mean anyone looked. Run the goldens by hand when changing anything visual.
 ### Painting
 
 - Improve antialiasing quality for text and vector shapes.
-- Add shadows, opacity groups, blend modes, and effects.
+- Add opacity groups and blend modes.
+- Add layer blur.
 - Add masks and clipping paths.
 - Add PDF export once the scene model is stable.
 

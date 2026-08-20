@@ -181,30 +181,41 @@ fn read_children(
         .map(|child| read_layout(tree, child, x, y))
         .collect::<Result<Vec<_>, _>>()?;
 
-    // `<segment>` never entered the layout tree — it is text content, and
-    // keeping it out is what lets Taffy measure `<text>` as a leaf. The scene
-    // still needs its text and styling, so it rides along without geometry.
+    // `<segment>` and `<appearance>` never entered the layout tree: one is text
+    // content, the other describes the parent's paint. Keeping segments out is
+    // also what lets Taffy measure `<text>` as a leaf. Both still have to reach
+    // the scene, so they ride along without geometry.
     children.extend(
         built
             .source
             .children
             .iter()
-            .filter(|child| child.tag == "segment")
-            .map(|child| LayoutBox {
-                tag: child.tag.clone(),
-                attributes: child.attributes.clone(),
-                text: child.text.clone(),
-                rect: LayoutRect {
-                    x,
-                    y,
-                    width: 0.0,
-                    height: 0.0,
-                },
-                children: Vec::new(),
-            }),
+            .filter(|child| child.tag == "segment" || child.tag == "appearance")
+            .map(|child| content_box(child, x, y)),
     );
 
     Ok(children)
+}
+
+/// Copies a non-layout subtree into the box tree, carrying attributes and text
+/// but no geometry.
+fn content_box(node: &GuiNode, x: f32, y: f32) -> LayoutBox {
+    LayoutBox {
+        tag: node.tag.clone(),
+        attributes: node.attributes.clone(),
+        text: node.text.clone(),
+        rect: LayoutRect {
+            x,
+            y,
+            width: 0.0,
+            height: 0.0,
+        },
+        children: node
+            .children
+            .iter()
+            .map(|child| content_box(child, x, y))
+            .collect(),
+    }
 }
 
 fn style_for_node(node: &GuiNode, metadata: &GuiMetadata, parent_layout: ParentLayout) -> Style {
