@@ -1,0 +1,38 @@
+<gui version="0.2" name="Dashboard">
+  <grid cols="200 1fr" rows="56 1fr" gap="0" w="720" h="420" fill="#f2f3f5">
+    <row gc="1/-1" gr="1" h="fill" fill="#ffffff" p="0 20" align="middle-left" gap="auto">
+      <text value="Dashboard" font-size="17" font-weight="600" fill="#111111" />
+      <ellipse w="28" h="28" fill="#c9d2dd" />
+    </row>
+
+    <col gc="1" gr="2" fill="#f7f7f8" p="12" gap="2">
+      <row w="fill" p="10 12" radius="8" fill="#007aff" align="middle-left">
+        <text value="Home" fill="#ffffff" font-size="14" font-weight="500" />
+      </row>
+      <row w="fill" p="10 12" align="middle-left">
+        <text value="Settings" font-size="14" fill="#333333" />
+      </row>
+      <row w="fill" p="10 12" align="middle-left">
+        <text value="Members" font-size="14" fill="#333333" />
+      </row>
+    </col>
+
+    <col gc="2" gr="2" p="32" gap="16">
+      <text value="Overview" font-size="22" font-weight="700" fill="#111111" />
+      <grid cols="fill 150" gap="12" w="fill">
+        <col h="90" radius="10" fill="#ffffff" border="1 #e3e6ea" p="12" gap="6">
+          <text value="Revenue" font-size="12" fill="#8a94a3" />
+          <text value="$12.4k" font-size="20" font-weight="700" fill="#111111" />
+        </col>
+        <col h="90" radius="10" fill="#ffffff" border="1 #e3e6ea" p="12" gap="6">
+          <text value="Orders" font-size="12" fill="#8a94a3" />
+          <text value="318" font-size="20" font-weight="700" fill="#111111" />
+        </col>
+        <col h="90" radius="10" fill="#ffffff" border="1 #e3e6ea" p="12" gap="6">
+          <text value="Refunds" font-size="12" fill="#8a94a3" />
+          <text value="4" font-size="20" font-weight="700" fill="#111111" />
+        </col>
+      </grid>
+    </col>
+  </grid>
+</gui>

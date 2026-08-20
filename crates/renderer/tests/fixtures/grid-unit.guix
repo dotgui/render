@@ -1,0 +1,34 @@
+<gui version="0.2" name="Profile card">
+  <grid unit="8" w="320" h="400" fill="#ffffff" radius="16" clip>
+    <rect gc="1/40" gr="1/14" fill="#3b6ea5" />
+    <ellipse gc="13" gr="9" w="128" h="128" fill="#d7e2ee" border="4 #ffffff" />
+    <rect gc="26" gr="21" w="32" h="32" fill="#34c759" radius="4" border="2 #ffffff" />
+
+    <col gc="2/39" gr="27/32" align="middle-center" gap="2">
+      <text value="Sarah Johnson" font-size="18" font-weight="700" fill="#111111" />
+      <text value="@sarahj" font-size="13" fill="#888888" />
+    </col>
+
+    <row gc="2/39" gr="34/41" gap="0" align="middle-center">
+      <col w="fill" align="middle-center" gap="2">
+        <text value="248" font-size="17" font-weight="700" fill="#111111" />
+        <text value="Posts" font-size="12" fill="#888888" />
+      </col>
+      <col w="fill" align="middle-center" gap="2">
+        <text value="12.4k" font-size="17" font-weight="700" fill="#111111" />
+        <text value="Followers" font-size="12" fill="#888888" />
+      </col>
+      <col w="fill" align="middle-center" gap="2">
+        <text value="180" font-size="17" font-weight="700" fill="#111111" />
+        <text value="Following" font-size="12" fill="#888888" />
+      </col>
+    </row>
+
+    <row gc="3" gr="44" w="128" h="48" fill="#007aff" radius="8" align="middle-center">
+      <text value="Follow" fill="#ffffff" font-size="14" font-weight="600" />
+    </row>
+    <row gc="22" gr="44" w="128" h="48" fill="#f0f0f0" radius="8" align="middle-center">
+      <text value="Message" font-size="14" font-weight="600" fill="#111111" />
+    </row>
+  </grid>
+</gui>

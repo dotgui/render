@@ -28,7 +28,17 @@ fn layout_matches_committed_snapshots() {
     let snapshots_dir = manifest_dir.join("tests").join("snapshots");
     let updating = std::env::var_os("UPDATE_SNAPSHOTS").is_some();
 
+    // Hand-written fixtures cover features no example package uses yet.
+    let fixtures_dir = manifest_dir.join("tests").join("fixtures");
     let mut example_paths = Vec::new();
+    if let Ok(entries) = fs::read_dir(&fixtures_dir) {
+        for entry in entries {
+            let path = entry.expect("fixture entry is readable").path();
+            if path.extension().is_some_and(|ext| ext == "guix") {
+                example_paths.push(path);
+            }
+        }
+    }
     let entries = fs::read_dir(&examples_dir).unwrap_or_else(|err| {
         panic!(
             "examples directory {} is unreadable ({err}); this test would \
@@ -96,8 +106,15 @@ fn layout_matches_committed_snapshots() {
 
 fn snapshot_for(path: &Path) -> String {
     let bytes = fs::read(path).expect("example is readable");
-    let xml = read_gui_package_xml(&bytes)
-        .unwrap_or_else(|err| panic!("{} did not open as a .gui package: {err}", path.display()));
+    // `.gui` is a package; `.guix` is the raw document.
+    let xml = if path.extension().is_some_and(|ext| ext == "guix") {
+        String::from_utf8(bytes)
+            .unwrap_or_else(|err| panic!("{} is not UTF-8: {err}", path.display()))
+    } else {
+        read_gui_package_xml(&bytes).unwrap_or_else(|err| {
+            panic!("{} did not open as a .gui package: {err}", path.display())
+        })
+    };
     let document =
         parse_gui_xml(&xml).unwrap_or_else(|err| panic!("{} did not parse: {err}", path.display()));
     let layout = compute_taffy_layout(&document)
