@@ -8,6 +8,19 @@
 //! Goldens are generated on macOS. Text that falls back to a system font paints
 //! differently elsewhere, so the tests are ignored on other platforms rather
 //! than reporting a failure nobody can act on.
+//!
+//! Examples that declare `source="system"` fonts are ignored by default even on
+//! macOS. The host's copy of a system family is not something this repository
+//! controls or may redistribute, and it changes between OS versions — a CI
+//! runner and a developer machine resolve different bytes for `SF Pro Display`.
+//! Those goldens are a local visual reference, not a gate:
+//!
+//! ```text
+//! cargo test -p dotgui-renderer --test golden_tests -- --ignored
+//! ```
+//!
+//! Geometry is still covered everywhere by `layout_snapshots.rs`, and painting
+//! by the goldens whose fonts resolve reproducibly through the Google resolver.
 
 use dotgui_renderer::{
     build_scene, compute_taffy_layout_with_text, paint_scene_to_png_bytes, parse_gui_xml,
@@ -171,6 +184,7 @@ fn write_actual(goldens_dir: &Path, golden_name: &str, png: &[u8]) -> PathBuf {
     path
 }
 
+/// A golden whose fonts resolve reproducibly on any machine.
 macro_rules! golden_test {
     ($name:ident, $file:expr, $golden:expr) => {
         #[test]
@@ -184,7 +198,19 @@ macro_rules! golden_test {
     };
 }
 
+/// A golden that depends on a `source="system"` family, so its bytes differ
+/// between hosts. Run with `--ignored`.
+macro_rules! system_font_golden_test {
+    ($name:ident, $file:expr, $golden:expr) => {
+        #[test]
+        #[ignore = "depends on a system font whose version differs per host; run with --ignored"]
+        fn $name() {
+            run_golden_test($file, $golden);
+        }
+    };
+}
+
 golden_test!(golden_checkout, "anvil-ash-checkout.gui", "checkout");
 golden_test!(golden_arcade, "arcade-return-item-android.gui", "arcade");
-golden_test!(golden_harbor, "harbor-report-post-ios.gui", "harbor");
-golden_test!(golden_grain, "grain-photo-adjust.gui", "grain");
+system_font_golden_test!(golden_harbor, "harbor-report-post-ios.gui", "harbor");
+system_font_golden_test!(golden_grain, "grain-photo-adjust.gui", "grain");

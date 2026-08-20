@@ -105,7 +105,17 @@ Golden-image tests compare four examples against committed PNGs. They only run
 on macOS, because text that falls back to a system font paints differently
 elsewhere. Each golden records the fingerprints of the fonts it was generated
 with in a `.fonts` file, so a host with a different SF Pro or Roboto says so
-instead of reporting an unexplained pixel diff. Regenerate both together:
+instead of reporting an unexplained pixel diff.
+
+The two examples that declare `source="system"` fonts are ignored by default:
+the host's copy of `SF Pro Display` differs between OS versions and cannot be
+pinned here, so they are a local reference rather than a CI gate. Run them with:
+
+```bash
+cargo test -p dotgui-renderer --test golden_tests -- --ignored
+```
+
+Regenerate the references and their font locks together:
 
 ```bash
 UPDATE_GOLDENS=1 cargo test -p dotgui-renderer --test golden_tests
