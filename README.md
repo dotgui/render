@@ -101,24 +101,22 @@ intentional layout change, read the diff and regenerate:
 UPDATE_SNAPSHOTS=1 cargo test -p dotgui-renderer --test layout_snapshots
 ```
 
-Golden-image tests compare four examples against committed PNGs. They only run
-on macOS, because text that falls back to a system font paints differently
-elsewhere. Each golden records the fingerprints of the fonts it was generated
-with in a `.fonts` file, so a host with a different SF Pro or Roboto says so
-instead of reporting an unexplained pixel diff.
-
-The two examples that declare `source="system"` fonts are ignored by default:
-the host's copy of `SF Pro Display` differs between OS versions and cannot be
-pinned here, so they are a local reference rather than a CI gate. Run them with:
+Golden-image tests compare four examples against committed PNGs. They are a
+local tool rather than a CI gate, and are ignored by default: two of them
+declare `source="system"` fonts whose bytes differ per host, and the other two
+resolve Google fonts and remote icons over the network, which is rate limited.
+Each golden records the fingerprints of the fonts it was made with in a
+`.fonts` file, so a mismatch reports itself instead of showing an unexplained
+pixel diff.
 
 ```bash
 cargo test -p dotgui-renderer --test golden_tests -- --ignored
 ```
 
-Regenerate the references and their font locks together:
+After an intentional rendering change, regenerate and eyeball them:
 
 ```bash
-UPDATE_GOLDENS=1 cargo test -p dotgui-renderer --test golden_tests
+UPDATE_GOLDENS=1 cargo test -p dotgui-renderer --test golden_tests -- --ignored
 ```
 
 Build the browser bundle. The `net` feature is off for wasm32 (its TLS stack
