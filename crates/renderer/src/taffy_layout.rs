@@ -240,6 +240,7 @@ fn style_for_node(node: &GuiNode, metadata: &GuiMetadata, parent_layout: ParentL
             top: length(padding_side(node, metadata, Side::Top)),
             bottom: length(padding_side(node, metadata, Side::Bottom)),
         },
+        aspect_ratio: aspect_ratio(node, metadata),
         gap: gap_size(node, metadata),
         align_items: align_items_for(node),
         justify_content: justify_content_for(node),
@@ -317,6 +318,28 @@ fn flex_direction_for(node: &GuiNode) -> FlexDirection {
         "row" => FlexDirection::Row,
         _ => FlexDirection::Column,
     }
+}
+
+/// `aspect-ratio="16/9"`, or a bare number.
+///
+/// Taffy resolves the ratio itself, so this only has to read it. A ratio with
+/// a zero or negative side would make the box collapse, so it is dropped.
+fn aspect_ratio(node: &GuiNode, metadata: &GuiMetadata) -> Option<f32> {
+    let raw = resolve_token(node.attributes.get("aspect-ratio")?, metadata);
+
+    let ratio = match raw.split_once('/') {
+        Some((width, height)) => {
+            let width = parse_number(width.trim())?;
+            let height = parse_number(height.trim())?;
+            if height == 0.0 {
+                return None;
+            }
+            width / height
+        }
+        None => parse_number(raw.trim())?,
+    };
+
+    (ratio > 0.0 && ratio.is_finite()).then_some(ratio)
 }
 
 /// Min/max constraints, read under the spec name with the short form kept as an
@@ -1207,6 +1230,57 @@ mod tests {
         );
 
         assert_eq!(layout.rect.width, 80.0);
+    }
+
+    #[test]
+    fn aspect_ratio_sizes_the_axis_left_open() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="200" h="200">
+                <rect w="160" aspect-ratio="16/9" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.width, 160.0);
+        assert_eq!(layout.children[0].rect.height, 90.0);
+    }
+
+    #[test]
+    fn aspect_ratio_takes_a_bare_number_too() {
+        // A row, so width is the main axis and stays free for the ratio to
+        // decide; across a column's cross axis the stretch would win instead.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <row w="200" h="200">
+                <rect h="60" aspect-ratio="2" />
+              </row>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.width, 120.0);
+    }
+
+    #[test]
+    fn a_degenerate_aspect_ratio_is_ignored() {
+        // A zero or negative ratio would collapse the box rather than shape it.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="200" h="200">
+                <rect w="80" h="40" aspect-ratio="16/0" />
+                <rect w="80" h="40" aspect-ratio="-2" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.height, 40.0);
+        assert_eq!(layout.children[1].rect.height, 40.0);
     }
 
     #[test]

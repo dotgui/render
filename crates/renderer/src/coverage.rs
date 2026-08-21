@@ -28,6 +28,14 @@ pub const SHARED: &[&str] = &[
     "isolation",
     "z-index",
     "mask",
+    "rotation",
+    "scale-x",
+    "scale-y",
+    "skew-x",
+    "skew-y",
+    "flip",
+    "transform-origin",
+    "aspect-ratio",
     "min-width",
     "max-width",
     "min-height",
@@ -326,6 +334,8 @@ mod tests {
             ("frame", "outline-offset"),
             ("frame", "clip-path"),
             ("group", "mask-src"),
+            ("rect", "rotation"),
+            ("img", "aspect-ratio"),
         ] {
             assert!(
                 is_supported(tag, attribute, true),

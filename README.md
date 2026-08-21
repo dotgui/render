@@ -68,6 +68,8 @@ This is an early native renderer. It can already:
 - composite with `blend`, `isolation`, `filter` and `z-index`, and reuse named
   effect stacks with `effect-style` and colours with `fill-style`
 - mask with `clip-path`, an image `mask-src`, or a `mask` child
+- transform with `rotation`, `scale-x`/`scale-y`, `skew-x`/`skew-y`, `flip` and
+  `transform-origin`, and shape boxes with `aspect-ratio`
 - draw rich text: `<segment>` runs with their own weight, style, size, and
   colour, wrapping as one continuous string
 - resolve Google fonts through the renderer cache, and system fonts from the
@@ -278,6 +280,37 @@ blank.
 `z-index` is resolved when the scene is built, not when it is painted: a node
 without one sorts as 0 and the sort is stable, so document order still decides
 between equals.
+
+### Transforms
+
+`rotation`, `scale-x`, `scale-y`, `skew-x`, `skew-y` and `flip` compose into
+one matrix per node, pivoted on `transform-origin`:
+
+```xml
+<rect w="80" h="30" fill="$accent" rotation="30" />
+<img src="assets/photo.webp" w="120" h="80" flip="h" scale-y="1.2" />
+<col w="fill" rotation="45" transform-origin="top-left" />
+```
+
+The parts apply in CSS's order — rotate, then flip and the scales, then the
+skews — and each is a further multiplication, so `skew-x` and `skew-y` compose
+as two matrices rather than one, which is what keeps the cross term CSS
+produces. `flip` is a mirror, so it folds into the scales as a factor of -1 and
+multiplies with an explicit `scale-x` rather than replacing it.
+
+`transform-origin` takes the spec's hyphenated keywords (`top-left`,
+`middle-right`), CSS's own (`left`, `bottom`), percentages and lengths. It
+defaults to the centre, as CSS does when a transform is present.
+
+A transformed node is painted onto its own layer and the matrix is applied when
+that layer is composited — the same layer blend modes, filters and masks use.
+That is one matrix for a whole subtree rather than one threaded through every
+draw, and the price is resampling: a transformed node is slightly softer than
+drawing its geometry transformed would be.
+
+`aspect-ratio` is layout, not paint. It takes `16/9` or a bare number and is
+handed to Taffy, so it shapes whichever axis the layout leaves free — across a
+column's cross axis the stretch still wins.
 
 ### Masks And Clipping
 
