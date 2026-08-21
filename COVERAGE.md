@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **41** |
+| Implemented | **43** |
 | Partial | **1** |
-| Not implemented | **78** |
+| Not implemented | **76** |
 | Total | **120** |
 
 ## Not implemented
@@ -19,8 +19,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 
 | Property | Elements |
 |---|---|
-| `<border>` | `<appearance>` |
-| `<fill>` | `<appearance>` |
 | `aspect-ratio` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `baseline-shift` | `<text>` |
 | `blend` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
@@ -110,7 +108,9 @@ Read on some elements but not others — usually cheaper to finish than to start
 
 | Property | Elements |
 |---|---|
+| `<border>` | `<appearance>` |
 | `<effect>` | `<appearance>` |
+| `<fill>` | `<appearance>` |
 | `abs` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `align` | `<stack>`, `<row>`, `<col>`, `<text>` |
 | `border` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |

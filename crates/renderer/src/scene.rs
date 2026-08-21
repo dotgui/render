@@ -14,8 +14,17 @@ pub struct Scene {
 pub struct SceneNode {
     pub tag: String,
     pub bounds: LayoutRect,
-    pub fill: Option<String>,
-    pub border: Option<Border>,
+    /// The node's fill stack, in document order: the first entry is painted
+    /// first and the last one ends up on top.
+    ///
+    /// A node with a `fill` attribute and no `<appearance>` fills has exactly
+    /// one entry.
+    pub fills: Vec<Fill>,
+    /// The node's border stack, in document order.
+    ///
+    /// Per the spec, an `<appearance>` carrying at least one `<border>` makes
+    /// the `border` shorthand attribute on the node ignored.
+    pub borders: Vec<Border>,
     pub radius: Option<f32>,
     pub opacity: f32,
     pub clip: bool,
@@ -23,6 +32,35 @@ pub struct SceneNode {
     pub effects: Vec<Effect>,
     pub content: PaintContent,
     pub children: Vec<SceneNode>,
+}
+
+impl SceneNode {
+    /// The colour the node paints with, for consumers that need one value:
+    /// text runs inheriting their colour, and placeholder shapes.
+    ///
+    /// The topmost solid fill wins, because that is the one a viewer sees.
+    pub fn fill_color(&self) -> Option<&str> {
+        self.fills
+            .iter()
+            .rev()
+            .find(|fill| fill.kind == "color")
+            .and_then(|fill| fill.value.as_deref())
+    }
+}
+
+/// One entry of a node's fill stack.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Fill {
+    /// `color`, `linear-gradient`, `radial-gradient`, `angular-gradient` or
+    /// `image`. Only `color` is painted today; the rest are carried so a
+    /// consumer can see them and so the stack keeps its order.
+    pub kind: String,
+    /// The paint itself: a colour for `type="color"`, the gradient function
+    /// for a gradient, unset for an image.
+    pub value: Option<String>,
+    /// `src` and `fit`, for `type="image"`.
+    pub src: Option<String>,
+    pub fit: Option<String>,
 }
 
 /// One entry of a node's effect stack (RFC-0027).
@@ -124,11 +162,8 @@ fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata) -> SceneNode {
     SceneNode {
         tag: layout.tag.clone(),
         bounds: layout.rect,
-        fill: attr(layout, "fill")
-            .or_else(|| attr(layout, "color"))
-            .map(|value| resolve_token(value, metadata)),
-        border: attr(layout, "border")
-            .and_then(|value| parse_border(&resolve_token(value, metadata))),
+        fills: fills_for(layout, metadata),
+        borders: borders_for(layout, metadata),
         radius: attr(layout, "radius")
             .map(|value| resolve_token(value, metadata))
             .and_then(|value| parse_number(&value)),
@@ -147,16 +182,97 @@ fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata) -> SceneNode {
     }
 }
 
-/// Reads the ordered effect stack out of a node's `<appearance>` block.
-fn effects_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Effect> {
+/// The children of a node's `<appearance>` blocks, in document order.
+///
+/// `visible="false"` keeps an entry in the document without drawing it, so it
+/// is dropped here rather than carried into the scene.
+fn appearance_children<'a>(
+    layout: &'a LayoutBox,
+    tag: &'a str,
+) -> impl Iterator<Item = &'a LayoutBox> {
     layout
         .children
         .iter()
         .filter(|child| child.tag == "appearance")
         .flat_map(|appearance| appearance.children.iter())
-        .filter(|child| child.tag == "effect")
-        // `visible="false"` keeps an effect in the document without drawing it.
-        .filter(|effect| attr(effect, "visible") != Some("false"))
+        .filter(move |child| child.tag == tag)
+        .filter(|child| attr(child, "visible") != Some("false"))
+}
+
+/// Reads the ordered fill stack out of a node's `<appearance>` block, falling
+/// back to the `fill` shorthand attribute.
+fn fills_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Fill> {
+    let fills: Vec<Fill> = appearance_children(layout, "fill")
+        .map(|fill| Fill {
+            // The corpus writes `type="color"`; a `<fill>` with a bare `value`
+            // and no type is a colour too.
+            kind: attr(fill, "type").unwrap_or("color").to_owned(),
+            value: attr(fill, "value").map(|value| resolve_token(value, metadata)),
+            src: attr(fill, "src").map(ToOwned::to_owned),
+            fit: attr(fill, "fit").map(ToOwned::to_owned),
+        })
+        .collect();
+
+    if !fills.is_empty() {
+        return fills;
+    }
+
+    attr(layout, "fill")
+        .or_else(|| attr(layout, "color"))
+        .map(|value| Fill {
+            kind: "color".to_owned(),
+            value: Some(resolve_token(value, metadata)),
+            src: None,
+            fit: None,
+        })
+        .into_iter()
+        .collect()
+}
+
+/// Reads the ordered border stack out of a node's `<appearance>` block.
+///
+/// Per the spec, one `<border>` child is enough to make the node's `border`
+/// shorthand attribute ignored.
+fn borders_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Border> {
+    let borders: Vec<Border> = appearance_children(layout, "border")
+        .filter_map(|border| {
+            let color = attr(border, "color").map(|value| resolve_token(value, metadata))?;
+            let widths = parse_border_widths(
+                &attr(border, "w")
+                    .map(|value| resolve_token(value, metadata))
+                    .unwrap_or_else(|| "1".to_owned())
+                    .split_whitespace()
+                    .filter_map(parse_number)
+                    .collect::<Vec<_>>(),
+            )?;
+
+            Some(Border {
+                width: widths
+                    .top
+                    .max(widths.right)
+                    .max(widths.bottom)
+                    .max(widths.left),
+                widths,
+                color,
+                style: attr(border, "style").unwrap_or("solid").to_owned(),
+                align: attr(border, "align").unwrap_or("center").to_owned(),
+            })
+        })
+        .collect();
+
+    if !borders.is_empty() {
+        return borders;
+    }
+
+    attr(layout, "border")
+        .and_then(|value| parse_border(&resolve_token(value, metadata)))
+        .into_iter()
+        .collect()
+}
+
+/// Reads the ordered effect stack out of a node's `<appearance>` block.
+fn effects_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Effect> {
+    appearance_children(layout, "effect")
         .filter_map(|effect| {
             let number = |name: &str, fallback: f32| {
                 attr(effect, name)
@@ -321,6 +437,12 @@ mod tests {
     use super::*;
     use crate::{compute_taffy_layout, parse_gui_xml};
 
+    fn scene_of(xml: &str) -> Scene {
+        let document = parse_gui_xml(xml).expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        build_scene(&document, &layout)
+    }
+
     #[test]
     fn builds_paintable_scene_from_layout() {
         let document = parse_gui_xml(
@@ -342,12 +464,9 @@ mod tests {
         let scene = build_scene(&document, &layout);
 
         assert_eq!(scene.name.as_deref(), Some("Scene Smoke"));
-        assert_eq!(scene.root.fill.as_deref(), Some("#ffffff"));
-        assert_eq!(scene.root.border.as_ref().unwrap().color, "#dddddd");
-        assert_eq!(
-            scene.root.border.as_ref().unwrap().widths,
-            BorderWidths::uniform(1.0)
-        );
+        assert_eq!(scene.root.fill_color(), Some("#ffffff"));
+        assert_eq!(scene.root.borders[0].color, "#dddddd");
+        assert_eq!(scene.root.borders[0].widths, BorderWidths::uniform(1.0));
         assert_eq!(scene.root.radius, Some(8.0));
         assert!(scene.root.clip);
         assert_eq!(
@@ -519,7 +638,134 @@ mod tests {
         let layout = compute_taffy_layout(&document).expect("layout computes");
         let scene = build_scene(&document, &layout);
 
-        assert_eq!(scene.root.children[0].fill.as_deref(), Some("#17211B"));
+        assert_eq!(scene.root.children[0].fill_color(), Some("#17211B"));
+    }
+
+    #[test]
+    fn appearance_fill_and_border_reach_the_scene() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50" radius="12">
+                <appearance>
+                  <fill type="color" value="#17211B" />
+                  <border color="#E0CFC4" w="1" align="inside" />
+                </appearance>
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(scene.root.fill_color(), Some("#17211B"));
+        let border = &scene.root.borders[0];
+        assert_eq!(border.color, "#E0CFC4");
+        assert_eq!(border.widths, BorderWidths::uniform(1.0));
+        assert_eq!(border.align, "inside");
+    }
+
+    #[test]
+    fn appearance_fills_and_borders_stack_in_document_order() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50">
+                <appearance>
+                  <fill type="color" value="#000000" />
+                  <fill type="linear-gradient" value="linear-gradient(180deg, #FFF 0%, #000 100%)" />
+                  <border color="#111111" w="1" />
+                  <border color="#222222" w="4" align="outside" />
+                </appearance>
+              </col>
+            </gui>
+            "##,
+        );
+
+        let values: Vec<_> = scene
+            .root
+            .fills
+            .iter()
+            .map(|fill| (fill.kind.as_str(), fill.value.as_deref()))
+            .collect();
+        assert_eq!(
+            values,
+            vec![
+                ("color", Some("#000000")),
+                (
+                    "linear-gradient",
+                    Some("linear-gradient(180deg, #FFF 0%, #000 100%)")
+                ),
+            ]
+        );
+
+        let colors: Vec<_> = scene
+            .root
+            .borders
+            .iter()
+            .map(|border| border.color.as_str())
+            .collect();
+        assert_eq!(colors, vec!["#111111", "#222222"]);
+    }
+
+    #[test]
+    fn an_appearance_border_beats_the_border_shorthand() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50" fill="#ffffff" border="2 #dddddd">
+                <appearance>
+                  <border color="#E0CFC4" w="1" align="inside" />
+                </appearance>
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(scene.root.borders.len(), 1);
+        assert_eq!(scene.root.borders[0].color, "#E0CFC4");
+        // The node keeps its `fill` shorthand: only borders are overridden.
+        assert_eq!(scene.root.fill_color(), Some("#ffffff"));
+    }
+
+    #[test]
+    fn invisible_appearance_fills_and_borders_are_dropped() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50">
+                <appearance>
+                  <fill type="color" value="#000000" visible="false" />
+                  <border color="#111111" w="1" visible="false" />
+                </appearance>
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert!(scene.root.fills.is_empty());
+        assert!(scene.root.borders.is_empty());
+    }
+
+    #[test]
+    fn appearance_fill_and_border_resolve_tokens() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <tokens>
+                <token name="card" value="#FFFFFF" />
+                <token name="outline-variant" value="#E0CFC4" />
+              </tokens>
+              <col w="100" h="50">
+                <appearance>
+                  <fill type="color" value="$card" />
+                  <border color="$outline-variant" w="1" align="inside" />
+                </appearance>
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(scene.root.fill_color(), Some("#FFFFFF"));
+        assert_eq!(scene.root.borders[0].color, "#E0CFC4");
     }
 
     #[test]
@@ -536,7 +782,7 @@ mod tests {
         let scene = build_scene(&document, &layout);
 
         assert_eq!(
-            scene.root.border.as_ref().unwrap().widths,
+            scene.root.borders[0].widths,
             BorderWidths {
                 top: 1.0,
                 right: 0.0,
