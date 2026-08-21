@@ -31,6 +31,12 @@ struct TextContext {
     max_lines: Option<usize>,
     /// Where lines may break, so measurement wraps the way painting will.
     wrap: text::WrapOptions,
+    /// The list marker's text, whose width is reserved on the first line.
+    list_marker: Option<String>,
+    /// Left indent for the whole block, from `list-level`.
+    list_indent: f32,
+    /// Whether `leading-trim` takes the half-leading off the first line.
+    leading_trim: bool,
 }
 
 /// Lays the document out using rough per-character width estimates.
@@ -59,6 +65,7 @@ pub fn compute_taffy_layout_with_text(
         &document.root,
         &document.metadata,
         ParentLayout::Column,
+        1,
     )?;
 
     let width = number_attr(&document.root, &document.metadata, "w");
@@ -112,16 +119,30 @@ fn build_node<'a>(
     node: &'a GuiNode,
     metadata: &GuiMetadata,
     parent_layout: ParentLayout,
+    ordinal: usize,
 ) -> Result<BuiltNode<'a>, TaffyError> {
     let layout = parent_layout_of(node, metadata);
     // `appearance` describes the parent's paint and `segment` is text content;
     // neither is a box. Keeping segments out also leaves `<text>` childless, so
     // Taffy still calls the measure function on it.
+    // A decimal list item is numbered by its place among its list-item
+    // siblings, and the marker's width is part of measurement, so the count
+    // has to happen here rather than only when the scene is built.
+    let mut child_ordinal = 0usize;
     let children = node
         .children
         .iter()
         .filter(|child| child.tag != "appearance" && child.tag != "segment")
-        .map(|child| build_node(tree, child, metadata, layout))
+        .map(|child| {
+            if child
+                .attributes
+                .get("list")
+                .is_some_and(|value| value != "none")
+            {
+                child_ordinal += 1;
+            }
+            build_node(tree, child, metadata, layout, child_ordinal.max(1))
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let child_ids = children
         .iter()
@@ -133,7 +154,7 @@ fn build_node<'a>(
     let style = style_for_node(node, metadata, parent_layout);
     let node_id = if !child_ids.is_empty() {
         tree.new_with_children(style, &child_ids)?
-    } else if let Some(context) = text_context(node, metadata) {
+    } else if let Some(context) = text_context(node, metadata, ordinal) {
         // Taffy only measures childless leaves, which is exactly where text
         // lives: `<text>` carries its string in an attribute.
         tree.new_leaf_with_context(style, context)?
@@ -504,7 +525,7 @@ fn padding_side(node: &GuiNode, metadata: &GuiMetadata, side: Side) -> f32 {
     }
 }
 
-fn text_context(node: &GuiNode, metadata: &GuiMetadata) -> Option<TextContext> {
+fn text_context(node: &GuiNode, metadata: &GuiMetadata, ordinal: usize) -> Option<TextContext> {
     if node.tag != "text" {
         return None;
     }
@@ -518,6 +539,12 @@ fn text_context(node: &GuiNode, metadata: &GuiMetadata) -> Option<TextContext> {
             node.attributes.get("word-break").map(String::as_str),
             number_attr(node, metadata, "paragraph-indent").unwrap_or(0.0),
         ),
+        list_marker: crate::scene::list_marker_text(&node.attributes, metadata, ordinal),
+        list_indent: crate::scene::list_indent(&node.attributes, metadata),
+        leading_trim: node
+            .attributes
+            .get("leading-trim")
+            .is_some_and(|value| value != "normal"),
     })
 }
 
@@ -590,7 +617,18 @@ fn measure_text(
         })
         .collect::<Vec<_>>();
 
-    let mut lines = text::wrap_runs(&runs, wrap_width, &measure, context.wrap);
+    // A list item's marker takes room on the first line, and its indent takes
+    // room from every line. Painting reserves the same, or a box would be
+    // sized for one wrap and drawn with another.
+    let marker_width = context
+        .list_marker
+        .as_deref()
+        .map_or(0.0, |marker| measure(marker, 0));
+    let mut wrap = context.wrap;
+    wrap.indent += marker_width;
+    let wrap_width = wrap_width.map(|width| (width - context.list_indent).max(1.0));
+
+    let mut lines = text::wrap_runs(&runs, wrap_width, &measure, wrap);
     if let Some(max_lines) = context.max_lines {
         lines.truncate(max_lines.max(1));
     }
@@ -607,11 +645,26 @@ fn measure_text(
         })
         .sum();
 
+    // `leading-trim` takes the half-leading off the top of the block, so the
+    // box is as tall as the text rather than as tall as its leading.
+    let trim = if context.leading_trim {
+        let style = &context.runs[0].style;
+        text_measurer.leading_trim(
+            style.font_family.as_deref(),
+            style.font_weight.as_deref(),
+            style.font_style.as_deref(),
+            style.font_size,
+            style.line_height,
+        )
+    } else {
+        0.0
+    };
+
     Size {
-        width: known_dimensions
-            .width
-            .unwrap_or_else(|| text::max_line_width(&lines, &measure)),
-        height: known_dimensions.height.unwrap_or(height),
+        width: known_dimensions.width.unwrap_or_else(|| {
+            text::max_line_width(&lines, &measure) + marker_width + context.list_indent
+        }),
+        height: known_dimensions.height.unwrap_or((height - trim).max(0.0)),
     }
 }
 

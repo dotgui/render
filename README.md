@@ -74,6 +74,8 @@ This is an early native renderer. It can already:
   and resample images with `object-position` and `image-rendering`
 - break lines by `white-space`, `text-wrap` and `word-break`, and space them
   with `word-spacing`, `paragraph-indent` and `paragraph-spacing`
+- draw list markers with `list`/`list-level`/`list-marker`, and place text with
+  `vertical-align`, `leading-trim` and `baseline-shift`
 - draw rich text: `<segment>` runs with their own weight, style, size, and
   colour, wrapping as one continuous string
 - resolve Google fonts through the renderer cache, and system fonts from the
@@ -308,6 +310,30 @@ from a bottom margin, as kit does.
 
 `thickness` gives a `<line>` its height. A `<line>` is a divider with no height
 of its own, and the spec's default of 1px is what it drew before.
+
+### Lists And Vertical Metrics
+
+`list` marks a `<text>` node as a list item and draws a marker before its first
+line: a bullet for `disc`, a number for `decimal`, or whatever `list-marker`
+says. `list-level` indents the whole block, one 16px step per level.
+
+A decimal item is numbered by its place among its **list-item siblings**, so a
+plain `<text>` in between does not take a number — as in CSS, where only a
+`display: list-item` box advances the counter. `disc` items advance it too;
+they simply do not show it.
+
+`vertical-align` places a block shorter than its box: `top` (the default),
+`center` or `bottom`.
+
+`leading-trim="cap-height"` takes the half-leading off the top of the block, so
+a capital's top edge sits on the box's top edge instead of half a line below
+it. Layout and painting call the same `leading_trim` — one number rather than
+an ascender and a cap height each side combines for itself — so a trimmed box
+is sized and drawn to the same edge.
+
+`baseline-shift` lifts one run off the line's shared baseline without moving
+anything else on it, which is how a superscript is written. It is not
+inherited: a nested run would otherwise double its parent's shift.
 
 ### Fonts And Images
 
@@ -663,7 +689,6 @@ mean anyone looked. Run the goldens by hand when changing anything visual.
 
 - Improve line-height, baseline, ascender/descender, and leading behavior.
 - Improve wrapping to match the HTML renderer and Figma-exported widths.
-- Add list marker support.
 - Add better text shaping for complex scripts and ligatures.
 
 ### Fonts
