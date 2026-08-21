@@ -60,7 +60,8 @@ This is an early native renderer. It can already:
 - build a paintable scene tree
 - render fills, rounded rectangles, ellipses, borders, sided borders, dividers,
   SVG images, text, truncation, and simple text alignment
-- paint the ordered `<fill>`, `<border>` and `<effect>` stacks of `<appearance>`
+- paint the ordered `<fill>`, `<border>` and `<effect>` stacks of `<appearance>`,
+  including linear, radial and conic gradients and image fills
 - draw outlines with `outline`/`outline-offset`, squircle corners with
   `corner-smoothing`, and the `shadow` shorthand
 - clip per axis with `overflow-x`/`overflow-y`, or to the node's shape with
@@ -200,6 +201,16 @@ A `<fill>` carries `type` and `value`; `type="color"` is painted, and gradient
 and image fills are carried into the scene but not painted yet. A `<border>`
 carries `color`, `w`, `align` and `style`; `w` takes one to four numbers, like
 the `border` shorthand.
+
+A `<fill>` value may be a colour, a gradient or an image. Gradients follow CSS
+— `linear-gradient()`, `radial-gradient()` and `conic-gradient()`, with
+`angular-gradient()` accepted as the spec's name for the last — and angles
+follow CSS too, so `0deg` points up and they turn clockwise. Stops that declare
+no position are spaced evenly. An image fill is drawn with its `fit` mode and
+held inside the node's own outline, so a rounded or elliptical node clips it.
+
+The same values work in the `fill` attribute, since it is the same fill with
+one entry: `fill="linear-gradient(135deg, #FF6B6B 0%, #4ECDC4 100%)"`.
 
 When `<appearance>` declares no fill, the node's `fill` attribute is used
 instead; the same goes for `<effect>` and the `shadow` shorthand. When it
@@ -705,7 +716,6 @@ mean anyone looked. Run the goldens by hand when changing anything visual.
 
 ### Painting
 
-- Paint gradient and image fills; they reach the scene but are not drawn yet.
 - Add `border-image`; the spec types it as a string but does not define the
   value grammar, so it needs pinning down against kit first.
 - Improve antialiasing quality for text and vector shapes.

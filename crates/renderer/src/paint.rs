@@ -3,7 +3,7 @@ use crate::{
     clip_path::{self, ClipBox},
     filter::apply_filter,
     fonts::FontAxes,
-    text, AssetCache, Border, BorderWidths, Effect, Fill, FontFace, FontStore, ImageMask,
+    gradient, text, AssetCache, Border, BorderWidths, Effect, Fill, FontFace, FontStore, ImageMask,
     PaintContent, Scene, SceneNode, TextSegment, Transform2D,
 };
 use fontdue::{Font, FontSettings};
@@ -233,7 +233,7 @@ fn paint_node_direct(
 ) {
     paint_backdrop_effects(pixmap, node);
     paint_drop_shadows(pixmap, node);
-    paint_fill(pixmap, node);
+    paint_fill(pixmap, node, asset_cache);
     paint_inner_shadows(pixmap, node);
     paint_content(pixmap, node, font, asset_cache, fonts);
 
@@ -723,22 +723,39 @@ fn saturate(pixmap: &mut Pixmap, amount: f32) {
 }
 
 /// Paints the node's fill stack, bottom entry first.
-fn paint_fill(pixmap: &mut Pixmap, node: &SceneNode) {
+fn paint_fill(pixmap: &mut Pixmap, node: &SceneNode, asset_cache: Option<&AssetCache>) {
     if matches!(node.content, PaintContent::Text { .. }) {
         return;
     }
 
     for fill in &node.fills {
-        paint_one_fill(pixmap, node, fill);
+        paint_one_fill(pixmap, node, fill, asset_cache);
     }
 }
 
-fn paint_one_fill(pixmap: &mut Pixmap, node: &SceneNode, fill: &Fill) {
-    // Gradients and image fills are carried in the scene but not painted yet;
-    // `parse_color` rejects them, which is what keeps them from drawing black.
+fn paint_one_fill(
+    pixmap: &mut Pixmap,
+    node: &SceneNode,
+    fill: &Fill,
+    asset_cache: Option<&AssetCache>,
+) {
+    if fill.kind == "image" {
+        paint_image_fill(pixmap, node, fill, asset_cache);
+        return;
+    }
+
     let Some(value) = fill.value.as_deref() else {
         return;
     };
+
+    // A gradient is a shader over the node's shape rather than a colour, and
+    // it can arrive either as `type="linear-gradient"` or as a `fill`
+    // attribute whose value happens to be one, so the value decides.
+    if gradient::is_gradient(value) {
+        paint_gradient_fill(pixmap, node, value);
+        return;
+    }
+
     let Some(color) = parse_color(value, node.opacity) else {
         return;
     };
@@ -773,6 +790,108 @@ fn paint_one_fill(pixmap: &mut Pixmap, node: &SceneNode, fill: &Fill) {
         node.radius.unwrap_or(0.0),
         node.corner_smoothing,
         color,
+    );
+}
+
+/// The node's own outline, as the path a fill covers.
+fn node_fill_path(node: &SceneNode) -> Option<tiny_skia::Path> {
+    if node.tag == "ellipse" {
+        return ellipse_path(
+            node.bounds.x,
+            node.bounds.y,
+            node.bounds.width,
+            node.bounds.height,
+        );
+    }
+
+    smoothed_rect_path(
+        node.bounds.x,
+        node.bounds.y,
+        node.bounds.width,
+        paint_height(node),
+        node.radius.unwrap_or(0.0),
+        node.corner_smoothing,
+    )
+}
+
+fn paint_gradient_fill(pixmap: &mut Pixmap, node: &SceneNode, value: &str) {
+    let area = gradient::GradientBox {
+        x: node.bounds.x,
+        y: node.bounds.y,
+        width: node.bounds.width,
+        height: paint_height(node),
+    };
+    // Stops resolve through the same colour parser every other paint uses, so
+    // a hex with alpha means the same thing in a gradient as out of one.
+    let Some(shader) = gradient::gradient_shader(value, area, node.opacity, &parse_color) else {
+        return;
+    };
+    let Some(path) = node_fill_path(node) else {
+        return;
+    };
+
+    let paint = Paint {
+        shader,
+        anti_alias: true,
+        ..Default::default()
+    };
+    pixmap.fill_path(
+        &path,
+        &paint,
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
+}
+
+/// Paints `<fill type="image" src="..." fit="...">`.
+///
+/// The image is drawn onto a layer and composited through the node's own
+/// outline, so it is held inside a rounded or elliptical node the way a colour
+/// fill would be — whatever `fit` mode it uses.
+fn paint_image_fill(
+    pixmap: &mut Pixmap,
+    node: &SceneNode,
+    fill: &Fill,
+    asset_cache: Option<&AssetCache>,
+) {
+    let (Some(cache), Some(src)) = (asset_cache, fill.src.as_deref()) else {
+        return;
+    };
+    let Ok(asset) = cache.resolve(src) else {
+        return;
+    };
+    let Some(mut layer) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+        return;
+    };
+
+    let drawn =
+        if asset.media_type.as_deref() == Some("image/svg+xml") || looks_like_svg(&asset.bytes) {
+            render_svg_asset(&mut layer, node, &asset.bytes)
+        } else {
+            render_raster_asset(
+                &mut layer,
+                node,
+                &asset.bytes,
+                ImageStyle {
+                    fit: fill.fit.as_deref(),
+                    ..Default::default()
+                },
+            )
+        };
+
+    if drawn.is_err() {
+        return;
+    }
+
+    let mask = create_clip_mask(pixmap.width(), pixmap.height(), node);
+    pixmap.draw_pixmap(
+        0,
+        0,
+        layer.as_ref(),
+        &PixmapPaint::default(),
+        Transform::identity(),
+        mask.as_ref(),
     );
 }
 
@@ -3406,6 +3525,158 @@ mod tests {
             flat - lifted,
             8,
             "the shifted run rides exactly the 8px asked for"
+        );
+    }
+
+    #[test]
+    fn a_linear_gradient_runs_between_its_stops() {
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <rect abs x="0" y="0" w="40" h="40"
+                      fill="linear-gradient(180deg, #000000 0%, #ffffff 100%)" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        let top = painted.get_pixel(20, 1).0[0];
+        let middle = painted.get_pixel(20, 20).0[0];
+        let bottom = painted.get_pixel(20, 38).0[0];
+
+        assert!(top < 20, "starts black, got {top}");
+        assert!(bottom > 235, "ends white, got {bottom}");
+        assert!(
+            (100..=155).contains(&middle),
+            "and passes mid grey, got {middle}"
+        );
+    }
+
+    #[test]
+    fn a_gradient_angle_turns_the_way_css_turns() {
+        // 90deg runs to the right, so the dark end is on the left.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <rect abs x="0" y="0" w="40" h="40"
+                      fill="linear-gradient(90deg, #000000 0%, #ffffff 100%)" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert!(painted.get_pixel(1, 20).0[0] < 20, "dark at the left");
+        assert!(painted.get_pixel(38, 20).0[0] > 235, "light at the right");
+        // And nothing changes down the box.
+        assert_eq!(painted.get_pixel(20, 2).0, painted.get_pixel(20, 37).0);
+    }
+
+    #[test]
+    fn a_gradient_stops_carry_their_own_alpha() {
+        // Transparent black over white stays white at the top and darkens down.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <rect abs x="0" y="0" w="40" h="40"
+                      fill="linear-gradient(180deg, #00000000 0%, #000000ff 100%)" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert!(painted.get_pixel(20, 1).0[0] > 240, "clear at the top");
+        assert!(painted.get_pixel(20, 38).0[0] < 20, "opaque at the bottom");
+    }
+
+    #[test]
+    fn a_gradient_is_held_inside_the_nodes_corners() {
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <ellipse abs x="0" y="0" w="40" h="40"
+                         fill="linear-gradient(180deg, #000000 0%, #000000 100%)" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert!(painted.get_pixel(20, 20).0[0] < 20, "inside the ellipse");
+        assert!(
+            painted.get_pixel(1, 1).0[0] > 240,
+            "the corner outside it is untouched"
+        );
+    }
+
+    #[test]
+    fn radial_and_conic_gradients_paint_something() {
+        for value in [
+            "radial-gradient(circle at 50% 50%, #000000 0%, #ffffff 100%)",
+            "conic-gradient(from 0deg at 50% 50%, #000000 0%, #ffffff 100%)",
+        ] {
+            let painted = render(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="40" h="40" fill="#7f7f7f">
+                    <rect abs x="0" y="0" w="40" h="40" fill="{value}" />
+                  </frame>
+                </gui>
+                "##
+            ));
+
+            let shades: std::collections::BTreeSet<u8> = (0..40)
+                .flat_map(|y| (0..40).map(move |x| (x, y)))
+                .map(|(x, y)| painted.get_pixel(x, y).0[0])
+                .collect();
+
+            assert!(
+                shades.len() > 8,
+                "{value} should paint a spread of shades, got {}",
+                shades.len()
+            );
+        }
+    }
+
+    #[test]
+    fn an_image_fill_is_clipped_to_the_nodes_shape() {
+        let mut image = image::RgbaImage::new(1, 1);
+        image.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        let mut bytes = Vec::new();
+        image
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .expect("test image encodes");
+
+        let painted = render_with_asset(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <ellipse abs x="0" y="0" w="40" h="40">
+                  <appearance>
+                    <fill type="image" src="assets/red.png" fit="fill" />
+                  </appearance>
+                </ellipse>
+              </frame>
+            </gui>
+            "##,
+            "assets/red.png",
+            bytes,
+        );
+
+        assert_eq!(
+            painted.get_pixel(20, 20).0[0..3],
+            [255, 0, 0],
+            "the image fills the ellipse"
+        );
+        assert_eq!(
+            painted.get_pixel(1, 1).0[0..3],
+            [255, 255, 255],
+            "and is cut off at its edge"
         );
     }
 
