@@ -138,11 +138,12 @@ fn paint_node(
                 .as_deref()
                 .and_then(blend_mode)
                 .unwrap_or(BlendMode::SourceOver),
+            // The subtree was drawn solid, so the whole group fades here.
+            opacity: node.opacity.clamp(0.0, 1.0),
             // Resampling a finished layer is softer than drawing the geometry
             // transformed would be. It is the price of applying one matrix to
             // a whole subtree instead of threading it through every draw.
             quality: tiny_skia::FilterQuality::Bicubic,
-            ..Default::default()
         },
         node.transform
             .map(|transform| node_matrix(node, transform))
@@ -185,9 +186,25 @@ fn node_matrix(node: &SceneNode, transform: Transform2D) -> Transform {
         .pre_concat(Transform::from_translate(-pivot_x, -pivot_y))
 }
 
+/// The alpha a node's own draws use.
+///
+/// A node painted onto its own layer has its `opacity` applied when that layer
+/// is composited, so applying it per-colour as well would square it.
+fn draw_opacity(node: &SceneNode) -> f32 {
+    if needs_layer(node) {
+        1.0
+    } else {
+        node.opacity
+    }
+}
+
 /// Whether the node has to be finished on its own layer before compositing.
 fn needs_layer(node: &SceneNode) -> bool {
-    node.isolation
+    // `opacity` is a group property: the subtree is drawn solid and the whole
+    // thing is faded once. Fading each draw instead makes overlapping children
+    // compound, and leaves a container's children untouched entirely.
+    node.opacity < 1.0
+        || node.isolation
         || node.transform.is_some()
         || node.filter.is_some()
         || node.clip_path.is_some()
@@ -756,7 +773,7 @@ fn paint_one_fill(
         return;
     }
 
-    let Some(color) = parse_color(value, node.opacity) else {
+    let Some(color) = parse_color(value, draw_opacity(node)) else {
         return;
     };
 
@@ -823,7 +840,8 @@ fn paint_gradient_fill(pixmap: &mut Pixmap, node: &SceneNode, value: &str) {
     };
     // Stops resolve through the same colour parser every other paint uses, so
     // a hex with alpha means the same thing in a gradient as out of one.
-    let Some(shader) = gradient::gradient_shader(value, area, node.opacity, &parse_color) else {
+    let Some(shader) = gradient::gradient_shader(value, area, draw_opacity(node), &parse_color)
+    else {
         return;
     };
     let Some(path) = node_fill_path(node) else {
@@ -1036,7 +1054,7 @@ impl<'a> RunStyle<'a> {
                 .color
                 .as_deref()
                 .or(node.fill_color())
-                .and_then(|fill| parse_color(fill, node.opacity)),
+                .and_then(|fill| parse_color(fill, draw_opacity(node))),
             font_size: segment.font_size,
             line_height: segment.line_height,
             letter_spacing: segment.letter_spacing,
@@ -1467,7 +1485,7 @@ fn color_to_rgba8(color: Color) -> Option<(u8, u8, u8, u8)> {
 fn paint_text_placeholder(pixmap: &mut Pixmap, node: &SceneNode) {
     let color = node
         .fill_color()
-        .and_then(|fill| parse_color(fill, node.opacity))
+        .and_then(|fill| parse_color(fill, draw_opacity(node)))
         .unwrap_or_else(|| Color::from_rgba8(20, 20, 20, 180));
     let h = (node.bounds.height * 0.42).clamp(2.0, node.bounds.height);
     let y = node.bounds.y + (node.bounds.height - h) / 2.0;
@@ -1816,7 +1834,7 @@ fn paint_outline(pixmap: &mut Pixmap, node: &SceneNode) {
     if outline.width <= 0.0 {
         return;
     }
-    let Some(color) = parse_color(&outline.color, node.opacity) else {
+    let Some(color) = parse_color(&outline.color, draw_opacity(node)) else {
         return;
     };
 
@@ -1924,7 +1942,7 @@ fn stroke_rounded_rect(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
     if border.width <= 0.0 || node.bounds.width <= 0.0 || node.bounds.height <= 0.0 {
         return;
     }
-    let Some(color) = parse_color(&border.color, node.opacity) else {
+    let Some(color) = parse_color(&border.color, draw_opacity(node)) else {
         return;
     };
 
@@ -1972,7 +1990,7 @@ fn stroke_rounded_rect(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
 }
 
 fn stroke_sided_border(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
-    let Some(color) = parse_color(&border.color, node.opacity) else {
+    let Some(color) = parse_color(&border.color, draw_opacity(node)) else {
         return;
     };
     let x = node.bounds.x;
@@ -3677,6 +3695,143 @@ mod tests {
             painted.get_pixel(1, 1).0[0..3],
             [255, 255, 255],
             "and is cut off at its edge"
+        );
+    }
+
+    #[test]
+    fn opacity_reaches_a_containers_children() {
+        // The plain bug: a container's `opacity` used to fade its own paint
+        // and leave everything inside it fully opaque.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <frame abs x="0" y="0" w="40" h="40" opacity="0.5">
+                  <rect abs x="0" y="0" w="40" h="40" fill="#000000" />
+                </frame>
+              </frame>
+            </gui>
+            "##,
+        );
+
+        let grey = painted.get_pixel(20, 20).0[0];
+        assert!(
+            (125..=131).contains(&grey),
+            "expected half black over white, got {grey}"
+        );
+    }
+
+    #[test]
+    fn overlapping_children_do_not_compound_a_groups_opacity() {
+        // The whole group fades once. Fading each child instead would darken
+        // wherever two of them overlap.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="60" h="60" fill="#ffffff">
+                <frame abs x="0" y="0" w="60" h="60" opacity="0.5">
+                  <rect abs x="5" y="5" w="30" h="30" fill="#000000" />
+                  <rect abs x="20" y="20" w="30" h="30" fill="#000000" />
+                </frame>
+              </frame>
+            </gui>
+            "##,
+        );
+
+        let single = painted.get_pixel(10, 10).0[0];
+        let overlap = painted.get_pixel(25, 25).0[0];
+        assert_eq!(
+            single, overlap,
+            "the overlap must be no darker than either child alone"
+        );
+    }
+
+    #[test]
+    fn a_leaf_nodes_opacity_still_fades_it() {
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <rect abs x="0" y="0" w="40" h="40" fill="#000000" opacity="0.25" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        let grey = painted.get_pixel(20, 20).0[0];
+        assert!(
+            (188..=194).contains(&grey),
+            "expected a quarter of black over white, got {grey}"
+        );
+    }
+
+    #[test]
+    fn nested_opacity_multiplies() {
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <frame abs x="0" y="0" w="40" h="40" opacity="0.5">
+                  <frame abs x="0" y="0" w="40" h="40" opacity="0.5">
+                    <rect abs x="0" y="0" w="40" h="40" fill="#000000" />
+                  </frame>
+                </frame>
+              </frame>
+            </gui>
+            "##,
+        );
+
+        let grey = painted.get_pixel(20, 20).0[0];
+        assert!(
+            (188..=194).contains(&grey),
+            "0.5 inside 0.5 is a quarter, got {grey}"
+        );
+    }
+
+    #[test]
+    fn zero_opacity_hides_a_whole_subtree() {
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <frame abs x="0" y="0" w="40" h="40" opacity="0" fill="#ff0000">
+                  <rect abs x="0" y="0" w="40" h="40" fill="#000000" />
+                </frame>
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(painted.get_pixel(20, 20).0[0..3], [255, 255, 255]);
+    }
+
+    #[test]
+    fn a_groups_opacity_fades_its_shadow_with_it() {
+        // The shadow is part of the subtree, so it fades by the same amount.
+        // Per-draw opacity never reached it at all.
+        let shadow_at = |opacity: &str| {
+            let painted = render(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="60" h="60" fill="#ffffff">
+                    <rect abs x="15" y="10" w="30" h="20" fill="#ffffff" {opacity}>
+                      <appearance>
+                        <effect type="drop-shadow" x="0" y="8" radius="4"
+                                color="#000000ff" />
+                      </appearance>
+                    </rect>
+                  </frame>
+                </gui>
+                "##
+            ));
+            painted.get_pixel(30, 36).0[0]
+        };
+
+        let solid = shadow_at("");
+        let faded = shadow_at(r#"opacity="0.5""#);
+        assert!(
+            faded > solid + 20,
+            "a faded group casts a fainter shadow: {faded} vs {solid}"
         );
     }
 
