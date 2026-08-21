@@ -98,6 +98,9 @@ enum ParentLayout {
     /// A `<stack direction="grid">`, which predates placement attributes and
     /// only auto-flows its children.
     LegacyGrid,
+    /// A `<frame>` or `<group>`: a positioned container, whose children sit at
+    /// their own `x`/`y` rather than flowing.
+    Positioned,
 }
 
 fn parent_layout_of(node: &GuiNode, metadata: &GuiMetadata) -> ParentLayout {
@@ -107,6 +110,12 @@ fn parent_layout_of(node: &GuiNode, metadata: &GuiMetadata) -> ParentLayout {
         } else {
             ParentLayout::Grid
         }
+    } else if matches!(node.tag.as_str(), "frame" | "group") {
+        // A `<frame>` positions its children; only `<stack>`, `<row>`, `<col>`
+        // and `<grid>` lay them out in flow. The spec says the same of
+        // `<group>`: "children are absolutely positioned relative to the group
+        // origin".
+        ParentLayout::Positioned
     } else if flex_direction_for(node) == FlexDirection::Row {
         ParentLayout::Row
     } else {
@@ -292,6 +301,9 @@ fn style_for_node(node: &GuiNode, metadata: &GuiMetadata, parent_layout: ParentL
         // A grid child has no main axis to grow along; `fill` resolves to a
         // percentage of the track it occupies, via `dimension_attr`.
         ParentLayout::Grid | ParentLayout::LegacyGrid => false,
+        // A positioned child has no main axis to grow along either; `fill`
+        // resolves to a percentage of the container, via `dimension_attr`.
+        ParentLayout::Positioned => false,
     };
     if fills_main_axis {
         style.flex_grow = 1.0;
@@ -304,7 +316,9 @@ fn style_for_node(node: &GuiNode, metadata: &GuiMetadata, parent_layout: ParentL
     if parent_layout == ParentLayout::Grid {
         grid::apply_placement(&mut style, node, metadata);
     }
-    if is_absolute(node) {
+    // A child is out of flow either because it says so, or because its parent
+    // positions everything it holds.
+    if is_absolute(node) || parent_layout == ParentLayout::Positioned {
         style.position = Position::Absolute;
         style.inset.left = number_attr(node, metadata, "x").map_or(auto(), length);
         style.inset.top = number_attr(node, metadata, "y").map_or(auto(), length);
@@ -1428,6 +1442,93 @@ mod tests {
         assert_eq!(
             layout.children[0].rect.width - plain.children[0].rect.width,
             12.0
+        );
+    }
+
+    #[test]
+    fn a_frame_positions_its_children_rather_than_stacking_them() {
+        // Two overlapping children at the same origin: in a frame they sit on
+        // top of each other, which is what a card overlay needs.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <frame w="200" h="100">
+                <rect x="0" y="0" w="200" h="100" />
+                <text x="16" y="60" w="120" h="20" value="Overlay" />
+              </frame>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(
+            (layout.children[0].rect.x, layout.children[0].rect.y),
+            (0.0, 0.0)
+        );
+        assert_eq!(
+            (layout.children[1].rect.x, layout.children[1].rect.y),
+            (16.0, 60.0),
+            "the overlay sits where it says, not below its sibling"
+        );
+    }
+
+    #[test]
+    fn a_group_positions_its_children_too() {
+        // The spec: "children are absolutely positioned relative to the group
+        // origin".
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <frame w="200" h="100">
+                <group x="0" y="0" w="200" h="100">
+                  <rect x="10" y="10" w="20" h="20" />
+                  <rect x="10" y="50" w="20" h="20" />
+                </group>
+              </frame>
+            </gui>
+            "#,
+        );
+
+        let group = &layout.children[0];
+        assert_eq!(group.children[0].rect.y, 10.0);
+        assert_eq!(group.children[1].rect.y, 50.0);
+    }
+
+    #[test]
+    fn a_stack_still_flows_its_children() {
+        // The change is to frames and groups only: a col still stacks.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="200" h="100">
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.y, 0.0);
+        assert_eq!(
+            layout.children[1].rect.y, 20.0,
+            "the second child follows the first"
+        );
+    }
+
+    #[test]
+    fn a_frame_child_without_a_position_sits_at_the_origin() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <frame w="200" h="100">
+                <rect w="20" h="20" />
+              </frame>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(
+            (layout.children[0].rect.x, layout.children[0].rect.y),
+            (0.0, 0.0)
         );
     }
 
