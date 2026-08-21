@@ -23,6 +23,10 @@
 pub const SHARED: &[&str] = &[
     "abs",
     "opacity",
+    "blend",
+    "filter",
+    "isolation",
+    "z-index",
     "min-width",
     "max-width",
     "min-height",
@@ -48,6 +52,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "shadow",
             "overflow-x",
             "overflow-y",
+            "effect-style",
         ],
     ),
     (
@@ -79,6 +84,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "shadow",
             "overflow-x",
             "overflow-y",
+            "effect-style",
         ],
     ),
     (
@@ -105,6 +111,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "shadow",
             "overflow-x",
             "overflow-y",
+            "effect-style",
         ],
     ),
     (
@@ -131,6 +138,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "shadow",
             "overflow-x",
             "overflow-y",
+            "effect-style",
         ],
     ),
     (
@@ -157,6 +165,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "shadow",
             "overflow-x",
             "overflow-y",
+            "effect-style",
         ],
     ),
     ("group", &["w", "h", "x", "y"]),
@@ -208,9 +217,22 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "radius",
             "corner-smoothing",
             "shadow",
+            "effect-style",
         ],
     ),
-    ("ellipse", &["w", "h", "x", "y", "fill", "border", "shadow"]),
+    (
+        "ellipse",
+        &[
+            "w",
+            "h",
+            "x",
+            "y",
+            "fill",
+            "border",
+            "shadow",
+            "effect-style",
+        ],
+    ),
     ("line", &["w", "h", "x", "y", "fill"]),
     // `<appearance>` holds child elements rather than attributes. All three
     // stacks are read; gradient and image fills are carried into the scene but

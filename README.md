@@ -65,6 +65,8 @@ This is an early native renderer. It can already:
   `corner-smoothing`, and the `shadow` shorthand
 - clip per axis with `overflow-x`/`overflow-y`, or to the node's shape with
   `clip`
+- composite with `blend`, `isolation`, `filter` and `z-index`, and reuse named
+  effect stacks with `effect-style`
 - draw rich text: `<segment>` runs with their own weight, style, size, and
   colour, wrapping as one continuous string
 - resolve Google fonts through the renderer cache, and system fonts from the
@@ -246,6 +248,51 @@ needs both edges to curve between.
 `x y blur [spread] color`, and `inset` for an inner shadow. It is read as one
 entry of the effect stack, so a node that declares `<effect>` children ignores
 it.
+
+### Compositing
+
+`blend` composites a node against what is already painted behind it, with CSS's
+`mix-blend-mode` names. `isolation` makes a node its own stacking context, so a
+descendant's blend mode sees only that subtree. `filter` takes a CSS filter
+list. `z-index` decides paint order among siblings:
+
+```xml
+<rect w="80" h="60" fill="$accent" blend="multiply" />
+<col w="fill" isolation filter="grayscale(1) brightness(1.2)" />
+<rect w="80" h="60" fill="$brand" z-index="1" />
+```
+
+A node with a blend mode, a filter or `isolation` is painted onto a layer of
+its own and composited in one go; everything else paints straight onto the
+canvas. Backdrop effects read what is behind a node, and inside its own layer
+that is nothing, so a node that both isolates and blurs its backdrop is a known
+gap.
+
+`filter` implements `blur`, `brightness`, `contrast`, `grayscale`, `invert`,
+`opacity`, `saturate` and `sepia`, with the colour matrices the Filter Effects
+spec defines. Functions apply left to right. Anything else in the list is
+skipped, so an unimplemented function leaves the node unfiltered rather than
+blank.
+
+`z-index` is resolved when the scene is built, not when it is painted: a node
+without one sorts as 0 and the sort is stable, so document order still decides
+between equals.
+
+### Effect Styles
+
+`<styles>` holds named `<effect-style>` blocks alongside `<text-style>` ones. A
+node referencing one by name picks up its effects **under** its own, so a node
+can add to a style rather than only replace it:
+
+```xml
+<styles>
+  <effect-style name="card">
+    <effect type="drop-shadow" x="0" y="2" radius="6" color="#0000001F" />
+  </effect-style>
+</styles>
+
+<col w="fill" radius="12" fill="$card" effect-style="card" />
+```
 
 ### Effects
 
@@ -510,7 +557,7 @@ mean anyone looked. Run the goldens by hand when changing anything visual.
 - Add `border-image`; the spec types it as a string but does not define the
   value grammar, so it needs pinning down against kit first.
 - Improve antialiasing quality for text and vector shapes.
-- Add opacity groups and blend modes.
+- Add opacity groups; `opacity` is still applied per draw, not per group.
 - Add layer blur.
 - Add masks and clipping paths.
 - Add PDF export once the scene model is stable.

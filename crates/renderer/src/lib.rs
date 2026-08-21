@@ -7,6 +7,7 @@
 mod assets;
 mod blur;
 pub mod coverage;
+mod filter;
 mod fonts;
 mod grid;
 mod layout;

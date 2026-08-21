@@ -1,12 +1,13 @@
 use crate::{
-    blur, text, AssetCache, Border, BorderWidths, Effect, Fill, FontFace, FontStore, PaintContent,
-    Scene, SceneNode, TextSegment,
+    blur, filter::apply_filter, text, AssetCache, Border, BorderWidths, Effect, Fill, FontFace,
+    FontStore, PaintContent, Scene, SceneNode, TextSegment,
 };
 use fontdue::{Font, FontSettings};
 use std::{fs, path::Path};
 use thiserror::Error;
 use tiny_skia::{
-    Color, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, PixmapRef, Rect, Stroke, Transform,
+    BlendMode, Color, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, PixmapRef, Rect, Stroke,
+    Transform,
 };
 use ttf_parser::OutlineBuilder;
 
@@ -80,7 +81,91 @@ fn paint_scene(
     fs::write(path, bytes).map_err(|err| PaintError::Png(err.to_string()))
 }
 
+/// Paints a node, through its own layer when it needs one.
+///
+/// A blend mode, a filter or `isolation` all mean the subtree has to be
+/// finished before it can be composited, so it is painted onto a transparent
+/// layer of its own and drawn back in one go. Everything else paints straight
+/// onto the canvas, which is the common case and keeps the cost off it.
 fn paint_node(
+    pixmap: &mut Pixmap,
+    node: &SceneNode,
+    font: Option<&Font>,
+    asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
+) {
+    if !needs_layer(node) {
+        paint_node_direct(pixmap, node, font, asset_cache, fonts);
+        return;
+    }
+
+    let Some(mut layer) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+        paint_node_direct(pixmap, node, font, asset_cache, fonts);
+        return;
+    };
+
+    // Backdrop effects read what is behind the node, and inside a layer that
+    // is nothing. Copying the canvas in first would then be blended twice, so
+    // a node that both isolates and blurs its backdrop is a known gap.
+    paint_node_direct(&mut layer, node, font, asset_cache, fonts);
+
+    if let Some(filter) = node.filter.as_deref() {
+        apply_filter(&mut layer, filter);
+    }
+
+    pixmap.draw_pixmap(
+        0,
+        0,
+        layer.as_ref(),
+        &PixmapPaint {
+            blend_mode: node
+                .blend
+                .as_deref()
+                .and_then(blend_mode)
+                .unwrap_or(BlendMode::SourceOver),
+            ..Default::default()
+        },
+        Transform::identity(),
+        None,
+    );
+}
+
+/// Whether the node has to be finished on its own layer before compositing.
+fn needs_layer(node: &SceneNode) -> bool {
+    node.isolation
+        || node.filter.is_some()
+        || node
+            .blend
+            .as_deref()
+            .is_some_and(|mode| blend_mode(mode).is_some_and(|mode| mode != BlendMode::SourceOver))
+}
+
+/// The spec's blend names are CSS's, and tiny-skia's are the Skia ones.
+fn blend_mode(value: &str) -> Option<BlendMode> {
+    Some(match value.trim() {
+        "normal" => BlendMode::SourceOver,
+        "multiply" => BlendMode::Multiply,
+        "screen" => BlendMode::Screen,
+        "overlay" => BlendMode::Overlay,
+        "darken" => BlendMode::Darken,
+        "lighten" => BlendMode::Lighten,
+        "color-dodge" => BlendMode::ColorDodge,
+        "color-burn" => BlendMode::ColorBurn,
+        "hard-light" => BlendMode::HardLight,
+        "soft-light" => BlendMode::SoftLight,
+        "difference" => BlendMode::Difference,
+        "exclusion" => BlendMode::Exclusion,
+        "hue" => BlendMode::Hue,
+        "saturation" => BlendMode::Saturation,
+        "color" => BlendMode::Color,
+        "luminosity" => BlendMode::Luminosity,
+        // `plus-lighter` and the rest of CSS's list have no Skia equivalent
+        // here; leaving them unmapped paints normally rather than wrongly.
+        _ => return None,
+    })
+}
+
+fn paint_node_direct(
     pixmap: &mut Pixmap,
     node: &SceneNode,
     font: Option<&Font>,
@@ -2027,6 +2112,115 @@ mod tests {
         assert_eq!(painted.get_pixel(20, 20).0[0..3], [255, 0, 0]);
         assert_eq!(painted.get_pixel(35, 20).0[0..3], [255, 255, 255]);
         assert_eq!(painted.get_pixel(20, 35).0[0..3], [255, 255, 255]);
+    }
+
+    #[test]
+    fn blend_multiply_darkens_against_what_is_behind_it() {
+        // Mid grey over mid grey: multiply gives 0.5 * 0.5 = 0.25, so ~64.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="20" h="20" fill="#808080">
+                <rect abs x="0" y="0" w="20" h="20" fill="#808080" blend="multiply" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        let red = painted.get_pixel(10, 10).0[0];
+        assert!(
+            (58..=70).contains(&red),
+            "expected the product near 64, painted {red}"
+        );
+    }
+
+    #[test]
+    fn a_normal_blend_paints_the_same_as_none_at_all() {
+        let with = render(
+            r##"
+            <gui version="0.2">
+              <frame w="20" h="20" fill="#808080">
+                <rect abs x="0" y="0" w="20" h="20" fill="#4080c0" blend="normal" />
+              </frame>
+            </gui>
+            "##,
+        );
+        let without = render(
+            r##"
+            <gui version="0.2">
+              <frame w="20" h="20" fill="#808080">
+                <rect abs x="0" y="0" w="20" h="20" fill="#4080c0" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(with.get_pixel(10, 10), without.get_pixel(10, 10));
+    }
+
+    #[test]
+    fn isolation_keeps_a_childs_blend_off_the_outer_backdrop() {
+        // The blending child sits on a transparent group. Isolated, it has
+        // nothing to multiply against and stays its own colour; without the
+        // isolation it darkens against the red page behind.
+        let page = |isolation: &str| {
+            render(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="20" h="20" fill="#ff0000">
+                    <frame abs x="0" y="0" w="20" h="20" {isolation}>
+                      <rect abs x="0" y="0" w="20" h="20" fill="#808080" blend="multiply" />
+                    </frame>
+                  </frame>
+                </gui>
+                "##
+            ))
+        };
+
+        let isolated = page("isolation").get_pixel(10, 10).0[0..3].to_vec();
+        let open = page("").get_pixel(10, 10).0[0..3].to_vec();
+
+        assert_eq!(isolated, vec![128, 128, 128], "nothing behind to multiply");
+        assert_eq!(open, vec![128, 0, 0], "multiplied against the red page");
+    }
+
+    #[test]
+    fn a_filter_runs_over_the_finished_subtree() {
+        // The filter is on the parent, so it has to reach the child too.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="20" h="20" fill="#ffffff">
+                <frame abs x="0" y="0" w="20" h="20" filter="grayscale(1)">
+                  <rect abs x="0" y="0" w="20" h="20" fill="#ff0000" />
+                </frame>
+              </frame>
+            </gui>
+            "##,
+        );
+
+        let [r, g, b, _] = painted.get_pixel(10, 10).0;
+        assert_eq!((r, g, b), (54, 54, 54));
+    }
+
+    #[test]
+    fn z_index_lifts_a_child_over_a_later_sibling() {
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="20" h="20" fill="#ffffff">
+                <rect abs x="0" y="0" w="20" h="20" fill="#ff0000" z-index="1" />
+                <rect abs x="0" y="0" w="20" h="20" fill="#0000ff" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            painted.get_pixel(10, 10).0[0..3],
+            [255, 0, 0],
+            "the red rect is listed first but lifted above the blue one"
+        );
     }
 
     #[test]
