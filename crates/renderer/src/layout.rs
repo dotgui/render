@@ -3,6 +3,8 @@
 //! The layout algorithm itself lives in `crate::taffy_layout`; this module
 //! only owns the types both layout and painting agree on.
 
+use crate::fonts::FontAxes;
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -36,6 +38,7 @@ pub trait TextMeasurer {
         font_weight: Option<&str>,
         font_style: Option<&str>,
         font_size: f32,
+        axes: FontAxes,
     ) -> f32;
 }
 
@@ -53,6 +56,7 @@ impl TextMeasurer for ApproxTextMeasurer {
         _font_weight: Option<&str>,
         _font_style: Option<&str>,
         font_size: f32,
+        _axes: FontAxes,
     ) -> f32 {
         value.chars().count() as f32 * font_size * 0.55
     }

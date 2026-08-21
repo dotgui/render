@@ -2,6 +2,7 @@ use crate::{
     blur,
     clip_path::{self, ClipBox},
     filter::apply_filter,
+    fonts::FontAxes,
     text, AssetCache, Border, BorderWidths, Effect, Fill, FontFace, FontStore, ImageMask,
     PaintContent, Scene, SceneNode, TextSegment, Transform2D,
 };
@@ -828,9 +829,22 @@ fn paint_content(
                 text_align.as_deref(),
             );
         }
-        PaintContent::Image { src, fit } => {
-            paint_image(pixmap, node, src, fit.as_deref(), asset_cache)
-        }
+        PaintContent::Image {
+            src,
+            fit,
+            object_position,
+            image_rendering,
+        } => paint_image(
+            pixmap,
+            node,
+            src,
+            ImageStyle {
+                fit: fit.as_deref(),
+                object_position: object_position.as_deref(),
+                rendering: image_rendering.as_deref(),
+            },
+            asset_cache,
+        ),
     }
 }
 
@@ -847,6 +861,9 @@ struct RunStyle<'a> {
     font_size: f32,
     line_height: f32,
     letter_spacing: f32,
+    axes: FontAxes,
+    /// Whether glyphs are antialiased, from `font-smoothing`.
+    anti_alias: bool,
 }
 
 impl<'a> RunStyle<'a> {
@@ -877,6 +894,15 @@ impl<'a> RunStyle<'a> {
             font_size: segment.font_size,
             line_height: segment.line_height,
             letter_spacing: segment.letter_spacing,
+            axes: FontAxes::from_style(
+                segment.font_stretch.as_deref(),
+                segment.font_optical_sizing.as_deref(),
+                segment.font_size,
+            ),
+            // `none` asks for hard edges. The other two values are both
+            // grayscale antialiasing here; subpixel needs the target's own
+            // stripe order, which a PNG has no business assuming.
+            anti_alias: segment.font_smoothing.as_deref() != Some("none"),
         }
     }
 
@@ -886,7 +912,7 @@ impl<'a> RunStyle<'a> {
 
     fn width(&self, text: &str) -> f32 {
         let base = match (self.face, self.fallback) {
-            (Some(face), _) => face.text_width(text, self.font_size),
+            (Some(face), _) => face.text_width(text, self.font_size, self.axes),
             (None, Some(font)) => text_width(font, text, self.font_size),
             (None, None) => text.chars().count() as f32 * self.font_size * 0.55,
         };
@@ -895,7 +921,7 @@ impl<'a> RunStyle<'a> {
 
     fn baseline_offset(&self, line_height: f32) -> f32 {
         match (self.face, self.fallback) {
-            (Some(face), _) => face.baseline_offset(self.font_size, line_height),
+            (Some(face), _) => face.baseline_offset(self.font_size, line_height, self.axes),
             (None, Some(font)) => fontdue_baseline_offset(font, self.font_size, line_height),
             (None, None) => self.font_size,
         }
@@ -908,7 +934,7 @@ impl<'a> RunStyle<'a> {
         };
 
         if let Some(face) = self.face {
-            if let Some(ttf_face) = face.variable_face() {
+            if let Some(ttf_face) = face.variable_face(self.axes) {
                 self.draw_outlines(pixmap, &ttf_face, face, text, cursor_x, baseline, color);
                 return;
             }
@@ -934,7 +960,7 @@ impl<'a> RunStyle<'a> {
         let scale = self.font_size / ttf_face.units_per_em() as f32;
         let mut paint = Paint::default();
         paint.set_color(color);
-        paint.anti_alias = true;
+        paint.anti_alias = self.anti_alias;
 
         for ch in text.chars() {
             let Some(glyph) = ttf_face.glyph_index(ch) else {
@@ -982,6 +1008,7 @@ impl<'a> RunStyle<'a> {
                 metrics.height,
                 &bitmap,
                 color,
+                self.anti_alias,
             );
             *cursor_x += metrics.advance_width + self.letter_spacing;
         }
@@ -1139,6 +1166,7 @@ fn text_width(font: &Font, value: &str, font_size: f32) -> f32 {
         .sum()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_glyph_bitmap(
     pixmap: &mut Pixmap,
     x: f32,
@@ -1147,6 +1175,7 @@ fn draw_glyph_bitmap(
     height: usize,
     bitmap: &[u8],
     color: Color,
+    anti_alias: bool,
 ) {
     let Some((r, g, b, base_a)) = color_to_rgba8(color) else {
         return;
@@ -1154,7 +1183,16 @@ fn draw_glyph_bitmap(
 
     for row in 0..height {
         for col in 0..width {
-            let coverage = bitmap[row * width + col];
+            let raw = bitmap[row * width + col];
+            // Without smoothing a pixel is either in the glyph or out of it,
+            // so the rasteriser's partial coverage is rounded to one or other.
+            let coverage = if anti_alias {
+                raw
+            } else if raw >= 128 {
+                255
+            } else {
+                0
+            };
             if coverage == 0 {
                 continue;
             }
@@ -1196,11 +1234,74 @@ fn paint_text_placeholder(pixmap: &mut Pixmap, node: &SceneNode) {
     );
 }
 
+/// How an `<img>` is drawn into its box, beyond which bytes to draw.
+#[derive(Debug, Clone, Copy, Default)]
+struct ImageStyle<'a> {
+    fit: Option<&'a str>,
+    object_position: Option<&'a str>,
+    rendering: Option<&'a str>,
+}
+
+impl ImageStyle<'_> {
+    /// Where the image sits in the leftover space, as a fraction per axis.
+    ///
+    /// CSS defaults `object-position` to `50% 50%`, which is the centring the
+    /// fit modes did before this was read.
+    fn alignment(&self) -> (f32, f32) {
+        let Some(value) = self.object_position else {
+            return (0.5, 0.5);
+        };
+
+        let mut parts = value.split_whitespace();
+        let x = parts
+            .next()
+            .and_then(|part| position_fraction(part, Axis::Horizontal))
+            .unwrap_or(0.5);
+        let y = parts
+            .next()
+            .and_then(|part| position_fraction(part, Axis::Vertical))
+            .unwrap_or(0.5);
+
+        (x, y)
+    }
+
+    /// Resampling quality, from `image-rendering`.
+    fn quality(&self) -> tiny_skia::FilterQuality {
+        match self.rendering {
+            // Both CSS values mean "do not smooth the pixels".
+            Some("pixelated") | Some("crisp-edges") => tiny_skia::FilterQuality::Nearest,
+            _ => tiny_skia::FilterQuality::Bilinear,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Axis {
+    Horizontal,
+    Vertical,
+}
+
+/// One half of an `object-position`, as a fraction of the leftover space.
+///
+/// Only percentages and keywords are a fraction; a length has no denominator
+/// here, so it is left to the caller's default rather than guessed at.
+fn position_fraction(value: &str, axis: Axis) -> Option<f32> {
+    match (value.trim(), axis) {
+        ("left", Axis::Horizontal) | ("top", Axis::Vertical) => Some(0.0),
+        ("right", Axis::Horizontal) | ("bottom", Axis::Vertical) => Some(1.0),
+        ("center", _) => Some(0.5),
+        (value, _) => value
+            .strip_suffix('%')
+            .and_then(|percentage| percentage.trim().parse::<f32>().ok())
+            .map(|percentage| percentage / 100.0),
+    }
+}
+
 fn paint_image(
     pixmap: &mut Pixmap,
     node: &SceneNode,
     src: &str,
-    fit: Option<&str>,
+    style: ImageStyle<'_>,
     asset_cache: Option<&AssetCache>,
 ) {
     if let Some(cache) = asset_cache {
@@ -1216,7 +1317,7 @@ fn paint_image(
                         }
                     }
                 } else {
-                    match render_raster_asset(pixmap, node, &asset.bytes, fit) {
+                    match render_raster_asset(pixmap, node, &asset.bytes, style) {
                         Ok(_) => return,
                         Err(err) => eprintln!(
                             "warning: failed to decode/render raster asset '{}': {}",
@@ -1244,7 +1345,7 @@ fn render_raster_asset(
     pixmap: &mut Pixmap,
     node: &SceneNode,
     bytes: &[u8],
-    fit: Option<&str>,
+    style: ImageStyle<'_>,
 ) -> Result<(), PaintError> {
     let img = image::load_from_memory(bytes).map_err(|err| PaintError::Asset(err.to_string()))?;
     let rgba = img.to_rgba8();
@@ -1262,13 +1363,16 @@ fn render_raster_asset(
     let iw = rgba.width() as f32;
     let ih = rgba.height() as f32;
 
-    let fit = fit.unwrap_or("fill");
+    // `object-position` decides where the image sits in whatever room the fit
+    // mode leaves over. Centring is its default, which is what the fit modes
+    // did on their own before it was read.
+    let (align_x, align_y) = style.alignment();
 
-    let (transform, needs_clip) = match fit {
+    let (transform, needs_clip) = match style.fit.unwrap_or("fill") {
         "contain" => {
             let scale = (rw / iw).min(rh / ih);
-            let dx = rx + (rw - iw * scale) / 2.0;
-            let dy = ry + (rh - ih * scale) / 2.0;
+            let dx = rx + (rw - iw * scale) * align_x;
+            let dy = ry + (rh - ih * scale) * align_y;
             (
                 Transform::from_scale(scale, scale).post_translate(dx, dy),
                 false,
@@ -1276,19 +1380,21 @@ fn render_raster_asset(
         }
         "cover" => {
             let scale = (rw / iw).max(rh / ih);
-            let dx = rx + (rw - iw * scale) / 2.0;
-            let dy = ry + (rh - ih * scale) / 2.0;
+            let dx = rx + (rw - iw * scale) * align_x;
+            let dy = ry + (rh - ih * scale) * align_y;
             (
                 Transform::from_scale(scale, scale).post_translate(dx, dy),
                 true,
             )
         }
         "crop" | "none" => {
-            let dx = rx + (rw - iw) / 2.0;
-            let dy = ry + (rh - ih) / 2.0;
+            let dx = rx + (rw - iw) * align_x;
+            let dy = ry + (rh - ih) * align_y;
             (Transform::from_translate(dx, dy), true)
         }
         _ => {
+            // `fill` stretches to both edges, so there is no room left for
+            // `object-position` to place it in.
             let scale_x = rw / iw;
             let scale_y = rh / ih;
             (
@@ -1308,7 +1414,10 @@ fn render_raster_asset(
         0,
         0,
         img_pixmap,
-        &PixmapPaint::default(),
+        &PixmapPaint {
+            quality: style.quality(),
+            ..Default::default()
+        },
         transform,
         mask.as_ref(),
     );
@@ -2802,6 +2911,147 @@ mod tests {
         // The strip runs down the left edge; a quarter turn puts it along the top.
         assert_eq!(painted.get_pixel(20, 5).0[0..3], [255, 0, 0]);
         assert_eq!(painted.get_pixel(5, 20).0[0..3], [255, 255, 255]);
+    }
+
+    /// A 2x2 image of four flat colours, for testing how it is resampled.
+    fn quad_image() -> Vec<u8> {
+        let mut image = image::RgbaImage::new(2, 2);
+        image.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        image.put_pixel(1, 0, image::Rgba([0, 0, 255, 255]));
+        image.put_pixel(0, 1, image::Rgba([0, 0, 255, 255]));
+        image.put_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
+
+        let mut bytes = Vec::new();
+        image
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .expect("test image encodes");
+        bytes
+    }
+
+    fn render_with_asset(xml: &str, src: &str, bytes: Vec<u8>) -> image::RgbaImage {
+        let document = parse_gui_xml(xml).expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+
+        let mut package_assets = std::collections::BTreeMap::new();
+        package_assets.insert(src.to_owned(), bytes);
+        let cache = AssetCache::new(std::env::temp_dir()).with_package_assets(package_assets);
+
+        let png = paint_scene_to_png_bytes(&scene, Some(&cache), None).expect("scene paints");
+        image::load_from_memory(&png)
+            .expect("painted png decodes")
+            .to_rgba8()
+    }
+
+    #[test]
+    fn image_rendering_pixelated_keeps_hard_edges() {
+        // A 2x2 checker blown up to 40x40. Smoothed, the midpoint between two
+        // cells is a blend; pixelated, it is one cell or the other.
+        let page = |rendering: &str| {
+            render_with_asset(
+                &format!(
+                    r##"
+                    <gui version="0.2">
+                      <frame w="40" h="40" fill="#ffffff">
+                        <img abs x="0" y="0" w="40" h="40" src="assets/quad.png"
+                             fit="fill" {rendering} />
+                      </frame>
+                    </gui>
+                    "##
+                ),
+                "assets/quad.png",
+                quad_image(),
+            )
+        };
+
+        let pixelated = page(r#"image-rendering="pixelated""#);
+        let edge = pixelated.get_pixel(19, 10).0;
+        assert!(
+            edge[1] == 0,
+            "a hard edge keeps the source colours, painted {edge:?}"
+        );
+
+        let smooth = page("");
+        let blended = smooth.get_pixel(19, 10).0;
+        assert_ne!(blended, edge, "the default smooths the same pixel instead");
+    }
+
+    #[test]
+    fn object_position_moves_the_image_in_its_box() {
+        // A 2x2 image drawn at its own size inside a 40x40 box: `crop` leaves
+        // 38px of slack, which object-position decides how to spend.
+        let page = |position: &str| {
+            render_with_asset(
+                &format!(
+                    r##"
+                    <gui version="0.2">
+                      <frame w="40" h="40" fill="#ffffff">
+                        <img abs x="0" y="0" w="40" h="40" src="assets/quad.png"
+                             fit="crop" {position} />
+                      </frame>
+                    </gui>
+                    "##
+                ),
+                "assets/quad.png",
+                quad_image(),
+            )
+        };
+
+        let painted = |img: &image::RgbaImage| {
+            (0..40)
+                .flat_map(|y| (0..40).map(move |x| (x, y)))
+                .find(|(x, y)| img.get_pixel(*x, *y).0[0..3] != [255, 255, 255])
+        };
+
+        assert_eq!(painted(&page("")), Some((19, 19)), "centred by default");
+        assert_eq!(
+            painted(&page(r#"object-position="0% 0%""#)),
+            Some((0, 0)),
+            "pinned to the top left"
+        );
+        assert_eq!(
+            painted(&page(r#"object-position="right bottom""#)),
+            Some((38, 38)),
+            "pinned to the bottom right"
+        );
+    }
+
+    #[test]
+    fn font_smoothing_none_removes_partial_coverage() {
+        let page = |smoothing: &str| {
+            render(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="80" h="40" fill="#ffffff">
+                    <text abs x="4" y="4" w="72" h="32" value="Ago" fill="#000000"
+                          font-size="28" {smoothing} />
+                  </frame>
+                </gui>
+                "##
+            ))
+        };
+
+        let partial = |img: &image::RgbaImage| {
+            (0..40)
+                .flat_map(|y| (0..80).map(move |x| (x, y)))
+                .filter(|(x, y)| {
+                    let grey = img.get_pixel(*x, *y).0[0];
+                    grey > 8 && grey < 247
+                })
+                .count()
+        };
+
+        let smoothed = partial(&page(""));
+        let hard = partial(&page(r#"font-smoothing="none""#));
+
+        assert!(smoothed > 0, "antialiasing leaves partial pixels");
+        assert!(
+            hard < smoothed / 4,
+            "smoothing off should all but remove them: {hard} vs {smoothed}"
+        );
     }
 
     #[test]

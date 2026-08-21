@@ -224,6 +224,10 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "text-style",
             "truncate",
             "fill-style",
+            "font-stretch",
+            "font-optical-sizing",
+            "font-smoothing",
+            "href",
         ],
     ),
     (
@@ -238,6 +242,8 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "radius",
             "border",
             "corner-smoothing",
+            "object-position",
+            "image-rendering",
         ],
     ),
     (
@@ -336,6 +342,8 @@ mod tests {
             ("group", "mask-src"),
             ("rect", "rotation"),
             ("img", "aspect-ratio"),
+            ("text", "font-stretch"),
+            ("img", "image-rendering"),
         ] {
             assert!(
                 is_supported(tag, attribute, true),
