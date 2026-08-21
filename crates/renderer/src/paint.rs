@@ -1,6 +1,6 @@
 use crate::{
-    blur, text, AssetCache, Border, BorderWidths, Effect, FontFace, FontStore, PaintContent, Scene,
-    SceneNode, TextSegment,
+    blur, text, AssetCache, Border, BorderWidths, Effect, Fill, FontFace, FontStore, PaintContent,
+    Scene, SceneNode, TextSegment,
 };
 use fontdue::{Font, FontSettings};
 use std::{fs, path::Path};
@@ -331,15 +331,24 @@ fn saturate(pixmap: &mut Pixmap, amount: f32) {
     }
 }
 
+/// Paints the node's fill stack, bottom entry first.
 fn paint_fill(pixmap: &mut Pixmap, node: &SceneNode) {
     if matches!(node.content, PaintContent::Text { .. }) {
         return;
     }
 
-    let Some(fill) = node.fill.as_deref() else {
+    for fill in &node.fills {
+        paint_one_fill(pixmap, node, fill);
+    }
+}
+
+fn paint_one_fill(pixmap: &mut Pixmap, node: &SceneNode, fill: &Fill) {
+    // Gradients and image fills are carried in the scene but not painted yet;
+    // `parse_color` rejects them, which is what keeps them from drawing black.
+    let Some(value) = fill.value.as_deref() else {
         return;
     };
-    let Some(color) = parse_color(fill, node.opacity) else {
+    let Some(color) = parse_color(value, node.opacity) else {
         return;
     };
 
@@ -472,7 +481,7 @@ impl<'a> RunStyle<'a> {
             color: segment
                 .color
                 .as_deref()
-                .or(node.fill.as_deref())
+                .or(node.fill_color())
                 .and_then(|fill| parse_color(fill, node.opacity)),
             font_size: segment.font_size,
             line_height: segment.line_height,
@@ -780,8 +789,7 @@ fn color_to_rgba8(color: Color) -> Option<(u8, u8, u8, u8)> {
 
 fn paint_text_placeholder(pixmap: &mut Pixmap, node: &SceneNode) {
     let color = node
-        .fill
-        .as_deref()
+        .fill_color()
         .and_then(|fill| parse_color(fill, node.opacity))
         .unwrap_or_else(|| Color::from_rgba8(20, 20, 20, 180));
     let h = (node.bounds.height * 0.42).clamp(2.0, node.bounds.height);
@@ -1037,14 +1045,14 @@ fn paint_image_placeholder(pixmap: &mut Pixmap, node: &SceneNode) {
     }
 }
 
+/// Paints the node's border stack, bottom entry first.
 fn paint_border(pixmap: &mut Pixmap, node: &SceneNode) {
-    let Some(border) = &node.border else {
-        return;
-    };
-    if border.widths.is_uniform() {
-        stroke_rounded_rect(pixmap, node, border);
-    } else {
-        stroke_sided_border(pixmap, node, border);
+    for border in &node.borders {
+        if border.widths.is_uniform() {
+            stroke_rounded_rect(pixmap, node, border);
+        } else {
+            stroke_sided_border(pixmap, node, border);
+        }
     }
 }
 

@@ -59,6 +59,7 @@ This is an early native renderer. It can already:
 - build a paintable scene tree
 - render fills, rounded rectangles, ellipses, borders, sided borders, dividers,
   SVG images, text, truncation, and simple text alignment
+- paint the ordered `<fill>`, `<border>` and `<effect>` stacks of `<appearance>`
 - draw rich text: `<segment>` runs with their own weight, style, size, and
   colour, wrapping as one continuous string
 - resolve Google fonts through the renderer cache, and system fonts from the
@@ -163,10 +164,35 @@ Inventory tags and attributes across examples:
 cargo run -q -p dotgui-renderer --example inventory examples
 ```
 
-## Effects
+## Appearance
 
-`<appearance>` carries an ordered effect stack (RFC-0027), drawn in document
-order:
+`<appearance>` carries a node's complete paint: ordered stacks of `<fill>`,
+`<border>` and `<effect>`, each drawn in document order, so the last entry ends
+up on top.
+
+```xml
+<col w="fill" radius="16">
+  <appearance>
+    <fill type="color" value="$card" />
+    <border color="$outline-variant" w="1" align="inside" />
+    <effect type="drop-shadow" x="0" y="2" radius="6" color="#0000001F" />
+  </appearance>
+</col>
+```
+
+A `<fill>` carries `type` and `value`; `type="color"` is painted, and gradient
+and image fills are carried into the scene but not painted yet. A `<border>`
+carries `color`, `w`, `align` and `style`; `w` takes one to four numbers, like
+the `border` shorthand.
+
+When `<appearance>` declares no fill, the node's `fill` attribute is used
+instead. When it declares at least one `<border>`, the node's `border`
+shorthand is ignored, as the spec requires. `visible="false"` keeps an entry in
+the document without drawing it.
+
+### Effects
+
+The effect stack (RFC-0027) is drawn in document order:
 
 ```xml
 <row w="fill" h="90" radius="16" fill="$surface">
@@ -186,8 +212,7 @@ order:
 | `layer-blur` | not implemented; reported rather than dropped silently |
 
 `radius` is a blur radius as in CSS, which is twice the Gaussian sigma, and
-`opacity` multiplies into the colour's alpha. `visible="false"` keeps an effect
-in the document without drawing it.
+`opacity` multiplies into the colour's alpha.
 
 Blur is three successive box blurs, the approximation the SVG filter spec
 prescribes and browsers use.
@@ -424,6 +449,7 @@ mean anyone looked. Run the goldens by hand when changing anything visual.
 
 ### Painting
 
+- Paint gradient and image fills; they reach the scene but are not drawn yet.
 - Improve antialiasing quality for text and vector shapes.
 - Add opacity groups and blend modes.
 - Add layer blur.

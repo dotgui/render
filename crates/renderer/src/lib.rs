@@ -30,7 +30,7 @@ pub use paint::{
 };
 pub use parser::{parse_gui_xml, ParseError};
 pub use scene::{
-    build_scene, Border, BorderWidths, Effect, PaintContent, Scene, SceneNode, TextSegment,
+    build_scene, Border, BorderWidths, Effect, Fill, PaintContent, Scene, SceneNode, TextSegment,
 };
 pub use taffy_layout::{compute_taffy_layout, compute_taffy_layout_with_text, TaffyLayoutError};
 

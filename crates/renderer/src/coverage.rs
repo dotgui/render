@@ -103,9 +103,10 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     ("rect", &["w", "h", "x", "y", "fill", "border", "radius"]),
     ("ellipse", &["w", "h", "x", "y", "fill", "border"]),
     ("line", &["w", "h", "x", "y", "fill"]),
-    // `<appearance>` holds child elements rather than attributes. Only the
-    // effect stack is read; fills and borders are not.
-    ("appearance", &["<effect>"]),
+    // `<appearance>` holds child elements rather than attributes. All three
+    // stacks are read; gradient and image fills are carried into the scene but
+    // not painted yet.
+    ("appearance", &["<fill>", "<border>", "<effect>"]),
 ];
 
 /// Attributes this renderer supports that the vendored spec does not yet
