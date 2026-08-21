@@ -27,6 +27,7 @@ pub const SHARED: &[&str] = &[
     "filter",
     "isolation",
     "z-index",
+    "mask",
     "min-width",
     "max-width",
     "min-height",
@@ -53,6 +54,8 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "overflow-x",
             "overflow-y",
             "effect-style",
+            "clip-path",
+            "fill-style",
         ],
     ),
     (
@@ -85,6 +88,8 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "overflow-x",
             "overflow-y",
             "effect-style",
+            "clip-path",
+            "fill-style",
         ],
     ),
     (
@@ -112,6 +117,8 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "overflow-x",
             "overflow-y",
             "effect-style",
+            "clip-path",
+            "fill-style",
         ],
     ),
     (
@@ -139,6 +146,8 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "overflow-x",
             "overflow-y",
             "effect-style",
+            "clip-path",
+            "fill-style",
         ],
     ),
     (
@@ -166,9 +175,26 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "overflow-x",
             "overflow-y",
             "effect-style",
+            "clip-path",
+            "fill-style",
         ],
     ),
-    ("group", &["w", "h", "x", "y"]),
+    (
+        "group",
+        &[
+            "w",
+            "h",
+            "x",
+            "y",
+            "mask-src",
+            "mask-x",
+            "mask-y",
+            "mask-width",
+            "mask-height",
+            "mask-mode",
+            "mask-composite",
+        ],
+    ),
     (
         "text",
         &[
@@ -189,6 +215,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "overflow",
             "text-style",
             "truncate",
+            "fill-style",
         ],
     ),
     (
@@ -218,6 +245,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "corner-smoothing",
             "shadow",
             "effect-style",
+            "fill-style",
         ],
     ),
     (
@@ -231,9 +259,10 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "border",
             "shadow",
             "effect-style",
+            "fill-style",
         ],
     ),
-    ("line", &["w", "h", "x", "y", "fill"]),
+    ("line", &["w", "h", "x", "y", "fill", "fill-style"]),
     // `<appearance>` holds child elements rather than attributes. All three
     // stacks are read; gradient and image fills are carried into the scene but
     // not painted yet.
@@ -295,6 +324,8 @@ mod tests {
             ("rect", "corner-smoothing"),
             ("frame", "outline"),
             ("frame", "outline-offset"),
+            ("frame", "clip-path"),
+            ("group", "mask-src"),
         ] {
             assert!(
                 is_supported(tag, attribute, true),
@@ -306,7 +337,7 @@ mod tests {
         for (tag, attribute) in [
             ("frame", "border-image"),
             ("text", "decoration"),
-            ("group", "mask-src"),
+            ("rect", "fill-rule"),
             ("row", "wrap"),
         ] {
             assert!(

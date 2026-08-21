@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **54** |
+| Implemented | **64** |
 | Partial | **1** |
-| Not implemented | **65** |
+| Not implemented | **55** |
 | Total | **120** |
 
 ## Not implemented
@@ -26,7 +26,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `border-image` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `border-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `border-width` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
-| `clip-path` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `col-gap` | `<grid>` |
 | `constraint-h` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `constraint-v` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
@@ -35,7 +34,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `decoration-style` | `<text>` |
 | `decoration-thickness` | `<text>` |
 | `fill-rule` | `<rect>`, `<ellipse>` |
-| `fill-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
 | `flip` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `font-feature` | `<text>` |
 | `font-optical-sizing` | `<text>` |
@@ -50,14 +48,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `list` | `<text>` |
 | `list-level` | `<text>` |
 | `list-marker` | `<text>` |
-| `mask` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `mask-composite` | `<group>` |
-| `mask-height` | `<group>` |
-| `mask-mode` | `<group>` |
-| `mask-src` | `<group>` |
-| `mask-width` | `<group>` |
-| `mask-x` | `<group>` |
-| `mask-y` | `<group>` |
 | `name` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `object-position` | `<img>` |
 | `paragraph-indent` | `<text>` |
@@ -105,10 +95,12 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `blend` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `border` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `clip` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `clip-path` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `columns` | `<grid>` |
 | `corner-smoothing` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>` |
 | `effect-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<rect>`, `<ellipse>` |
 | `fill` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
+| `fill-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
 | `filter` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `fit` | `<img>` |
 | `font-family` | `<text>` |
@@ -124,6 +116,14 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `isolation` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `letter-spacing` | `<text>` |
 | `line-height` | `<text>` |
+| `mask` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `mask-composite` | `<group>` |
+| `mask-height` | `<group>` |
+| `mask-mode` | `<group>` |
+| `mask-src` | `<group>` |
+| `mask-width` | `<group>` |
+| `mask-x` | `<group>` |
+| `mask-y` | `<group>` |
 | `max-height` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `max-lines` | `<text>` |
 | `max-width` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |

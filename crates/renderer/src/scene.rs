@@ -38,6 +38,15 @@ pub struct SceneNode {
     pub isolation: bool,
     /// A CSS `filter` string, e.g. `brightness(1.2) contrast(0.9)`.
     pub filter: Option<String>,
+    /// Whether this node is its parent's mask rather than something to draw.
+    ///
+    /// The first masking child shapes its parent; it is kept in the tree so a
+    /// consumer can see what the shape was, but it is not painted.
+    pub mask: bool,
+    /// An image mask hoisted onto the node, as `<group mask-src="...">`.
+    pub image_mask: Option<ImageMask>,
+    /// A CSS `clip-path` string, e.g. `circle(40% at 50% 50%)`.
+    pub clip_path: Option<String>,
     pub opacity: f32,
     /// Whether the node clips its children horizontally and vertically.
     ///
@@ -64,6 +73,24 @@ impl SceneNode {
             .find(|fill| fill.kind == "color")
             .and_then(|fill| fill.value.as_deref())
     }
+}
+
+/// An image used as a mask, from `mask-src` and friends.
+///
+/// The source is drawn once, unscaled beyond its declared size and not
+/// repeated, exactly as kit's `mask-repeat: no-repeat` does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImageMask {
+    pub src: String,
+    pub x: f32,
+    pub y: f32,
+    /// Defaults to the node's own size when the document leaves it out.
+    pub width: Option<f32>,
+    pub height: Option<f32>,
+    /// `alpha` (the default) or `luminance`.
+    pub mode: String,
+    /// `add`, `subtract`, `intersect` or `exclude`.
+    pub composite: String,
 }
 
 /// A stroke drawn outside the node's box, as in CSS `outline`.
@@ -208,6 +235,11 @@ fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata) -> SceneNode {
         filter: attr(layout, "filter")
             .map(|value| resolve_token(value, metadata))
             .filter(|value| !value.trim().is_empty() && value.trim() != "none"),
+        mask: attr(layout, "mask").is_some_and(|value| value != "false"),
+        image_mask: image_mask_for(layout, metadata),
+        clip_path: attr(layout, "clip-path")
+            .map(|value| resolve_token(value, metadata))
+            .filter(|value| !value.trim().is_empty() && value.trim() != "none"),
         opacity: attr(layout, "opacity")
             .and_then(parse_number)
             .unwrap_or(1.0),
@@ -254,8 +286,11 @@ fn fills_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Fill> {
         return fills;
     }
 
+    // A named `fill-style` resolves to a colour, so it stands in for the
+    // shorthand rather than sitting alongside it.
     attr(layout, "fill")
         .or_else(|| attr(layout, "color"))
+        .or_else(|| fill_style_value(layout, metadata))
         .map(|value| Fill {
             kind: "color".to_owned(),
             value: Some(resolve_token(value, metadata)),
@@ -305,6 +340,35 @@ fn borders_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Border> {
         .and_then(|value| parse_border(&resolve_token(value, metadata)))
         .into_iter()
         .collect()
+}
+
+/// The colour a node picks up from `fill-style="name"`.
+///
+/// `<fill-style name="X" value="..." />` lands in `metadata.styles` with the
+/// other named styles, because it is a bag of attributes like a text style is.
+fn fill_style_value<'a>(layout: &'a LayoutBox, metadata: &'a GuiMetadata) -> Option<&'a str> {
+    let name = attr(layout, "fill-style")?;
+    metadata.styles.get(name)?.get("value").map(String::as_str)
+}
+
+/// Reads `mask-src` and the geometry that positions it.
+fn image_mask_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Option<ImageMask> {
+    let src = attr(layout, "mask-src")?;
+    let number = |name: &str| {
+        attr(layout, name)
+            .map(|value| resolve_token(value, metadata))
+            .and_then(|value| parse_number(&value))
+    };
+
+    Some(ImageMask {
+        src: src.to_owned(),
+        x: number("mask-x").unwrap_or(0.0),
+        y: number("mask-y").unwrap_or(0.0),
+        width: number("mask-width"),
+        height: number("mask-height"),
+        mode: attr(layout, "mask-mode").unwrap_or("alpha").to_owned(),
+        composite: attr(layout, "mask-composite").unwrap_or("add").to_owned(),
+    })
 }
 
 /// The node's children in the order they are painted.
@@ -1338,6 +1402,122 @@ mod tests {
         assert_eq!(scene.root.children[0].blend, None);
         assert_eq!(scene.root.children[0].filter, None);
         assert!(!scene.root.children[0].isolation);
+    }
+
+    #[test]
+    fn an_image_mask_reads_its_geometry_and_defaults() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <frame w="200" h="100">
+                <group w="200" h="100" mask-src="assets/mask.svg" mask-x="4" mask-y="6"
+                       mask-mode="luminance" mask-composite="subtract" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        let group = &scene.root.children[0];
+        let mask = group.image_mask.as_ref().expect("mask is read");
+        assert_eq!(mask.src, "assets/mask.svg");
+        assert_eq!((mask.x, mask.y), (4.0, 6.0));
+        // Left out, so the node's own size stands in at paint time.
+        assert_eq!((mask.width, mask.height), (None, None));
+        assert_eq!(mask.mode, "luminance");
+        assert_eq!(mask.composite, "subtract");
+    }
+
+    #[test]
+    fn an_image_mask_defaults_to_alpha_and_add() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <frame w="200" h="100">
+                <group w="200" h="100" mask-src="assets/mask.svg" mask-width="50"
+                       mask-height="25" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        let group = &scene.root.children[0];
+        let mask = group.image_mask.as_ref().expect("mask is read");
+        assert_eq!((mask.width, mask.height), (Some(50.0), Some(25.0)));
+        assert_eq!(mask.mode, "alpha");
+        assert_eq!(mask.composite, "add");
+    }
+
+    #[test]
+    fn a_masking_child_is_flagged_and_kept_in_the_tree() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <frame w="100" h="100">
+                <group w="100" h="100">
+                  <rect abs x="0" y="0" w="40" h="40" fill="#00ff00" mask="true" />
+                  <rect abs x="0" y="0" w="100" h="100" fill="#ff0000" />
+                </group>
+              </frame>
+            </gui>
+            "##,
+        );
+
+        let group = &scene.root.children[0];
+        assert_eq!(
+            group.children.len(),
+            2,
+            "the shape stays visible to a consumer"
+        );
+        assert!(group.children[0].mask);
+        assert!(!group.children[1].mask);
+    }
+
+    #[test]
+    fn a_fill_style_stands_in_for_the_fill_shorthand() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <tokens>
+                <token name="brand" value="#0D99FF" />
+              </tokens>
+              <styles>
+                <fill-style name="surface" value="$brand" />
+              </styles>
+              <col w="100" h="50">
+                <rect w="10" h="10" fill-style="surface" />
+                <rect w="10" h="10" fill-style="surface" fill="#112233" />
+                <rect w="10" h="10" fill-style="missing" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(scene.root.children[0].fill_color(), Some("#0D99FF"));
+        assert_eq!(
+            scene.root.children[1].fill_color(),
+            Some("#112233"),
+            "a direct fill wins over the named style"
+        );
+        assert_eq!(scene.root.children[2].fill_color(), None);
+    }
+
+    #[test]
+    fn clip_path_reaches_the_scene_and_none_reads_as_absent() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50" clip-path="circle(40% at 50% 50%)">
+                <rect w="10" h="10" clip-path="none" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            scene.root.clip_path.as_deref(),
+            Some("circle(40% at 50% 50%)")
+        );
+        assert_eq!(scene.root.children[0].clip_path, None);
     }
 
     #[test]

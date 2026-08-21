@@ -66,7 +66,8 @@ This is an early native renderer. It can already:
 - clip per axis with `overflow-x`/`overflow-y`, or to the node's shape with
   `clip`
 - composite with `blend`, `isolation`, `filter` and `z-index`, and reuse named
-  effect stacks with `effect-style`
+  effect stacks with `effect-style` and colours with `fill-style`
+- mask with `clip-path`, an image `mask-src`, or a `mask` child
 - draw rich text: `<segment>` runs with their own weight, style, size, and
   colour, wrapping as one continuous string
 - resolve Google fonts through the renderer cache, and system fonts from the
@@ -278,7 +279,46 @@ blank.
 without one sorts as 0 and the sort is stable, so document order still decides
 between equals.
 
+### Masks And Clipping
+
+Three things shape a node, and all three cut its own paint as well as its
+children — unlike `clip`, which only holds children in:
+
+```xml
+<frame w="200" h="120" clip-path="inset(10px round 20px)" />
+
+<group w="390" h="200" mask-src="assets/mask.svg" mask-x="0" mask-y="0"
+       mask-width="390" mask-height="200" />
+
+<group w="100" h="100">
+  <ellipse w="100" h="100" mask="true" />
+  <img src="assets/photo.webp" w="100" h="100" fit="cover" />
+</group>
+```
+
+`clip-path` builds `inset()`, `circle()`, `ellipse()` and `polygon()` directly,
+with percentages resolved against the node's box. A `path()` value is handed to
+the SVG parser, which already knows that grammar. Anything else leaves the node
+unclipped rather than blank.
+
+`mask-src` draws its asset once at `mask-x`/`mask-y`, sized by
+`mask-width`/`mask-height` or the node itself. `mask-mode` takes the source's
+`alpha` (the default) or its `luminance`. `mask-composite` is `add` by default;
+`subtract` and `exclude` cut the shape out instead — a single mask layer gives
+CSS's operators nothing to combine against, and `mask-src` is hoisted off a
+Figma group mask, where that is what they mean.
+
+A child carrying `mask` shapes its parent with its own outline and is not
+painted. It stays in the scene tree so a consumer can still see what the shape
+was.
+
+A mask that cannot be resolved leaves the node alone. Losing content over a
+missing file would be worse than showing it unmasked.
+
 ### Effect Styles
+
+`<styles>` also holds `<fill-style name="X" value="..." />`, which a node
+picks up with `fill-style="X"`. A direct `fill` wins over the named style.
 
 `<styles>` holds named `<effect-style>` blocks alongside `<text-style>` ones. A
 node referencing one by name picks up its effects **under** its own, so a node
@@ -559,7 +599,6 @@ mean anyone looked. Run the goldens by hand when changing anything visual.
 - Improve antialiasing quality for text and vector shapes.
 - Add opacity groups; `opacity` is still applied per draw, not per group.
 - Add layer blur.
-- Add masks and clipping paths.
 - Add PDF export once the scene model is stable.
 
 ### WASM And API
