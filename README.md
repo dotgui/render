@@ -85,6 +85,8 @@ This is an early native renderer. It can already:
 - preserve bundled assets from `.gui` packages
 - render raster images (PNG/JPEG) with `contain`, `cover`, `fill`, and `crop`
   fit modes
+- expand `<instance>` nodes against `<components>` definitions, with declared
+  props, ad-hoc overrides by layer id, variants, and instance scaling
 - expose parsing, layout, scene, and PNG rendering through WASM
 
 It is not complete yet. The renderer should be treated as a growing engine, not
@@ -488,6 +490,45 @@ The effect stack (RFC-0027) is drawn in document order:
 
 Blur is three successive box blurs, the approximation the SVG filter spec
 prescribes and browsers use.
+
+## Components
+
+A `<components>` block declares reusable bodies; an `<instance>` names one and
+passes overrides as attributes.
+
+```xml
+<components>
+  <component name="Card/Product" id="comp-card">
+    <props>
+      <prop name="title" type="text" target="title" />
+    </props>
+    <col w="320" radius="12" fill="#fff" p="16" gap="8">
+      <text id="title" value="Product Name" font-size="16" />
+    </col>
+  </component>
+</components>
+
+<instance component="comp-card" title="Nike Air Max 90" x="24" y="120" />
+```
+
+Instances are expanded **while the document is parsed**, so nothing downstream
+ever sees one: layout, the scene and painting work on the tree the document
+would have had if it were written out longhand.
+
+A declared `<prop>` names its `target` layers by id, and `bind` says which
+attribute a value lands on when the type alone does not. An instance attribute
+with no `<prop>` behind it matches a layer id directly, taking its type from
+what it finds there. `false` removes a layer. A `<component-set>`'s `<variant>`
+children are components in their own right, referenced by their own ids.
+
+An instance that declares a different `w`/`h` than its component body scales
+the children that ask for it with `constraint-h`/`constraint-v`. That is the
+only thing those constraints do — in this renderer and in kit — so a document
+using them to pin an edge still gets nothing; see the tracking issue.
+
+A component whose body instantiates itself stops at a depth limit rather than
+expanding forever, and an instance naming a component nothing declares is
+dropped rather than laid out as an unknown block.
 
 ## Positioned Containers
 

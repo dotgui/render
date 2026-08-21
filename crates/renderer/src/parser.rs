@@ -1,3 +1,4 @@
+use crate::components;
 use crate::{FontInfo, GuiDocument, GuiMetadata, GuiNode};
 use roxmltree::{Document, Node};
 use std::collections::BTreeMap;
@@ -42,6 +43,7 @@ pub fn parse_gui_xml(xml: &str) -> Result<GuiDocument, ParseError> {
 
     let mut metadata = GuiMetadata::default();
     let mut layout_root: Option<GuiNode> = None;
+    let mut component_blocks = Vec::new();
 
     for child in root.children().filter(Node::is_element) {
         let tag = child.tag_name().name();
@@ -49,6 +51,7 @@ pub fn parse_gui_xml(xml: &str) -> Result<GuiDocument, ParseError> {
             "tokens" => read_tokens(child, &mut metadata),
             "fonts" => read_fonts(child, &mut metadata),
             "styles" => read_styles(child, &mut metadata),
+            "components" => component_blocks.push(read_node(child)),
             t if ROOT_LAYOUT_TAGS.contains(&t) => {
                 if layout_root.is_some() {
                     return Err(ParseError::MultipleRootLayouts);
@@ -59,11 +62,21 @@ pub fn parse_gui_xml(xml: &str) -> Result<GuiDocument, ParseError> {
         }
     }
 
+    let mut layout_root = layout_root.ok_or(ParseError::MissingRootLayout)?;
+
+    // Instances are expanded here so nothing downstream ever sees one: layout,
+    // the scene and painting work on the tree the document would have had if
+    // it were written out longhand. This runs even when the document declares
+    // no components, so an instance naming one that does not exist is dropped
+    // rather than laid out as an unknown block.
+    let components = components::read_components(&component_blocks);
+    components::expand(&mut layout_root, &components);
+
     Ok(GuiDocument {
         version: attr(root, "version").unwrap_or_else(|| "0.2".to_owned()),
         name: attr(root, "name"),
         metadata,
-        root: layout_root.ok_or(ParseError::MissingRootLayout)?,
+        root: layout_root,
     })
 }
 

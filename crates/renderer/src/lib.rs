@@ -7,6 +7,7 @@
 mod assets;
 mod blur;
 mod clip_path;
+mod components;
 pub mod coverage;
 mod filter;
 mod fonts;
