@@ -228,6 +228,12 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "font-optical-sizing",
             "font-smoothing",
             "href",
+            "white-space",
+            "word-break",
+            "word-spacing",
+            "text-wrap",
+            "paragraph-indent",
+            "paragraph-spacing",
         ],
     ),
     (
@@ -276,7 +282,10 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "fill-style",
         ],
     ),
-    ("line", &["w", "h", "x", "y", "fill", "fill-style"]),
+    (
+        "line",
+        &["w", "h", "x", "y", "fill", "fill-style", "thickness"],
+    ),
     // `<appearance>` holds child elements rather than attributes. All three
     // stacks are read; gradient and image fills are carried into the scene but
     // not painted yet.
@@ -344,6 +353,8 @@ mod tests {
             ("img", "aspect-ratio"),
             ("text", "font-stretch"),
             ("img", "image-rendering"),
+            ("text", "white-space"),
+            ("line", "thickness"),
         ] {
             assert!(
                 is_supported(tag, attribute, true),

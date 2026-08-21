@@ -777,8 +777,11 @@ fn paint_one_fill(pixmap: &mut Pixmap, node: &SceneNode, fill: &Fill) {
 }
 
 fn paint_height(node: &SceneNode) -> f32 {
+    // A `<line>` is a divider: it has no height of its own, so `thickness`
+    // gives it one. The spec's default is 1px, which is what it drew before
+    // the attribute was read.
     if node.tag == "line" && node.bounds.height <= 0.0 {
-        1.0
+        node.thickness.filter(|it| *it > 0.0).unwrap_or(1.0)
     } else {
         node.bounds.height
     }
@@ -798,6 +801,10 @@ fn paint_content(
             max_lines,
             truncate,
             text_align,
+            white_space,
+            text_wrap,
+            word_break,
+            paragraph_indent,
             ..
         } => {
             let styles = segments
@@ -827,6 +834,12 @@ fn paint_content(
                 *max_lines,
                 *truncate,
                 text_align.as_deref(),
+                text::WrapOptions::new(
+                    white_space.as_deref(),
+                    text_wrap.as_deref(),
+                    word_break.as_deref(),
+                    *paragraph_indent,
+                ),
             );
         }
         PaintContent::Image {
@@ -864,6 +877,8 @@ struct RunStyle<'a> {
     axes: FontAxes,
     /// Whether glyphs are antialiased, from `font-smoothing`.
     anti_alias: bool,
+    /// Extra advance on each space, from `word-spacing`.
+    word_spacing: f32,
 }
 
 impl<'a> RunStyle<'a> {
@@ -903,6 +918,7 @@ impl<'a> RunStyle<'a> {
             // grayscale antialiasing here; subpixel needs the target's own
             // stripe order, which a PNG has no business assuming.
             anti_alias: segment.font_smoothing.as_deref() != Some("none"),
+            word_spacing: segment.word_spacing,
         }
     }
 
@@ -917,6 +933,21 @@ impl<'a> RunStyle<'a> {
             (None, None) => text.chars().count() as f32 * self.font_size * 0.55,
         };
         base + text.chars().count() as f32 * self.letter_spacing
+            + self.spaces(text) * self.word_spacing
+    }
+
+    /// How many space characters a string carries, for `word-spacing`.
+    fn spaces(&self, text: &str) -> f32 {
+        text.chars().filter(|ch| *ch == ' ').count() as f32
+    }
+
+    /// The extra advance a single character earns from `word-spacing`.
+    fn space_advance(&self, ch: char) -> f32 {
+        if ch == ' ' {
+            self.word_spacing
+        } else {
+            0.0
+        }
     }
 
     fn baseline_offset(&self, line_height: f32) -> f32 {
@@ -964,8 +995,9 @@ impl<'a> RunStyle<'a> {
 
         for ch in text.chars() {
             let Some(glyph) = ttf_face.glyph_index(ch) else {
-                *cursor_x +=
-                    face.fallback().metrics(ch, self.font_size).advance_width + self.letter_spacing;
+                *cursor_x += face.fallback().metrics(ch, self.font_size).advance_width
+                    + self.letter_spacing
+                    + self.space_advance(ch);
                 continue;
             };
 
@@ -985,7 +1017,8 @@ impl<'a> RunStyle<'a> {
                 .glyph_hor_advance(glyph)
                 .map(|advance| advance as f32 * scale)
                 .unwrap_or_else(|| face.fallback().metrics(ch, self.font_size).advance_width)
-                + self.letter_spacing;
+                + self.letter_spacing
+                + self.space_advance(ch);
         }
     }
 
@@ -1010,11 +1043,12 @@ impl<'a> RunStyle<'a> {
                 color,
                 self.anti_alias,
             );
-            *cursor_x += metrics.advance_width + self.letter_spacing;
+            *cursor_x += metrics.advance_width + self.letter_spacing + self.space_advance(ch);
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_text(
     pixmap: &mut Pixmap,
     node: &SceneNode,
@@ -1023,10 +1057,11 @@ fn paint_text(
     max_lines: Option<usize>,
     truncate: bool,
     text_align: Option<&str>,
+    wrap: text::WrapOptions,
 ) {
     let measure = |text: &str, style: usize| styles[style].width(text);
 
-    let mut lines = text::wrap_runs(runs, Some(node.bounds.width), &measure);
+    let mut lines = text::wrap_runs(runs, Some(node.bounds.width), &measure, wrap);
     text::apply_line_limit_and_ellipsis(
         &mut lines,
         max_lines,
@@ -1038,7 +1073,7 @@ fn paint_text(
     let max_y = node.bounds.y + node.bounds.height;
     let mut line_top = node.bounds.y;
 
-    for line in lines {
+    for (index, line) in lines.into_iter().enumerate() {
         // The tallest run on the line sets the line box and the shared
         // baseline, so a larger segment is not clipped by its neighbours.
         let tallest = line
@@ -1057,8 +1092,12 @@ fn paint_text(
             break;
         }
 
-        let width = text::line_width(&line, &measure);
-        let mut cursor_x = aligned_text_x(node.bounds.x, node.bounds.width, width, text_align);
+        // The indent is part of the first line, so alignment sees a line that
+        // is that much wider and the text starts that much further in.
+        let indent = if index == 0 { wrap.indent } else { 0.0 };
+        let width = text::line_width(&line, &measure) + indent;
+        let mut cursor_x =
+            aligned_text_x(node.bounds.x, node.bounds.width, width, text_align) + indent;
         for run in &line {
             styles[run.style].draw(pixmap, &run.text, &mut cursor_x, baseline);
         }
@@ -3051,6 +3090,87 @@ mod tests {
         assert!(
             hard < smoothed / 4,
             "smoothing off should all but remove them: {hard} vs {smoothed}"
+        );
+    }
+
+    #[test]
+    fn line_thickness_sets_a_dividers_height() {
+        let painted = |thickness: &str| {
+            render(&format!(
+                r##"
+                <gui version="0.2">
+                  <col w="20" h="12" fill="#ffffff">
+                    <line w="20" fill="#000000" {thickness} />
+                  </col>
+                </gui>
+                "##
+            ))
+        };
+
+        let rows =
+            |img: &image::RgbaImage| (0..12).filter(|y| img.get_pixel(10, *y).0[0] < 128).count();
+
+        assert_eq!(rows(&painted("")), 1, "one pixel by default");
+        assert_eq!(rows(&painted(r#"thickness="4""#)), 4);
+    }
+
+    #[test]
+    fn paragraph_indent_moves_the_first_line_only() {
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="80" h="60" fill="#ffffff">
+                <text abs x="0" y="0" w="80" h="60" value="wwww wwww" fill="#000000"
+                      font-size="14" line-height="20" paragraph-indent="30" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        let first_ink = |top: u32, bottom: u32| {
+            (0..80).find(|x| (top..bottom).any(|y| painted.get_pixel(*x, y).0[0] < 200))
+        };
+
+        let first_line = first_ink(0, 20).expect("the first line is drawn");
+        let second_line = first_ink(20, 40).expect("the second line is drawn");
+
+        assert!(
+            first_line >= 30,
+            "the first line starts past the indent, at {first_line}"
+        );
+        assert!(
+            second_line < 10,
+            "the second line starts at the edge, at {second_line}"
+        );
+    }
+
+    #[test]
+    fn word_spacing_pushes_the_words_apart() {
+        let end_of_ink = |spacing: &str| {
+            let painted = render(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="200" h="30" fill="#ffffff">
+                    <text abs x="0" y="0" w="200" h="30" value="a b c" fill="#000000"
+                          font-size="14" white-space="nowrap" {spacing} />
+                  </frame>
+                </gui>
+                "##
+            ));
+            (0..200)
+                .rev()
+                .find(|x| (0..30).any(|y| painted.get_pixel(*x, y).0[0] < 200))
+                .expect("something is drawn")
+        };
+
+        let plain = end_of_ink("");
+        let spaced = end_of_ink(r#"word-spacing="10""#);
+
+        // Two spaces, ten pixels each, so the last glyph lands ~20px later.
+        assert!(
+            (18..=22).contains(&(spaced - plain)),
+            "expected about 20px later, got {}",
+            spaced - plain
         );
     }
 

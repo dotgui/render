@@ -72,6 +72,8 @@ This is an early native renderer. It can already:
   `transform-origin`, and shape boxes with `aspect-ratio`
 - drive variable axes from `font-stretch` and `font-optical-sizing`, and place
   and resample images with `object-position` and `image-rendering`
+- break lines by `white-space`, `text-wrap` and `word-break`, and space them
+  with `word-spacing`, `paragraph-indent` and `paragraph-spacing`
 - draw rich text: `<segment>` runs with their own weight, style, size, and
   colour, wrapping as one continuous string
 - resolve Google fonts through the renderer cache, and system fonts from the
@@ -282,6 +284,30 @@ blank.
 `z-index` is resolved when the scene is built, not when it is painted: a node
 without one sorts as 0 and the sort is stable, so document order still decides
 between equals.
+
+### Line Breaking
+
+`white-space` and `text-wrap` decide whether text wraps at all; either one
+saying `nowrap` is enough, and `white-space: pre` says it too. Turning wrapping
+off stops the renderer choosing breaks — it does not overrule a newline the
+document wrote.
+
+`word-break` decides where a break may fall:
+
+| Value | Behaviour |
+|---|---|
+| `normal` | between words, and after `-`, `–`, `—`, `/` |
+| `break-all` | between any two characters |
+| `keep-all` | between words only, not at punctuation |
+| `break-word` | as `normal`, but a word alone on a line and still too long is split |
+
+`word-spacing` adds pixels to every space, in measurement as well as painting.
+`paragraph-indent` takes room from the first line only, so the rest of the
+block is unaffected. `paragraph-spacing` is room after the block, which it gets
+from a bottom margin, as kit does.
+
+`thickness` gives a `<line>` its height. A `<line>` is a divider with no height
+of its own, and the spec's default of 1px is what it drew before.
 
 ### Fonts And Images
 

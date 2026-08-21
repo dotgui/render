@@ -30,6 +30,8 @@ pub struct SceneNode {
     pub radius: Option<f32>,
     /// Squircle factor for the node's corners, 0 (a circular arc) to 1.
     pub corner_smoothing: f32,
+    /// A `<line>`'s stroke thickness. `None` everywhere else.
+    pub thickness: Option<f32>,
     /// How the node composites against what is already painted behind it,
     /// as in CSS `mix-blend-mode`. `None` is the normal mode.
     pub blend: Option<String>,
@@ -227,6 +229,8 @@ pub struct TextSegment {
     pub font_stretch: Option<String>,
     pub font_optical_sizing: Option<String>,
     pub font_smoothing: Option<String>,
+    /// Extra space added to each space character, from `word-spacing`.
+    pub word_spacing: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -242,6 +246,13 @@ pub enum PaintContent {
         max_lines: Option<usize>,
         truncate: bool,
         text_align: Option<String>,
+        /// `white-space`, `text-wrap` and `word-break`, which decide where
+        /// lines may break.
+        white_space: Option<String>,
+        text_wrap: Option<String>,
+        word_break: Option<String>,
+        /// First-line indent, from `paragraph-indent`.
+        paragraph_indent: f32,
     },
     Image {
         src: String,
@@ -271,6 +282,13 @@ fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata) -> SceneNode {
             .map(|value| resolve_token(value, metadata))
             .and_then(|value| parse_number(&value)),
         corner_smoothing: corner_smoothing_for(layout, metadata),
+        thickness: (layout.tag == "line")
+            .then(|| {
+                attr(layout, "thickness")
+                    .map(|value| resolve_token(value, metadata))
+                    .and_then(|value| parse_number(&value))
+            })
+            .flatten(),
         blend: attr(layout, "blend")
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty() && value != "normal"),
@@ -755,6 +773,7 @@ fn content_for(layout: &LayoutBox, metadata: &GuiMetadata) -> PaintContent {
                     font_stretch: run.style.font_stretch,
                     font_optical_sizing: run.style.font_optical_sizing,
                     font_smoothing: run.style.font_smoothing,
+                    word_spacing: run.style.word_spacing,
                 })
                 .collect();
 
@@ -764,6 +783,13 @@ fn content_for(layout: &LayoutBox, metadata: &GuiMetadata) -> PaintContent {
                 max_lines: max_text_lines(layout),
                 truncate: truncates(layout),
                 text_align: attr(layout, "align").map(ToOwned::to_owned),
+                white_space: attr(layout, "white-space").map(ToOwned::to_owned),
+                text_wrap: attr(layout, "text-wrap").map(ToOwned::to_owned),
+                word_break: attr(layout, "word-break").map(ToOwned::to_owned),
+                paragraph_indent: attr(layout, "paragraph-indent")
+                    .map(|value| resolve_token(value, metadata))
+                    .and_then(|value| parse_number(&value))
+                    .unwrap_or(0.0),
             }
         }
         "img" => layout
@@ -931,10 +957,15 @@ mod tests {
                     font_stretch: None,
                     font_optical_sizing: None,
                     font_smoothing: None,
+                    word_spacing: 0.0,
                 }],
                 max_lines: None,
                 truncate: false,
                 text_align: None,
+                white_space: None,
+                text_wrap: None,
+                word_break: None,
+                paragraph_indent: 0.0,
             }
         );
         assert_eq!(
@@ -985,10 +1016,15 @@ mod tests {
                     font_stretch: None,
                     font_optical_sizing: None,
                     font_smoothing: None,
+                    word_spacing: 0.0,
                 }],
                 max_lines: None,
                 truncate: false,
                 text_align: None,
+                white_space: None,
+                text_wrap: None,
+                word_break: None,
+                paragraph_indent: 0.0,
             }
         );
     }
@@ -1027,10 +1063,15 @@ mod tests {
                     font_stretch: None,
                     font_optical_sizing: None,
                     font_smoothing: None,
+                    word_spacing: 0.0,
                 }],
                 max_lines: Some(1),
                 truncate: true,
                 text_align: Some("right".to_owned()),
+                white_space: None,
+                text_wrap: None,
+                word_break: None,
+                paragraph_indent: 0.0,
             }
         );
     }
