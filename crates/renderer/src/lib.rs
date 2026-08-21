@@ -10,6 +10,7 @@ mod clip_path;
 pub mod coverage;
 mod filter;
 mod fonts;
+mod gradient;
 mod grid;
 mod layout;
 mod model;
