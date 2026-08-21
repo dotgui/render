@@ -227,12 +227,12 @@ fn style_for_node(node: &GuiNode, metadata: &GuiMetadata, parent_layout: ParentL
             height: dimension_attr(node, metadata, "h"),
         },
         min_size: Size {
-            width: dimension_attr(node, metadata, "min-w"),
-            height: dimension_attr(node, metadata, "min-h"),
+            width: constraint_attr(node, metadata, "min-width", "min-w"),
+            height: constraint_attr(node, metadata, "min-height", "min-h"),
         },
         max_size: Size {
-            width: dimension_attr(node, metadata, "max-w"),
-            height: dimension_attr(node, metadata, "max-h"),
+            width: constraint_attr(node, metadata, "max-width", "max-w"),
+            height: constraint_attr(node, metadata, "max-height", "max-h"),
         },
         padding: Rect {
             left: length(padding_side(node, metadata, Side::Left)),
@@ -316,6 +316,26 @@ fn flex_direction_for(node: &GuiNode) -> FlexDirection {
     match node.tag.as_str() {
         "row" => FlexDirection::Row,
         _ => FlexDirection::Column,
+    }
+}
+
+/// Min/max constraints, read under the spec name with the short form kept as an
+/// alias.
+///
+/// The spec (and kit) say `min-width`/`max-width`/`min-height`/`max-height`.
+/// Real documents in the corpus also write `min-h`, and the intent there is
+/// unambiguous, so both spellings are accepted with the spec name winning when
+/// a node carries both.
+fn constraint_attr(
+    node: &GuiNode,
+    metadata: &GuiMetadata,
+    spec_name: &str,
+    alias: &str,
+) -> Dimension {
+    if node.attributes.contains_key(spec_name) {
+        dimension_attr(node, metadata, spec_name)
+    } else {
+        dimension_attr(node, metadata, alias)
     }
 }
 
@@ -1141,10 +1161,45 @@ mod tests {
 
     #[test]
     fn min_and_max_constraints_clamp_boxes() {
+        for (min_height, max_width) in [("min-height", "max-width"), ("min-h", "max-w")] {
+            let layout = layout_of(&format!(
+                r#"
+            <gui version="0.2">
+              <col w="100" {min_height}="150" {max_width}="80">
+                <rect w="200" h="50" />
+              </col>
+            </gui>
+            "#
+            ));
+
+            assert_eq!(layout.rect.width, 80.0, "{max_width}");
+            assert_eq!(layout.rect.height, 150.0, "{min_height}");
+        }
+    }
+
+    #[test]
+    fn percentage_constraints_resolve_against_the_parent() {
+        for min_width in ["min-width", "min-w"] {
+            let layout = layout_of(&format!(
+                r#"
+            <gui version="0.2">
+              <col w="400">
+                <col w="100" {min_width}="50%" />
+              </col>
+            </gui>
+            "#
+            ));
+
+            assert_eq!(layout.children[0].rect.width, 200.0, "{min_width}");
+        }
+    }
+
+    #[test]
+    fn the_spec_constraint_name_wins_over_the_short_alias() {
         let layout = layout_of(
             r#"
             <gui version="0.2">
-              <col w="100" min-h="150" max-w="80">
+              <col w="100" max-width="80" max-w="40">
                 <rect w="200" h="50" />
               </col>
             </gui>
@@ -1152,22 +1207,6 @@ mod tests {
         );
 
         assert_eq!(layout.rect.width, 80.0);
-        assert_eq!(layout.rect.height, 150.0);
-    }
-
-    #[test]
-    fn percentage_constraints_resolve_against_the_parent() {
-        let layout = layout_of(
-            r#"
-            <gui version="0.2">
-              <col w="400">
-                <col w="100" min-w="50%" />
-              </col>
-            </gui>
-            "#,
-        );
-
-        assert_eq!(layout.children[0].rect.width, 200.0);
     }
 
     #[test]
