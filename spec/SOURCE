@@ -1,0 +1,11 @@
+# Where spec/spec.json came from.
+#
+# Vendored rather than read from ../core so that generation and the CI check
+# work from a checkout of this repository alone. Refresh with:
+#
+#     cargo run -p dotgui-renderer --example refresh_spec
+#
+repo   = dotgui/core
+path   = spec/spec.json
+commit = bdcb1eb7b5f51e951773bd39507fc852c1975054
+date   = 2026-07-27
