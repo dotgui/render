@@ -214,16 +214,19 @@ fn direction_angle(part: &str) -> Option<f32> {
 }
 
 fn parse_angle(value: &str) -> Option<f32> {
+    // Degrees per unit. `grad` is checked before `rad`, or it would strip to a
+    // trailing `g` and fail to parse.
+    const UNITS: [(&str, f32); 4] = [
+        ("deg", 1.0),
+        ("grad", 0.9),
+        ("rad", 180.0 / std::f32::consts::PI),
+        ("turn", 360.0),
+    ];
+
     let value = value.trim();
-    let (number, scale) = if let Some(rest) = value.strip_suffix("deg") {
-        (rest, 1.0)
-    } else if let Some(rest) = value.strip_suffix("turn") {
-        (rest, 360.0)
-    } else if let Some(rest) = value.strip_suffix("rad") {
-        (rest, 180.0 / std::f32::consts::PI)
-    } else {
-        return None;
-    };
+    let (number, scale) = UNITS
+        .iter()
+        .find_map(|(suffix, scale)| Some((value.strip_suffix(suffix)?, *scale)))?;
 
     number.trim().parse::<f32>().ok().map(|it| it * scale)
 }
@@ -409,6 +412,7 @@ mod tests {
         assert_eq!(direction_angle("to left"), Some(270.0));
         assert_eq!(direction_angle("to bottom right"), Some(135.0));
         assert_eq!(direction_angle("0.5turn"), Some(180.0));
+        assert_eq!(direction_angle("200grad"), Some(180.0));
         assert_eq!(
             direction_angle("#ff0000"),
             None,
