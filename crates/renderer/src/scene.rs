@@ -231,6 +231,8 @@ pub struct TextSegment {
     pub font_smoothing: Option<String>,
     /// Extra space added to each space character, from `word-spacing`.
     pub word_spacing: f32,
+    /// Pixels this run's baseline moves up, from `baseline-shift`.
+    pub baseline_shift: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -253,6 +255,18 @@ pub enum PaintContent {
         word_break: Option<String>,
         /// First-line indent, from `paragraph-indent`.
         paragraph_indent: f32,
+        /// The marker drawn before the first line, from `list`, `list-level`
+        /// and `list-marker`. Already resolved to the string to draw, so a
+        /// decimal item carries its own number.
+        list_marker: Option<String>,
+        /// Left indent for the whole block, from `list-level`.
+        list_indent: f32,
+        /// `top` (the default), `center` or `bottom`: where a text block that
+        /// is shorter than its box sits inside it.
+        vertical_align: Option<String>,
+        /// `leading-trim`: `cap-height` pulls the block's top edge down to the
+        /// cap height and its bottom up to the baseline.
+        leading_trim: Option<String>,
     },
     Image {
         src: String,
@@ -267,11 +281,16 @@ pub enum PaintContent {
 pub fn build_scene(document: &GuiDocument, layout: &LayoutBox) -> Scene {
     Scene {
         name: document.name.clone(),
-        root: build_scene_node(layout, &document.metadata),
+        root: build_scene_node(layout, &document.metadata, 1),
     }
 }
 
-fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata) -> SceneNode {
+/// Builds one node.
+///
+/// `ordinal` is the node's position among its list-item siblings, counting
+/// from 1. Only a `list="decimal"` node uses it, but it can only be known
+/// from the parent, so it is passed down rather than looked up.
+fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata, ordinal: usize) -> SceneNode {
     SceneNode {
         tag: layout.tag.clone(),
         bounds: layout.rect,
@@ -309,7 +328,7 @@ fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata) -> SceneNode {
         clip_x: clips_axis(layout, "overflow-x"),
         clip_y: clips_axis(layout, "overflow-y"),
         effects: effects_for(layout, metadata),
-        content: content_for(layout, metadata),
+        content: content_for(layout, metadata, ordinal),
         children: paint_ordered_children(layout, metadata),
     }
 }
@@ -528,20 +547,70 @@ fn image_mask_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Option<ImageMas
 /// for the painter to re-derive. A node without one sorts as 0, and the sort
 /// is stable, so document order still decides between equals.
 fn paint_ordered_children(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<SceneNode> {
+    // A decimal list item is numbered by its place among its list-item
+    // siblings, which only the parent can count.
+    let mut ordinal = 0usize;
     let mut children: Vec<(i32, SceneNode)> = layout
         .children
         .iter()
         .filter(|child| child.tag != "segment" && child.tag != "appearance")
         .map(|child| {
+            if is_list_item(child) {
+                ordinal += 1;
+            }
             (
                 z_index_of(child, metadata),
-                build_scene_node(child, metadata),
+                build_scene_node(child, metadata, ordinal.max(1)),
             )
         })
         .collect();
 
     children.sort_by_key(|(z, _)| *z);
     children.into_iter().map(|(_, child)| child).collect()
+}
+
+/// One indent step per `list-level`, matching kit.
+const LIST_INDENT_STEP: f32 = 16.0;
+
+fn is_list_item(layout: &LayoutBox) -> bool {
+    attr(layout, "list").is_some_and(|value| value != "none")
+}
+
+pub(crate) fn list_indent(
+    attributes: &std::collections::BTreeMap<String, String>,
+    metadata: &GuiMetadata,
+) -> f32 {
+    attributes
+        .get("list-level")
+        .map(|value| resolve_token(value, metadata))
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(0) as f32
+        * LIST_INDENT_STEP
+}
+
+/// The marker text drawn before a list item's first line.
+///
+/// `list-marker` overrides the bullet entirely, which is how a document asks
+/// for a dash or an emoji instead. Otherwise `decimal` numbers the item by its
+/// place among its siblings and `disc` is a bullet.
+pub(crate) fn list_marker_text(
+    attributes: &std::collections::BTreeMap<String, String>,
+    metadata: &GuiMetadata,
+    ordinal: usize,
+) -> Option<String> {
+    let list = attributes.get("list")?;
+    if list == "none" {
+        return None;
+    }
+
+    if let Some(marker) = attributes.get("list-marker") {
+        return Some(format!("{} ", resolve_token(marker, metadata).trim()));
+    }
+
+    Some(match list.as_str() {
+        "decimal" => format!("{ordinal}. "),
+        _ => "\u{2022} ".to_owned(),
+    })
 }
 
 fn z_index_of(layout: &LayoutBox, metadata: &GuiMetadata) -> i32 {
@@ -754,7 +823,7 @@ fn appearance_effects(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Effect>
         .collect()
 }
 
-fn content_for(layout: &LayoutBox, metadata: &GuiMetadata) -> PaintContent {
+fn content_for(layout: &LayoutBox, metadata: &GuiMetadata, ordinal: usize) -> PaintContent {
     match layout.tag.as_str() {
         "text" => {
             let runs = resolve_text_runs(layout, metadata);
@@ -774,6 +843,7 @@ fn content_for(layout: &LayoutBox, metadata: &GuiMetadata) -> PaintContent {
                     font_optical_sizing: run.style.font_optical_sizing,
                     font_smoothing: run.style.font_smoothing,
                     word_spacing: run.style.word_spacing,
+                    baseline_shift: run.style.baseline_shift,
                 })
                 .collect();
 
@@ -790,6 +860,14 @@ fn content_for(layout: &LayoutBox, metadata: &GuiMetadata) -> PaintContent {
                     .map(|value| resolve_token(value, metadata))
                     .and_then(|value| parse_number(&value))
                     .unwrap_or(0.0),
+                list_marker: list_marker_text(&layout.attributes, metadata, ordinal),
+                // One level is one indent step. 16px is what kit uses, and
+                // nothing in the spec says otherwise.
+                list_indent: list_indent(&layout.attributes, metadata),
+                vertical_align: attr(layout, "vertical-align").map(ToOwned::to_owned),
+                leading_trim: attr(layout, "leading-trim")
+                    .map(ToOwned::to_owned)
+                    .filter(|value| value != "normal"),
             }
         }
         "img" => layout
@@ -958,6 +1036,7 @@ mod tests {
                     font_optical_sizing: None,
                     font_smoothing: None,
                     word_spacing: 0.0,
+                    baseline_shift: 0.0,
                 }],
                 max_lines: None,
                 truncate: false,
@@ -966,6 +1045,10 @@ mod tests {
                 text_wrap: None,
                 word_break: None,
                 paragraph_indent: 0.0,
+                list_marker: None,
+                list_indent: 0.0,
+                vertical_align: None,
+                leading_trim: None,
             }
         );
         assert_eq!(
@@ -1017,6 +1100,7 @@ mod tests {
                     font_optical_sizing: None,
                     font_smoothing: None,
                     word_spacing: 0.0,
+                    baseline_shift: 0.0,
                 }],
                 max_lines: None,
                 truncate: false,
@@ -1025,6 +1109,10 @@ mod tests {
                 text_wrap: None,
                 word_break: None,
                 paragraph_indent: 0.0,
+                list_marker: None,
+                list_indent: 0.0,
+                vertical_align: None,
+                leading_trim: None,
             }
         );
     }
@@ -1064,6 +1152,7 @@ mod tests {
                     font_optical_sizing: None,
                     font_smoothing: None,
                     word_spacing: 0.0,
+                    baseline_shift: 0.0,
                 }],
                 max_lines: Some(1),
                 truncate: true,
@@ -1072,6 +1161,10 @@ mod tests {
                 text_wrap: None,
                 word_break: None,
                 paragraph_indent: 0.0,
+                list_marker: None,
+                list_indent: 0.0,
+                vertical_align: None,
+                leading_trim: None,
             }
         );
     }
@@ -1883,6 +1976,117 @@ mod tests {
             segments[1].font_smoothing.as_deref(),
             Some("none"),
             "and inherits what it does not"
+        );
+    }
+
+    #[test]
+    fn list_items_are_numbered_by_their_place_among_siblings() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="200" h="200">
+                <text value="First" list="decimal" />
+                <text value="Not a list item" />
+                <text value="Second" list="decimal" />
+                <text value="Bulleted" list="disc" />
+                <text value="Custom" list="disc" list-marker="—" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        let marker = |index: usize| match &scene.root.children[index].content {
+            PaintContent::Text { list_marker, .. } => list_marker.clone(),
+            other => panic!("expected text, got {other:?}"),
+        };
+
+        assert_eq!(marker(0).as_deref(), Some("1. "));
+        assert_eq!(marker(1), None, "a plain text node is not numbered");
+        assert_eq!(
+            marker(2).as_deref(),
+            Some("2. "),
+            "the plain node between does not take a number, as in CSS"
+        );
+        assert_eq!(marker(3).as_deref(), Some("\u{2022} "));
+        assert_eq!(marker(4).as_deref(), Some("— "), "a custom marker wins");
+    }
+
+    #[test]
+    fn list_level_indents_the_block() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="200" h="200">
+                <text value="Top" list="disc" />
+                <text value="Nested" list="disc" list-level="2" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        let indent = |index: usize| match &scene.root.children[index].content {
+            PaintContent::Text { list_indent, .. } => *list_indent,
+            other => panic!("expected text, got {other:?}"),
+        };
+
+        assert_eq!(indent(0), 0.0);
+        assert_eq!(indent(1), 32.0);
+    }
+
+    #[test]
+    fn vertical_align_and_leading_trim_reach_the_scene() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="200" h="200">
+                <text value="A" vertical-align="center" leading-trim="cap-height" />
+                <text value="B" leading-trim="normal" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        let PaintContent::Text {
+            vertical_align,
+            leading_trim,
+            ..
+        } = &scene.root.children[0].content
+        else {
+            panic!("expected text content");
+        };
+        assert_eq!(vertical_align.as_deref(), Some("center"));
+        assert_eq!(leading_trim.as_deref(), Some("cap-height"));
+
+        let PaintContent::Text { leading_trim, .. } = &scene.root.children[1].content else {
+            panic!("expected text content");
+        };
+        assert_eq!(*leading_trim, None, "`normal` is no trim at all");
+    }
+
+    #[test]
+    fn baseline_shift_belongs_to_the_run_that_declares_it() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="200" h="50">
+                <text value="x" baseline-shift="4">
+                  <segment value="2" baseline-shift="6" />
+                  <segment value="3" />
+                </text>
+              </col>
+            </gui>
+            "##,
+        );
+
+        let PaintContent::Text { segments, .. } = &scene.root.children[0].content else {
+            panic!("expected text content");
+        };
+
+        assert_eq!(segments[0].baseline_shift, 4.0);
+        assert_eq!(segments[1].baseline_shift, 6.0);
+        assert_eq!(
+            segments[2].baseline_shift, 0.0,
+            "a shift is not inherited, or a nested run would double it"
         );
     }
 

@@ -72,6 +72,8 @@ pub(crate) struct TextStyle {
     /// `font-smoothing`: `antialiased`, `subpixel-antialiased` or `none`.
     pub font_smoothing: Option<String>,
     pub word_spacing: f32,
+    /// Pixels the run's baseline moves up, from `baseline-shift`.
+    pub baseline_shift: f32,
 }
 
 /// One styled run of a `<text>` node.
@@ -109,6 +111,7 @@ pub(crate) fn resolve_text_style<S: TextSource>(node: &S, metadata: &GuiMetadata
         font_optical_sizing: style_value(node, metadata, "font-optical-sizing"),
         font_smoothing: style_value(node, metadata, "font-smoothing"),
         word_spacing: style_number(node, metadata, "word-spacing").unwrap_or(0.0),
+        baseline_shift: style_number(node, metadata, "baseline-shift").unwrap_or(0.0),
     }
 }
 
@@ -207,6 +210,9 @@ fn inherit_style<S: TextSource>(node: &S, metadata: &GuiMetadata, parent: &TextS
         font_smoothing: style_value(node, metadata, "font-smoothing")
             .or_else(|| parent.font_smoothing.clone()),
         word_spacing: style_number(node, metadata, "word-spacing").unwrap_or(parent.word_spacing),
+        // A shift is a property of the run that declares it, not something a
+        // nested run should inherit and double.
+        baseline_shift: style_number(node, metadata, "baseline-shift").unwrap_or(0.0),
     }
 }
 

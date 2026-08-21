@@ -234,6 +234,12 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "text-wrap",
             "paragraph-indent",
             "paragraph-spacing",
+            "baseline-shift",
+            "vertical-align",
+            "leading-trim",
+            "list",
+            "list-level",
+            "list-marker",
         ],
     ),
     (
@@ -355,6 +361,8 @@ mod tests {
             ("img", "image-rendering"),
             ("text", "white-space"),
             ("line", "thickness"),
+            ("text", "list"),
+            ("text", "vertical-align"),
         ] {
             assert!(
                 is_supported(tag, attribute, true),

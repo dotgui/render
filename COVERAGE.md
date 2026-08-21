@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **85** |
+| Implemented | **91** |
 | Partial | **1** |
-| Not implemented | **34** |
+| Not implemented | **28** |
 | Total | **120** |
 
 ## Not implemented
@@ -19,7 +19,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 
 | Property | Elements |
 |---|---|
-| `baseline-shift` | `<text>` |
 | `border-align` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `border-color` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `border-image` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
@@ -37,10 +36,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `font-postscript` | `<text>` |
 | `font-style-name` | `<text>` |
 | `font-variation` | `<text>` |
-| `leading-trim` | `<text>` |
-| `list` | `<text>` |
-| `list-level` | `<text>` |
-| `list-marker` | `<text>` |
 | `name` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `reverse-z` | `<stack>`, `<row>`, `<col>` |
 | `row-gap` | `<grid>` |
@@ -49,7 +44,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `text-rendering` | `<text>` |
 | `text-resize` | `<text>` |
 | `text-underline-offset` | `<text>` |
-| `vertical-align` | `<text>` |
 | `visible` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `wrap` | `<stack>`, `<row>`, `<col>` |
 | `writing-mode` | `<text>` |
@@ -72,6 +66,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `abs` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `align` | `<stack>`, `<row>`, `<col>`, `<text>` |
 | `aspect-ratio` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `baseline-shift` | `<text>` |
 | `blend` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `border` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `clip` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
@@ -100,8 +95,12 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `href` | `<text>` |
 | `image-rendering` | `<img>` |
 | `isolation` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `leading-trim` | `<text>` |
 | `letter-spacing` | `<text>` |
 | `line-height` | `<text>` |
+| `list` | `<text>` |
+| `list-level` | `<text>` |
+| `list-marker` | `<text>` |
 | `mask` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `mask-composite` | `<group>` |
 | `mask-height` | `<group>` |
@@ -144,6 +143,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `transform-origin` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `truncate` | `<text>` |
 | `value` | `<text>` |
+| `vertical-align` | `<text>` |
 | `w` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `white-space` | `<text>` |
 | `word-break` | `<text>` |

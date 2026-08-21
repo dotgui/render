@@ -123,6 +123,31 @@ impl FontFace {
             .sum()
     }
 
+    /// Height of a capital above the baseline, at this size.
+    ///
+    /// Falls back to a fraction of the font size when the face declares no
+    /// `capHeight`, which is about where a Latin capital lands.
+    pub fn cap_height(&self, font_size: f32) -> f32 {
+        Face::parse(&self.bytes, self.collection_index)
+            .ok()
+            .and_then(|face| {
+                let units = face.units_per_em() as f32;
+                face.capital_height()
+                    .map(|cap| cap as f32 / units * font_size)
+            })
+            .unwrap_or(font_size * crate::layout::CAP_HEIGHT_RATIO)
+    }
+
+    /// How far the line box's top edge sits above the cap height.
+    ///
+    /// `leading-trim` removes exactly this, which puts the top of a capital on
+    /// the box's top edge. Both layout and painting call it.
+    pub fn leading_trim(&self, font_size: f32, line_height: f32) -> f32 {
+        (self.baseline_offset(font_size, line_height, FontAxes::default())
+            - self.cap_height(font_size))
+        .max(0.0)
+    }
+
     pub fn baseline_offset(&self, font_size: f32, line_height: f32, axes: FontAxes) -> f32 {
         if let Some(face) = self.variable_face(axes) {
             let scale = font_size / face.units_per_em() as f32;
@@ -327,6 +352,18 @@ impl TextMeasurer for FontStore {
         }
 
         fallback_text_width(value, font_size)
+    }
+
+    fn leading_trim(
+        &self,
+        font_family: Option<&str>,
+        font_weight: Option<&str>,
+        font_style: Option<&str>,
+        font_size: f32,
+        line_height: f32,
+    ) -> f32 {
+        self.get(font_family, font_weight, font_style)
+            .map_or(0.0, |face| face.leading_trim(font_size, line_height))
     }
 }
 

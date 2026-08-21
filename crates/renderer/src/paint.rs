@@ -805,6 +805,10 @@ fn paint_content(
             text_wrap,
             word_break,
             paragraph_indent,
+            list_marker,
+            list_indent,
+            vertical_align,
+            leading_trim,
             ..
         } => {
             let styles = segments
@@ -840,6 +844,12 @@ fn paint_content(
                     word_break.as_deref(),
                     *paragraph_indent,
                 ),
+                BlockStyle {
+                    list_marker: list_marker.as_deref(),
+                    list_indent: *list_indent,
+                    vertical_align: vertical_align.as_deref(),
+                    leading_trim: leading_trim.is_some(),
+                },
             );
         }
         PaintContent::Image {
@@ -879,6 +889,8 @@ struct RunStyle<'a> {
     anti_alias: bool,
     /// Extra advance on each space, from `word-spacing`.
     word_spacing: f32,
+    /// Pixels this run rides above the line's shared baseline.
+    baseline_shift: f32,
 }
 
 impl<'a> RunStyle<'a> {
@@ -919,6 +931,7 @@ impl<'a> RunStyle<'a> {
             // stripe order, which a PNG has no business assuming.
             anti_alias: segment.font_smoothing.as_deref() != Some("none"),
             word_spacing: segment.word_spacing,
+            baseline_shift: segment.baseline_shift,
         }
     }
 
@@ -947,6 +960,23 @@ impl<'a> RunStyle<'a> {
             self.word_spacing
         } else {
             0.0
+        }
+    }
+
+    /// How much `leading-trim` takes off the top of the block.
+    ///
+    /// This is `FontFace::leading_trim`, the same one `TextMeasurer` reaches,
+    /// so a trimmed box is sized and drawn to the same edge.
+    fn leading_trim(&self, line_height: f32) -> f32 {
+        match (self.face, self.fallback) {
+            (Some(face), _) => face.leading_trim(self.font_size, line_height),
+            // The host's default font has no `capHeight` reachable through
+            // fontdue, so the trim uses the same ratio the approximate
+            // measurer does — and stays a trim rather than silently nothing.
+            (None, Some(font)) => (fontdue_baseline_offset(font, self.font_size, line_height)
+                - self.font_size * crate::layout::CAP_HEIGHT_RATIO)
+                .max(0.0),
+            (None, None) => 0.0,
         }
     }
 
@@ -1048,6 +1078,16 @@ impl<'a> RunStyle<'a> {
     }
 }
 
+/// The block-level text properties, kept together rather than threaded as
+/// four more arguments through a function that already takes eight.
+#[derive(Debug, Clone, Copy, Default)]
+struct BlockStyle<'a> {
+    list_marker: Option<&'a str>,
+    list_indent: f32,
+    vertical_align: Option<&'a str>,
+    leading_trim: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn paint_text(
     pixmap: &mut Pixmap,
@@ -1057,21 +1097,45 @@ fn paint_text(
     max_lines: Option<usize>,
     truncate: bool,
     text_align: Option<&str>,
-    wrap: text::WrapOptions,
+    mut wrap: text::WrapOptions,
+    block: BlockStyle<'_>,
 ) {
     let measure = |text: &str, style: usize| styles[style].width(text);
 
-    let mut lines = text::wrap_runs(runs, Some(node.bounds.width), &measure, wrap);
-    text::apply_line_limit_and_ellipsis(
-        &mut lines,
-        max_lines,
-        truncate,
-        node.bounds.width,
-        &measure,
-    );
+    // The marker sits on the first line ahead of the text, so it takes room
+    // there exactly as an indent does — and is drawn in that room below.
+    let marker_width = block.list_marker.map_or(0.0, |marker| measure(marker, 0));
+    wrap.indent += marker_width;
+
+    // The whole block moves right by the list indent, and has that much less
+    // room to wrap in.
+    let left = node.bounds.x + block.list_indent;
+    let width = (node.bounds.width - block.list_indent).max(0.0);
+
+    let mut lines = text::wrap_runs(runs, Some(width), &measure, wrap);
+    text::apply_line_limit_and_ellipsis(&mut lines, max_lines, truncate, width, &measure);
+
+    // `vertical-align` places a block shorter than its box, so the block's own
+    // height has to be known before the first line is drawn.
+    let line_heights: Vec<f32> = lines
+        .iter()
+        .map(|line| {
+            line.iter()
+                .map(|run| styles[run.style].line_height)
+                .fold(0.0_f32, f32::max)
+                .max(styles.first().map_or(0.0, |style| style.line_height))
+        })
+        .collect();
+    let block_height: f32 = line_heights.iter().sum();
+    let slack = (node.bounds.height - block_height).max(0.0);
 
     let max_y = node.bounds.y + node.bounds.height;
-    let mut line_top = node.bounds.y;
+    let mut line_top = node.bounds.y
+        + match block.vertical_align {
+            Some("center") | Some("middle") => slack / 2.0,
+            Some("bottom") => slack,
+            _ => 0.0,
+        };
 
     for (index, line) in lines.into_iter().enumerate() {
         // The tallest run on the line sets the line box and the shared
@@ -1086,7 +1150,15 @@ fn paint_text(
             .map(|run| styles[run.style].line_height)
             .fold(0.0_f32, f32::max)
             .max(styles[tallest].line_height);
-        let baseline = line_top + styles[tallest].baseline_offset(line_height);
+        // `leading-trim` takes the half-leading off the top of the block, so
+        // the first line's cap height sits on the box's top edge instead of
+        // half a line below it.
+        let trim = if block.leading_trim && index == 0 {
+            styles[tallest].leading_trim(line_height)
+        } else {
+            0.0
+        };
+        let baseline = line_top + styles[tallest].baseline_offset(line_height) - trim;
 
         if baseline - styles[tallest].font_size > max_y {
             break;
@@ -1095,14 +1167,32 @@ fn paint_text(
         // The indent is part of the first line, so alignment sees a line that
         // is that much wider and the text starts that much further in.
         let indent = if index == 0 { wrap.indent } else { 0.0 };
-        let width = text::line_width(&line, &measure) + indent;
-        let mut cursor_x =
-            aligned_text_x(node.bounds.x, node.bounds.width, width, text_align) + indent;
-        for run in &line {
-            styles[run.style].draw(pixmap, &run.text, &mut cursor_x, baseline);
+        let line_width = text::line_width(&line, &measure) + indent;
+        let start = aligned_text_x(left, width, line_width, text_align);
+        let mut cursor_x = start + indent;
+
+        // The marker is drawn in the room the indent reserved for it, ahead of
+        // the first line's own indent.
+        if index == 0 {
+            if let Some(marker) = block.list_marker {
+                let mut marker_x = start + indent - marker_width;
+                styles[0].draw(pixmap, marker, &mut marker_x, baseline);
+            }
         }
 
-        line_top += line_height;
+        for run in &line {
+            let style = &styles[run.style];
+            // A shifted run rides above the line's shared baseline without
+            // moving anything else on it.
+            styles[run.style].draw(
+                pixmap,
+                &run.text,
+                &mut cursor_x,
+                baseline - style.baseline_shift,
+            );
+        }
+
+        line_top += line_height - trim;
     }
 }
 
@@ -3171,6 +3261,151 @@ mod tests {
             (18..=22).contains(&(spaced - plain)),
             "expected about 20px later, got {}",
             spaced - plain
+        );
+    }
+
+    /// The first row of the box that has any ink in it.
+    fn first_inked_row(img: &image::RgbaImage, width: u32, height: u32) -> Option<u32> {
+        (0..height).find(|y| (0..width).any(|x| img.get_pixel(x, *y).0[0] < 200))
+    }
+
+    #[test]
+    fn vertical_align_moves_a_short_block_down_its_box() {
+        let page = |align: &str| {
+            render(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="60" h="90" fill="#ffffff">
+                    <text abs x="0" y="0" w="60" h="90" value="Hi" fill="#000000"
+                          font-size="14" line-height="20" {align} />
+                  </frame>
+                </gui>
+                "##
+            ))
+        };
+
+        let top = first_inked_row(&page(""), 60, 90).expect("drawn");
+        let middle = first_inked_row(&page(r#"vertical-align="center""#), 60, 90).expect("drawn");
+        let bottom = first_inked_row(&page(r#"vertical-align="bottom""#), 60, 90).expect("drawn");
+
+        assert!(top < middle, "centre sits below top: {top} vs {middle}");
+        assert!(
+            middle < bottom,
+            "bottom sits below centre: {middle} vs {bottom}"
+        );
+        // 90 tall, a 20px line: the slack is 70, so bottom starts ~70 lower.
+        assert!(
+            (65..=75).contains(&(bottom - top)),
+            "expected about 70px of travel, got {}",
+            bottom - top
+        );
+    }
+
+    #[test]
+    fn leading_trim_pulls_the_first_line_up_to_its_cap_height() {
+        let page = |trim: &str| {
+            render(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="60" h="60" fill="#ffffff">
+                    <text abs x="0" y="0" w="60" h="60" value="H" fill="#000000"
+                          font-size="14" line-height="30" {trim} />
+                  </frame>
+                </gui>
+                "##
+            ))
+        };
+
+        let untrimmed = first_inked_row(&page(""), 60, 60).expect("drawn");
+        let trimmed =
+            first_inked_row(&page(r#"leading-trim="cap-height""#), 60, 60).expect("drawn");
+
+        assert!(
+            trimmed < untrimmed,
+            "the trimmed cap starts higher: {trimmed} vs {untrimmed}"
+        );
+        assert!(
+            trimmed <= 1,
+            "and lands on the box's top edge, at {trimmed}"
+        );
+    }
+
+    #[test]
+    fn a_list_marker_is_drawn_and_the_text_follows_it() {
+        let page = |list: &str| {
+            render(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="90" h="30" fill="#ffffff">
+                    <text abs x="0" y="0" w="90" h="30" value="Item" fill="#000000"
+                          font-size="14" {list} />
+                  </frame>
+                </gui>
+                "##
+            ))
+        };
+
+        let first_ink = |img: &image::RgbaImage| {
+            (0..90).find(|x| (0..30).any(|y| img.get_pixel(*x, y).0[0] < 200))
+        };
+
+        let plain = page("");
+        let bulleted = page(r#"list="disc""#);
+
+        assert!(
+            first_ink(&plain).is_some_and(|x| x <= 2),
+            "plain text starts at the edge"
+        );
+        assert!(
+            first_ink(&bulleted).is_some_and(|x| x <= 2),
+            "so does the marker that replaces it"
+        );
+
+        // The marker adds ink the plain version does not have, and pushes the
+        // word right, so the two renders differ well past the start.
+        let differing = (0..90)
+            .filter(|x| (0..30).any(|y| plain.get_pixel(*x, y) != bulleted.get_pixel(*x, y)));
+        assert!(
+            differing.count() > 5,
+            "the marker should change the line's layout"
+        );
+    }
+
+    #[test]
+    fn baseline_shift_lifts_one_run_off_the_shared_baseline() {
+        // The same document twice, so the comparison is one glyph against
+        // itself rather than two different letters against each other.
+        let page = |shift: &str| {
+            render(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="80" h="40" fill="#ffffff">
+                    <text abs x="0" y="0" w="80" h="40" fill="#000000" font-size="14"
+                          line-height="30" white-space="nowrap">
+                      <segment value="H" />
+                      <segment value="H" {shift} />
+                    </text>
+                  </frame>
+                </gui>
+                "##
+            ))
+        };
+
+        // The topmost inked row across the whole box: the shifted run is the
+        // only thing that can rise above the unshifted line.
+        let top = |img: &image::RgbaImage| {
+            (0..40)
+                .find(|y| (0..80).any(|x| img.get_pixel(x, *y).0[0] < 200))
+                .expect("something is drawn")
+        };
+
+        let flat = top(&page(""));
+        let lifted = top(&page(r#"baseline-shift="8""#));
+
+        assert_eq!(
+            flat - lifted,
+            8,
+            "the shifted run rides exactly the 8px asked for"
         );
     }
 
