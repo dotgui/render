@@ -63,6 +63,8 @@ This is an early native renderer. It can already:
 - paint the ordered `<fill>`, `<border>` and `<effect>` stacks of `<appearance>`
 - draw outlines with `outline`/`outline-offset`, squircle corners with
   `corner-smoothing`, and the `shadow` shorthand
+- clip per axis with `overflow-x`/`overflow-y`, or to the node's shape with
+  `clip`
 - draw rich text: `<segment>` runs with their own weight, style, size, and
   colour, wrapping as one continuous string
 - resolve Google fonts through the renderer cache, and system fonts from the
@@ -219,6 +221,24 @@ where the curve meets the straight edge.
 Each corner is one cubic, an approximation of Figma's construction rather than
 a reproduction of it. When the reach does not fit — a large radius at high
 smoothing — the radius gives way, not the smoothness.
+
+### Overflow
+
+`clip` clips a node's children to its own shape, rounded corners included.
+`overflow-x` and `overflow-y` clip one axis each, and either overrides `clip`
+on its own axis, as in CSS:
+
+```xml
+<col w="200" h="120" clip overflow-y="visible">
+```
+
+Of the four spec values only `visible` shows what escapes the box. `scroll` and
+`auto` clip as well — a still frame has no scrollbar to drag, so what they
+reveal is the same first screenful `hidden` does.
+
+One axis on its own clips to a band across the canvas rather than to the node's
+shape: the unclipped direction has no edge to stop at, and a rounded corner
+needs both edges to curve between.
 
 ### Shadows
 

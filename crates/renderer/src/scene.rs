@@ -31,7 +31,13 @@ pub struct SceneNode {
     /// Squircle factor for the node's corners, 0 (a circular arc) to 1.
     pub corner_smoothing: f32,
     pub opacity: f32,
-    pub clip: bool,
+    /// Whether the node clips its children horizontally and vertically.
+    ///
+    /// Both axes together clip to the node's own shape, rounded corners
+    /// included. One axis alone can only clip to a band, because the other
+    /// direction is unbounded.
+    pub clip_x: bool,
+    pub clip_y: bool,
     /// Visual effects from `<appearance>`, in document order.
     pub effects: Vec<Effect>,
     pub content: PaintContent,
@@ -190,7 +196,8 @@ fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata) -> SceneNode {
         opacity: attr(layout, "opacity")
             .and_then(parse_number)
             .unwrap_or(1.0),
-        clip: attr(layout, "clip").is_some_and(|value| value != "false"),
+        clip_x: clips_axis(layout, "overflow-x"),
+        clip_y: clips_axis(layout, "overflow-y"),
         effects: effects_for(layout, metadata),
         content: content_for(layout, metadata),
         children: layout
@@ -288,6 +295,22 @@ fn borders_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Border> {
         .and_then(|value| parse_border(&resolve_token(value, metadata)))
         .into_iter()
         .collect()
+}
+
+/// Whether one axis clips, from `clip` and the per-axis `overflow`.
+///
+/// `overflow-x` and `overflow-y` are the more specific of the two, so either
+/// one overrides `clip` on its own axis, as it does in CSS.
+///
+/// Of the four overflow values only `visible` shows what escapes the box.
+/// `scroll` and `auto` clip too: a still frame has no scrollbar to drag, so
+/// what they reveal is the same first screenful `hidden` does.
+fn clips_axis(layout: &LayoutBox, overflow: &str) -> bool {
+    match attr(layout, overflow) {
+        Some("visible") => false,
+        Some(_) => true,
+        None => attr(layout, "clip").is_some_and(|value| value != "false"),
+    }
 }
 
 /// Reads `outline` and `outline-offset`.
@@ -613,7 +636,7 @@ mod tests {
         assert_eq!(scene.root.borders[0].color, "#dddddd");
         assert_eq!(scene.root.borders[0].widths, BorderWidths::uniform(1.0));
         assert_eq!(scene.root.radius, Some(8.0));
-        assert!(scene.root.clip);
+        assert!(scene.root.clip_x && scene.root.clip_y);
         assert_eq!(
             scene.root.children[0].content,
             PaintContent::Text {
@@ -1048,6 +1071,73 @@ mod tests {
 
         assert_eq!(scene.root.effects.len(), 1);
         assert_eq!(scene.root.effects[0].y, 8.0);
+    }
+
+    #[test]
+    fn overflow_clips_per_axis() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50">
+                <col w="10" h="10" overflow-x="hidden" />
+                <col w="10" h="10" overflow-y="scroll" />
+                <col w="10" h="10" overflow-x="hidden" overflow-y="hidden" />
+                <col w="10" h="10" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        let axes: Vec<_> = scene
+            .root
+            .children
+            .iter()
+            .map(|child| (child.clip_x, child.clip_y))
+            .collect();
+        assert_eq!(
+            axes,
+            vec![(true, false), (false, true), (true, true), (false, false)]
+        );
+    }
+
+    #[test]
+    fn only_visible_overflow_shows_what_escapes_the_box() {
+        // `scroll` and `auto` clip in a still frame: there is no scrollbar to
+        // drag, so they show the same first screenful `hidden` does.
+        for (value, clips) in [
+            ("hidden", true),
+            ("scroll", true),
+            ("auto", true),
+            ("visible", false),
+        ] {
+            let scene = scene_of(&format!(
+                r##"
+                <gui version="0.2">
+                  <col w="100" h="50" overflow-x="{value}" overflow-y="{value}" />
+                </gui>
+                "##
+            ));
+
+            assert_eq!(scene.root.clip_x, clips, "overflow-x=\"{value}\"");
+            assert_eq!(scene.root.clip_y, clips, "overflow-y=\"{value}\"");
+        }
+    }
+
+    #[test]
+    fn overflow_overrides_clip_on_its_own_axis() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50" clip overflow-y="visible" />
+            </gui>
+            "##,
+        );
+
+        assert!(scene.root.clip_x, "clip still applies across x");
+        assert!(
+            !scene.root.clip_y,
+            "overflow-y is the more specific of the two"
+        );
     }
 
     #[test]
