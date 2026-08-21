@@ -2,74 +2,155 @@
 
 Generated — do not edit by hand. Run `UPDATE_COVERAGE=1 cargo test -p dotgui-renderer --test spec_coverage` and commit the result.
 
-Measured against `spec/spec.json`, vendored from `dotgui/core` at commit `bdcb1eb7b5f5`. Coverage is declared in `crates/renderer/src/coverage.rs`, not inferred from the sources, so a row says the renderer reads that attribute and acts on it.
+Measured against `spec/spec.json`, vendored from `dotgui/core` at commit `bdcb1eb7b5f5`. Coverage is declared in `crates/renderer/src/coverage.rs`, not inferred from the sources, so a row says the renderer reads that property and acts on it.
 
-**142 of 519** element/attribute pairs implemented. Pairs, not unique attributes — an attribute shared by eight elements counts eight times, because supporting it on one is not supporting it on the others.
+Listed by property, because that is the unit of work: implementing `radius` is one job across every element that allows it, not one job per element.
 
-| Element | Implemented | Total |
-|---|---|---|
-| `<frame>` | 10 | 45 |
-| `<stack>` | 22 | 59 |
-| `<row>` | 17 | 54 |
-| `<col>` | 17 | 54 |
-| `<grid>` | 17 | 54 |
-| `<group>` | 6 | 34 |
-| `<text>` | 19 | 72 |
-| `<img>` | 10 | 38 |
-| `<rect>` | 9 | 39 |
-| `<ellipse>` | 8 | 37 |
-| `<line>` | 6 | 30 |
-| `<appearance>` | 1 | 3 |
+| | Properties |
+|---|---|
+| Implemented | **37** |
+| Partial | **1** |
+| Not implemented | **82** |
+| Total | **120** |
 
 ## Not implemented
 
-**`<frame>`**
+The work list. Each row is one property to add, and the elements it has to work on.
 
-`aspect-ratio`, `blend`, `border-align`, `border-color`, `border-image`, `border-style`, `border-width`, `clip-path`, `constraint-h`, `constraint-v`, `corner-smoothing`, `effect-style`, `fill-style`, `filter`, `flip`, `isolation`, `mask`, `max-height`, `max-width`, `min-height`, `min-width`, `name`, `outline`, `outline-offset`, `overflow-x`, `overflow-y`, `rotation`, `scale-x`, `scale-y`, `shadow`, `skew-x`, `skew-y`, `transform-origin`, `visible`, `z-index`
+| Property | Elements |
+|---|---|
+| `<border>` | `<appearance>` |
+| `<fill>` | `<appearance>` |
+| `aspect-ratio` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `baseline-shift` | `<text>` |
+| `blend` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `border-align` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
+| `border-color` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
+| `border-image` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `border-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
+| `border-width` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
+| `clip-path` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `col-gap` | `<grid>` |
+| `constraint-h` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `constraint-v` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `corner-smoothing` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>` |
+| `decoration` | `<text>` |
+| `decoration-color` | `<text>` |
+| `decoration-style` | `<text>` |
+| `decoration-thickness` | `<text>` |
+| `effect-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<rect>`, `<ellipse>` |
+| `fill-rule` | `<rect>`, `<ellipse>` |
+| `fill-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
+| `filter` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `flip` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `font-feature` | `<text>` |
+| `font-optical-sizing` | `<text>` |
+| `font-postscript` | `<text>` |
+| `font-smoothing` | `<text>` |
+| `font-stretch` | `<text>` |
+| `font-style-name` | `<text>` |
+| `font-variation` | `<text>` |
+| `href` | `<text>` |
+| `image-rendering` | `<img>` |
+| `isolation` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `leading-trim` | `<text>` |
+| `list` | `<text>` |
+| `list-level` | `<text>` |
+| `list-marker` | `<text>` |
+| `mask` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `mask-composite` | `<group>` |
+| `mask-height` | `<group>` |
+| `mask-mode` | `<group>` |
+| `mask-src` | `<group>` |
+| `mask-width` | `<group>` |
+| `mask-x` | `<group>` |
+| `mask-y` | `<group>` |
+| `max-height` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `max-width` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `min-height` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `min-width` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `name` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `object-position` | `<img>` |
+| `outline` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `outline-offset` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `overflow-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `overflow-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `paragraph-indent` | `<text>` |
+| `paragraph-spacing` | `<text>` |
+| `reverse-z` | `<stack>`, `<row>`, `<col>` |
+| `rotation` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `row-gap` | `<grid>` |
+| `scale-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `scale-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `shadow` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<rect>`, `<ellipse>` |
+| `skew-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `skew-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `text-case` | `<text>` |
+| `text-decoration-skip-ink` | `<text>` |
+| `text-rendering` | `<text>` |
+| `text-resize` | `<text>` |
+| `text-underline-offset` | `<text>` |
+| `text-wrap` | `<text>` |
+| `thickness` | `<line>` |
+| `transform-origin` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `vertical-align` | `<text>` |
+| `visible` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `white-space` | `<text>` |
+| `word-break` | `<text>` |
+| `word-spacing` | `<text>` |
+| `wrap` | `<stack>`, `<row>`, `<col>` |
+| `writing-mode` | `<text>` |
+| `z-index` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 
-**`<stack>`**
+## Partially implemented
 
-`aspect-ratio`, `blend`, `border-align`, `border-color`, `border-image`, `border-style`, `border-width`, `clip-path`, `constraint-h`, `constraint-v`, `corner-smoothing`, `effect-style`, `fill-style`, `filter`, `flip`, `isolation`, `mask`, `max-height`, `max-width`, `min-height`, `min-width`, `name`, `outline`, `outline-offset`, `overflow-x`, `overflow-y`, `reverse-z`, `rotation`, `scale-x`, `scale-y`, `shadow`, `skew-x`, `skew-y`, `transform-origin`, `visible`, `wrap`, `z-index`
+Read on some elements but not others — usually cheaper to finish than to start.
 
-**`<row>`**
+| Property | Implemented on | Missing on |
+|---|---|---|
+| `direction` | `<stack>` | `<text>`, `<line>` |
 
-`aspect-ratio`, `blend`, `border-align`, `border-color`, `border-image`, `border-style`, `border-width`, `clip-path`, `constraint-h`, `constraint-v`, `corner-smoothing`, `effect-style`, `fill-style`, `filter`, `flip`, `isolation`, `mask`, `max-height`, `max-width`, `min-height`, `min-width`, `name`, `outline`, `outline-offset`, `overflow-x`, `overflow-y`, `reverse-z`, `rotation`, `scale-x`, `scale-y`, `shadow`, `skew-x`, `skew-y`, `transform-origin`, `visible`, `wrap`, `z-index`
+## Implemented
 
-**`<col>`**
-
-`aspect-ratio`, `blend`, `border-align`, `border-color`, `border-image`, `border-style`, `border-width`, `clip-path`, `constraint-h`, `constraint-v`, `corner-smoothing`, `effect-style`, `fill-style`, `filter`, `flip`, `isolation`, `mask`, `max-height`, `max-width`, `min-height`, `min-width`, `name`, `outline`, `outline-offset`, `overflow-x`, `overflow-y`, `reverse-z`, `rotation`, `scale-x`, `scale-y`, `shadow`, `skew-x`, `skew-y`, `transform-origin`, `visible`, `wrap`, `z-index`
-
-**`<grid>`**
-
-`aspect-ratio`, `blend`, `border-align`, `border-color`, `border-image`, `border-style`, `border-width`, `clip-path`, `col-gap`, `constraint-h`, `constraint-v`, `corner-smoothing`, `effect-style`, `fill-style`, `filter`, `flip`, `isolation`, `mask`, `max-height`, `max-width`, `min-height`, `min-width`, `name`, `outline`, `outline-offset`, `overflow-x`, `overflow-y`, `rotation`, `row-gap`, `scale-x`, `scale-y`, `shadow`, `skew-x`, `skew-y`, `transform-origin`, `visible`, `z-index`
-
-**`<group>`**
-
-`aspect-ratio`, `blend`, `constraint-h`, `constraint-v`, `filter`, `flip`, `isolation`, `mask`, `mask-composite`, `mask-height`, `mask-mode`, `mask-src`, `mask-width`, `mask-x`, `mask-y`, `max-height`, `max-width`, `min-height`, `min-width`, `name`, `rotation`, `scale-x`, `scale-y`, `skew-x`, `skew-y`, `transform-origin`, `visible`, `z-index`
-
-**`<text>`**
-
-`aspect-ratio`, `baseline-shift`, `blend`, `constraint-h`, `constraint-v`, `decoration`, `decoration-color`, `decoration-style`, `decoration-thickness`, `direction`, `fill-style`, `filter`, `flip`, `font-feature`, `font-optical-sizing`, `font-postscript`, `font-smoothing`, `font-stretch`, `font-style-name`, `font-variation`, `href`, `isolation`, `leading-trim`, `list`, `list-level`, `list-marker`, `mask`, `max-height`, `max-width`, `min-height`, `min-width`, `name`, `paragraph-indent`, `paragraph-spacing`, `rotation`, `scale-x`, `scale-y`, `skew-x`, `skew-y`, `text-case`, `text-decoration-skip-ink`, `text-rendering`, `text-resize`, `text-underline-offset`, `text-wrap`, `transform-origin`, `vertical-align`, `visible`, `white-space`, `word-break`, `word-spacing`, `writing-mode`, `z-index`
-
-**`<img>`**
-
-`aspect-ratio`, `blend`, `border-align`, `border-color`, `border-style`, `border-width`, `constraint-h`, `constraint-v`, `corner-smoothing`, `filter`, `flip`, `image-rendering`, `isolation`, `mask`, `max-height`, `max-width`, `min-height`, `min-width`, `name`, `object-position`, `rotation`, `scale-x`, `scale-y`, `skew-x`, `skew-y`, `transform-origin`, `visible`, `z-index`
-
-**`<rect>`**
-
-`aspect-ratio`, `blend`, `border-align`, `border-color`, `border-style`, `border-width`, `constraint-h`, `constraint-v`, `corner-smoothing`, `effect-style`, `fill-rule`, `fill-style`, `filter`, `flip`, `isolation`, `mask`, `max-height`, `max-width`, `min-height`, `min-width`, `name`, `rotation`, `scale-x`, `scale-y`, `shadow`, `skew-x`, `skew-y`, `transform-origin`, `visible`, `z-index`
-
-**`<ellipse>`**
-
-`aspect-ratio`, `blend`, `border-align`, `border-color`, `border-style`, `border-width`, `constraint-h`, `constraint-v`, `effect-style`, `fill-rule`, `fill-style`, `filter`, `flip`, `isolation`, `mask`, `max-height`, `max-width`, `min-height`, `min-width`, `name`, `rotation`, `scale-x`, `scale-y`, `shadow`, `skew-x`, `skew-y`, `transform-origin`, `visible`, `z-index`
-
-**`<line>`**
-
-`aspect-ratio`, `blend`, `constraint-h`, `constraint-v`, `direction`, `fill-style`, `filter`, `flip`, `isolation`, `mask`, `max-height`, `max-width`, `min-height`, `min-width`, `name`, `rotation`, `scale-x`, `scale-y`, `skew-x`, `skew-y`, `thickness`, `transform-origin`, `visible`, `z-index`
-
-**`<appearance>`**
-
-`<border>`, `<fill>`
+| Property | Elements |
+|---|---|
+| `<effect>` | `<appearance>` |
+| `abs` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `align` | `<stack>`, `<row>`, `<col>`, `<text>` |
+| `border` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
+| `clip` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `columns` | `<grid>` |
+| `fill` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
+| `fit` | `<img>` |
+| `font-family` | `<text>` |
+| `font-size` | `<text>` |
+| `font-style` | `<text>` |
+| `font-weight` | `<text>` |
+| `gap` | `<stack>`, `<row>`, `<col>` |
+| `grid-col-gap` | `<stack>` |
+| `grid-columns` | `<stack>` |
+| `grid-row-gap` | `<stack>` |
+| `grid-rows` | `<stack>` |
+| `h` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>` |
+| `letter-spacing` | `<text>` |
+| `line-height` | `<text>` |
+| `max-lines` | `<text>` |
+| `opacity` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `overflow` | `<text>` |
+| `p` | `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `pb` | `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `pl` | `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `pr` | `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `pt` | `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `radius` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>` |
+| `rows` | `<grid>` |
+| `src` | `<img>` |
+| `text-style` | `<text>` |
+| `truncate` | `<text>` |
+| `value` | `<text>` |
+| `w` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 
 ## Ahead of the vendored spec
 

@@ -62,20 +62,54 @@ fn coverage_report_is_up_to_date() {
     );
 }
 
-/// One element's attributes, split into what is and is not implemented.
-struct ElementCoverage {
-    tag: String,
-    implemented: Vec<String>,
-    missing: Vec<String>,
+/// One property, and the elements the spec allows it on.
+struct Property {
+    name: String,
+    allowed_on: Vec<String>,
+    implemented_on: Vec<String>,
 }
 
-fn render_report(spec: &Value, commit: &str) -> String {
+impl Property {
+    fn missing_on(&self) -> Vec<&str> {
+        self.allowed_on
+            .iter()
+            .filter(|tag| !self.implemented_on.contains(tag))
+            .map(String::as_str)
+            .collect()
+    }
+
+    fn status(&self) -> Status {
+        match self.implemented_on.len() {
+            0 => Status::Missing,
+            n if n == self.allowed_on.len() => Status::Done,
+            _ => Status::Partial,
+        }
+    }
+}
+
+#[derive(PartialEq)]
+enum Status {
+    Done,
+    Partial,
+    Missing,
+}
+
+/// Collects the spec into one row per property rather than per element.
+///
+/// A property is the unit of work: implementing `radius` is one job that
+/// touches every element allowing it, not one job per element. Listing it per
+/// element repeats every shared attribute a dozen times and makes the work look
+/// far larger than it is.
+fn properties(spec: &Value) -> Vec<Property> {
     let shared: Vec<String> = spec["sharedAttributes"]
         .as_array()
         .map(|attrs| attrs.iter().filter_map(attribute_name).collect())
         .unwrap_or_default();
 
-    let mut elements = Vec::new();
+    let mut order: Vec<String> = Vec::new();
+    let mut allowed: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    let mut implemented: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+
     for element in spec["elements"].as_array().into_iter().flatten() {
         let Some(tag) = element["tag"].as_str() else {
             continue;
@@ -95,22 +129,49 @@ fn render_report(spec: &Value, commit: &str) -> String {
         names.sort();
         names.dedup();
 
-        let (implemented, missing) = names
-            .into_iter()
-            .partition(|name| coverage::is_supported(tag, name, shared_applies));
-
-        elements.push(ElementCoverage {
-            tag: tag.to_owned(),
-            implemented,
-            missing,
-        });
+        for name in names {
+            if !allowed.contains_key(&name) {
+                order.push(name.clone());
+            }
+            allowed
+                .entry(name.clone())
+                .or_default()
+                .push(tag.to_owned());
+            if coverage::is_supported(tag, &name, shared_applies) {
+                implemented.entry(name).or_default().push(tag.to_owned());
+            }
+        }
     }
 
-    let total: usize = elements
-        .iter()
-        .map(|e| e.implemented.len() + e.missing.len())
-        .sum();
-    let done: usize = elements.iter().map(|e| e.implemented.len()).sum();
+    order.sort();
+    order
+        .into_iter()
+        .map(|name| Property {
+            allowed_on: allowed.remove(&name).unwrap_or_default(),
+            implemented_on: implemented.remove(&name).unwrap_or_default(),
+            name,
+        })
+        .collect()
+}
+
+fn tags(list: &[impl AsRef<str>]) -> String {
+    if list.is_empty() {
+        return "—".to_owned();
+    }
+    list.iter()
+        .map(|tag| format!("`<{}>`", tag.as_ref()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn render_report(spec: &Value, commit: &str) -> String {
+    let properties = properties(spec);
+    let count = |status: Status| properties.iter().filter(|p| p.status() == status).count();
+    let (done, partial, missing) = (
+        count(Status::Done),
+        count(Status::Partial),
+        count(Status::Missing),
+    );
 
     let mut out = String::new();
     let _ = writeln!(out, "# Spec coverage\n");
@@ -123,46 +184,79 @@ fn render_report(spec: &Value, commit: &str) -> String {
         out,
         "Measured against `spec/spec.json`, vendored from `dotgui/core` at commit `{}`. Coverage \
          is declared in `crates/renderer/src/coverage.rs`, not inferred from the sources, so a \
-         row says the renderer reads that attribute and acts on it.\n",
+         row says the renderer reads that property and acts on it.\n",
         &commit[..commit.len().min(12)]
     );
     let _ = writeln!(
         out,
-        "**{done} of {total}** element/attribute pairs implemented. Pairs, not unique \
-         attributes — an attribute shared by eight elements counts eight times, because \
-         supporting it on one is not supporting it on the others.\n"
+        "Listed by property, because that is the unit of work: implementing `radius` is one job \
+         across every element that allows it, not one job per element.\n"
+    );
+    let _ = writeln!(
+        out,
+        "| | Properties |\n|---|---|\n| Implemented | **{done}** |\n| Partial | **{partial}** \
+         |\n| Not implemented | **{missing}** |\n| Total | **{}** |\n",
+        done + partial + missing
     );
 
-    let _ = writeln!(out, "| Element | Implemented | Total |");
-    let _ = writeln!(out, "|---|---|---|");
-    for element in &elements {
-        let element_total = element.implemented.len() + element.missing.len();
+    let section = |out: &mut String, title: &str, note: &str, rows: Vec<String>| {
+        if rows.is_empty() {
+            return;
+        }
+        let _ = writeln!(out, "## {title}\n");
+        if !note.is_empty() {
+            let _ = writeln!(out, "{note}\n");
+        }
+        let _ = writeln!(out, "| Property | Elements |\n|---|---|");
+        for row in rows {
+            let _ = writeln!(out, "{row}");
+        }
+        let _ = writeln!(out);
+    };
+
+    section(
+        &mut out,
+        "Not implemented",
+        "The work list. Each row is one property to add, and the elements it has to work on.",
+        properties
+            .iter()
+            .filter(|p| p.status() == Status::Missing)
+            .map(|p| format!("| `{}` | {} |", p.name, tags(&p.allowed_on)))
+            .collect(),
+    );
+
+    if properties.iter().any(|p| p.status() == Status::Partial) {
+        let _ = writeln!(out, "## Partially implemented\n");
         let _ = writeln!(
             out,
-            "| `<{}>` | {} | {} |",
-            element.tag,
-            element.implemented.len(),
-            element_total
+            "Read on some elements but not others — usually cheaper to finish than to start.\n"
         );
+        let _ = writeln!(
+            out,
+            "| Property | Implemented on | Missing on |\n|---|---|---|"
+        );
+        for property in properties.iter().filter(|p| p.status() == Status::Partial) {
+            let _ = writeln!(
+                out,
+                "| `{}` | {} | {} |",
+                property.name,
+                tags(&property.implemented_on),
+                tags(&property.missing_on())
+            );
+        }
+        let _ = writeln!(out);
     }
 
-    let _ = writeln!(out, "\n## Not implemented\n");
-    for element in &elements {
-        if element.missing.is_empty() {
-            continue;
-        }
-        let _ = writeln!(out, "**`<{}>`**\n", element.tag);
-        let _ = writeln!(
-            out,
-            "{}\n",
-            element
-                .missing
-                .iter()
-                .map(|name| format!("`{name}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
+    section(
+        &mut out,
+        "Implemented",
+        "",
+        properties
+            .iter()
+            .filter(|p| p.status() == Status::Done)
+            .map(|p| format!("| `{}` | {} |", p.name, tags(&p.allowed_on)))
+            .collect(),
+    );
 
     let _ = writeln!(out, "## Ahead of the vendored spec\n");
     let _ = writeln!(

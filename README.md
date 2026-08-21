@@ -333,9 +333,15 @@ it as needed.
 
 ## Spec Coverage
 
-[`COVERAGE.md`](COVERAGE.md) records which spec attributes this renderer
-implements, per element. It is generated, never hand-edited, and a stale copy
-fails the build — so it cannot drift into claiming more than is true.
+[`COVERAGE.md`](COVERAGE.md) records which spec properties this renderer
+implements, and which elements each one works on. It is generated, never
+hand-edited, and a stale copy fails the build — so it cannot drift into
+claiming more than is true.
+
+It reads by property rather than by element because that is the unit of work:
+implementing `radius` is one job across every element that allows it, not one
+job per element. A property can also be *partial* — read on some elements and
+not others — which is the cheapest kind of gap to close.
 
 Coverage is *declared* in `crates/renderer/src/coverage.rs` rather than
 inferred by scanning the sources for attribute names, which would count an
