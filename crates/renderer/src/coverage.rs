@@ -17,9 +17,17 @@
 /// Attributes honoured on every element that the spec marks as taking the
 /// shared set.
 ///
-/// `min-width` and friends are deliberately absent: the renderer reads
-/// `min-w` / `max-h`, which are not spec names. See the tracking issue.
-pub const SHARED: &[&str] = &["abs", "opacity"];
+/// The min/max constraints are read under their spec names; `min-w`, `max-w`,
+/// `min-h` and `max-h` are accepted as aliases, and aliases are not spec
+/// properties, so they are not listed here.
+pub const SHARED: &[&str] = &[
+    "abs",
+    "opacity",
+    "min-width",
+    "max-width",
+    "min-height",
+    "max-height",
+];
 
 /// Attributes honoured per element, beyond [`SHARED`].
 pub const BY_ELEMENT: &[(&str, &[&str])] = &[
