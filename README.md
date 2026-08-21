@@ -60,6 +60,8 @@ This is an early native renderer. It can already:
 - render fills, rounded rectangles, ellipses, borders, sided borders, dividers,
   SVG images, text, truncation, and simple text alignment
 - paint the ordered `<fill>`, `<border>` and `<effect>` stacks of `<appearance>`
+- draw outlines with `outline`/`outline-offset`, squircle corners with
+  `corner-smoothing`, and the `shadow` shorthand
 - draw rich text: `<segment>` runs with their own weight, style, size, and
   colour, wrapping as one continuous string
 - resolve Google fonts through the renderer cache, and system fonts from the
@@ -186,9 +188,43 @@ carries `color`, `w`, `align` and `style`; `w` takes one to four numbers, like
 the `border` shorthand.
 
 When `<appearance>` declares no fill, the node's `fill` attribute is used
-instead. When it declares at least one `<border>`, the node's `border`
-shorthand is ignored, as the spec requires. `visible="false"` keeps an entry in
-the document without drawing it.
+instead; the same goes for `<effect>` and the `shadow` shorthand. When it
+declares at least one `<border>`, the node's `border` shorthand is ignored, as
+the spec requires. `visible="false"` keeps an entry in the document without
+drawing it.
+
+### Outlines
+
+`outline` takes the same value as `border` — width, colour, style — but is
+drawn outside the box and takes no part in layout, so it can overlap its
+neighbours. `outline-offset` pushes it further out:
+
+```xml
+<rect w="40" h="40" radius="8" fill="$surface" outline="2 $focus" outline-offset="3" />
+```
+
+An outline follows the node's corners, growing with the box, so a square box
+keeps a square outline. Outlines are uniform: a sided value collapses to its
+widest side rather than drawing four strokes.
+
+### Corner Smoothing
+
+`corner-smoothing` is the squircle control, `0` to `1` (or `0%` to `100%`). It
+does not change how close the corner comes to the box corner; it spreads the
+same turn over a longer run of each edge, reaching
+`radius * (1 + corner-smoothing)`, which is what removes the curvature jump
+where the curve meets the straight edge.
+
+Each corner is one cubic, an approximation of Figma's construction rather than
+a reproduction of it. When the reach does not fit — a large radius at high
+smoothing — the radius gives way, not the smoothness.
+
+### Shadows
+
+`shadow` is the single-shadow shorthand, with CSS `box-shadow` values:
+`x y blur [spread] color`, and `inset` for an inner shadow. It is read as one
+entry of the effect stack, so a node that declares `<effect>` children ignores
+it.
 
 ### Effects
 
@@ -450,6 +486,8 @@ mean anyone looked. Run the goldens by hand when changing anything visual.
 ### Painting
 
 - Paint gradient and image fills; they reach the scene but are not drawn yet.
+- Add `border-image`; the spec types it as a string but does not define the
+  value grammar, so it needs pinning down against kit first.
 - Improve antialiasing quality for text and vector shapes.
 - Add opacity groups and blend modes.
 - Add layer blur.

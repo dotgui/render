@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **39** |
+| Implemented | **43** |
 | Partial | **1** |
-| Not implemented | **80** |
+| Not implemented | **76** |
 | Total | **120** |
 
 ## Not implemented
@@ -31,7 +31,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `col-gap` | `<grid>` |
 | `constraint-h` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `constraint-v` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `corner-smoothing` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>` |
 | `decoration` | `<text>` |
 | `decoration-color` | `<text>` |
 | `decoration-style` | `<text>` |
@@ -69,8 +68,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `min-width` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `name` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `object-position` | `<img>` |
-| `outline` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
-| `outline-offset` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `overflow-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `overflow-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `paragraph-indent` | `<text>` |
@@ -80,7 +77,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `row-gap` | `<grid>` |
 | `scale-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `scale-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `shadow` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<rect>`, `<ellipse>` |
 | `skew-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `skew-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `text-case` | `<text>` |
@@ -120,6 +116,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `border` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `clip` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `columns` | `<grid>` |
+| `corner-smoothing` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>` |
 | `fill` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
 | `fit` | `<img>` |
 | `font-family` | `<text>` |
@@ -136,6 +133,8 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `line-height` | `<text>` |
 | `max-lines` | `<text>` |
 | `opacity` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `outline` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `outline-offset` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `overflow` | `<text>` |
 | `p` | `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `pb` | `<stack>`, `<row>`, `<col>`, `<grid>` |
@@ -144,6 +143,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `pt` | `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `radius` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>` |
 | `rows` | `<grid>` |
+| `shadow` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<rect>`, `<ellipse>` |
 | `src` | `<img>` |
 | `text-style` | `<text>` |
 | `truncate` | `<text>` |

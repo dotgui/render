@@ -125,6 +125,7 @@ fn paint_node(
     }
 
     paint_border(pixmap, node);
+    paint_outline(pixmap, node);
 }
 
 fn create_clip_mask(width: u32, height: u32, node: &SceneNode) -> Option<tiny_skia::Mask> {
@@ -137,12 +138,13 @@ fn create_clip_mask(width: u32, height: u32, node: &SceneNode) -> Option<tiny_sk
             node.bounds.height,
         )?
     } else if let Some(radius) = node.radius.filter(|r| *r > 0.0) {
-        rounded_rect_path(
+        smoothed_rect_path(
             node.bounds.x,
             node.bounds.y,
             node.bounds.width,
             paint_height(node),
             radius,
+            node.corner_smoothing,
         )?
     } else {
         let mut pb = PathBuilder::new();
@@ -185,7 +187,14 @@ fn node_shape_path(
     // Growing a rounded rectangle grows its corners with it, which is what
     // keeps a spread shadow concentric with its box.
     let radius = node.radius.unwrap_or(0.0);
-    rounded_rect_path(x, y, width, height, (radius + inflate).max(0.0))
+    smoothed_rect_path(
+        x,
+        y,
+        width,
+        height,
+        (radius + inflate).max(0.0),
+        node.corner_smoothing,
+    )
 }
 
 /// Effects that read what is already on the canvas, before this node covers it.
@@ -373,13 +382,14 @@ fn paint_one_fill(pixmap: &mut Pixmap, node: &SceneNode, fill: &Fill) {
         return;
     }
 
-    fill_rounded_rect(
+    fill_smoothed_rect(
         pixmap,
         node.bounds.x,
         node.bounds.y,
         node.bounds.width,
         paint_height(node),
         node.radius.unwrap_or(0.0),
+        node.corner_smoothing,
         color,
     );
 }
@@ -1056,6 +1066,60 @@ fn paint_border(pixmap: &mut Pixmap, node: &SceneNode) {
     }
 }
 
+/// Paints the node's outline: a stroke that sits outside the box, centred on
+/// the edge pushed out by `outline-offset`.
+///
+/// Drawn after the borders, so an outline and a border on the same node stack
+/// outwards in the order a reader expects.
+fn paint_outline(pixmap: &mut Pixmap, node: &SceneNode) {
+    let Some(outline) = &node.outline else {
+        return;
+    };
+    if outline.width <= 0.0 {
+        return;
+    }
+    let Some(color) = parse_color(&outline.color, node.opacity) else {
+        return;
+    };
+
+    // The outline hugs the outside of the box, so its own width pushes it out
+    // by half again on top of the offset.
+    let inflate = outline.offset + outline.width / 2.0;
+    let x = node.bounds.x - inflate;
+    let y = node.bounds.y - inflate;
+    let width = node.bounds.width + inflate * 2.0;
+    let height = paint_height(node) + inflate * 2.0;
+
+    let path = if node.tag == "ellipse" {
+        ellipse_path(x, y, width, height)
+    } else {
+        // The outline follows the node's corners, growing with the box. A
+        // square box keeps a square outline, as in CSS.
+        let radius = match node.radius.filter(|radius| *radius > 0.0) {
+            Some(radius) => (radius + inflate).max(0.0),
+            None => 0.0,
+        };
+        smoothed_rect_path(x, y, width, height, radius, node.corner_smoothing)
+    };
+    let Some(path) = path else {
+        return;
+    };
+
+    let mut paint = Paint::default();
+    paint.set_color(color);
+    paint.anti_alias = true;
+    pixmap.stroke_path(
+        &path,
+        &paint,
+        &Stroke {
+            width: outline.width,
+            ..Default::default()
+        },
+        Transform::identity(),
+        None,
+    );
+}
+
 fn fill_rounded_rect(
     pixmap: &mut Pixmap,
     x: f32,
@@ -1063,6 +1127,20 @@ fn fill_rounded_rect(
     width: f32,
     height: f32,
     radius: f32,
+    color: Color,
+) {
+    fill_smoothed_rect(pixmap, x, y, width, height, radius, 0.0, color);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_smoothed_rect(
+    pixmap: &mut Pixmap,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    radius: f32,
+    smoothing: f32,
     color: Color,
 ) {
     if width <= 0.0 || height <= 0.0 {
@@ -1093,7 +1171,7 @@ fn fill_rounded_rect(
         return;
     }
 
-    if let Some(path) = rounded_rect_path(x, y, width, height, radius) {
+    if let Some(path) = smoothed_rect_path(x, y, width, height, radius, smoothing) {
         pixmap.fill_path(
             &path,
             &paint,
@@ -1143,12 +1221,13 @@ fn stroke_rounded_rect(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
         return;
     }
 
-    if let Some(path) = rounded_rect_path(
+    if let Some(path) = smoothed_rect_path(
         node.bounds.x + offset,
         node.bounds.y + offset,
         (node.bounds.width + delta_size).max(0.0),
         (node.bounds.height + delta_size).max(0.0),
         node.radius.unwrap_or(0.0),
+        node.corner_smoothing,
     ) {
         pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
     }
@@ -1587,11 +1666,49 @@ fn rounded_rect_path(
     height: f32,
     radius: f32,
 ) -> Option<tiny_skia::Path> {
+    smoothed_rect_path(x, y, width, height, radius, 0.0)
+}
+
+/// A rounded rectangle whose corners can be squircles.
+///
+/// `smoothing` is the `corner-smoothing` factor, 0 to 1. At 0 the corner is
+/// the usual circular arc. Above it the curve leaves the edge earlier — it
+/// reaches `radius * (1 + smoothing)` along each side — while still passing
+/// the same distance from the corner. Spreading the same turn over a longer
+/// run is what takes the curvature jump out of the join and reads as a
+/// squircle; a corner that merely grew its radius would just look rounder.
+///
+/// The handle length that holds the corner distance fixed is
+/// `4p/3 - kr`, where `p` is the reach and `k = 8(1 - 1/sqrt(2))/3`. At
+/// `smoothing = 0` that is exactly the 0.5523 circular constant, so this stays
+/// a plain rounded rectangle until smoothing is asked for.
+///
+/// One cubic per corner is an approximation of Figma's construction, which
+/// flanks a shortened arc with two of them.
+fn smoothed_rect_path(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    radius: f32,
+    smoothing: f32,
+) -> Option<tiny_skia::Path> {
     if width <= 0.0 || height <= 0.0 {
         return None;
     }
 
-    let r = radius.max(0.0).min(width / 2.0).min(height / 2.0);
+    let smoothing = smoothing.clamp(0.0, 1.0);
+    let reach_factor = 1.0 + smoothing;
+    // The reach, not the radius, is what has to fit: stopping at the midpoint
+    // of each side keeps opposite corners from overlapping. A radius too big
+    // for its smoothing therefore gives up radius rather than smoothness, and
+    // at smoothing 0 this is the plain `radius <= min(w, h) / 2` clamp.
+    let radius = radius
+        .max(0.0)
+        .min(width / 2.0 / reach_factor)
+        .min(height / 2.0 / reach_factor);
+    let r = radius * reach_factor;
+
     let mut pb = PathBuilder::new();
     if r == 0.0 {
         pb.move_to(x, y);
@@ -1602,7 +1719,8 @@ fn rounded_rect_path(
         return pb.finish();
     }
 
-    let c = 0.552_284_8 * r;
+    const CORNER_DISTANCE: f32 = 0.781_048_6;
+    let c = 4.0 * r / 3.0 - CORNER_DISTANCE * radius;
     pb.move_to(x + r, y);
     pb.line_to(x + width - r, y);
     pb.cubic_to(x + width - r + c, y, x + width, y + r - c, x + width, y + r);
@@ -1724,6 +1842,120 @@ mod tests {
         let metadata = std::fs::metadata(&path).expect("png exists");
         assert!(metadata.len() > 0);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn an_outline_paints_outside_the_box_across_the_offset() {
+        // A 20x20 black box at (10, 10) in a 60x60 white canvas, outlined 2px
+        // red 4px out: the ring lands at 4..6px from the edge, so x = 5 is on
+        // it and x = 8 is in the gap the offset leaves.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="60" h="60" fill="#ffffff">
+                <rect abs x="10" y="10" w="20" h="20" fill="#000000"
+                      outline="2 #ff0000" outline-offset="4" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            painted.get_pixel(5, 20).0[0..3],
+            [255, 0, 0],
+            "on the outline"
+        );
+        assert_eq!(
+            painted.get_pixel(8, 20).0[0..3],
+            [255, 255, 255],
+            "in the gap"
+        );
+        assert_eq!(
+            painted.get_pixel(20, 20).0[0..3],
+            [0, 0, 0],
+            "the box itself"
+        );
+    }
+
+    #[test]
+    fn an_outline_does_not_paint_without_a_width() {
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <rect abs x="10" y="10" w="20" h="20" fill="#000000" outline="#ff0000" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(painted.get_pixel(5, 20).0[0..3], [255, 255, 255]);
+    }
+
+    #[test]
+    fn corner_smoothing_changes_the_corners_and_only_the_corners() {
+        let box_of = |smoothing: &str| {
+            render(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="120" h="120" fill="#ffffff">
+                    <rect abs x="10" y="10" w="100" h="100" radius="20" fill="#000000"
+                          corner-smoothing="{smoothing}" />
+                  </frame>
+                </gui>
+                "##
+            ))
+        };
+
+        let plain = box_of("0");
+        let smoothed = box_of("1");
+
+        // The corner curve now reaches radius * (1 + smoothing) = 40px along
+        // each side, so every difference has to sit inside a 40px corner
+        // square of the 100px box.
+        let mut differences = 0;
+        for y in 0..120 {
+            for x in 0..120 {
+                if plain.get_pixel(x, y) == smoothed.get_pixel(x, y) {
+                    continue;
+                }
+                differences += 1;
+                let (dx, dy) = (x as i32 - 10, y as i32 - 10);
+                let in_corner = |d: i32| !(40..100 - 40).contains(&d);
+                assert!(
+                    in_corner(dx) && in_corner(dy),
+                    "pixel ({x}, {y}) differs outside a corner"
+                );
+            }
+        }
+
+        assert!(differences > 0, "corner-smoothing changed nothing");
+    }
+
+    #[test]
+    fn corner_smoothing_keeps_the_corner_the_same_distance_away() {
+        // Smoothing spreads the turn over more of the edge; it must not round
+        // the corner off harder. The diagonal is where that would show.
+        let box_of = |smoothing: &str| {
+            render(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="120" h="120" fill="#ffffff">
+                    <rect abs x="10" y="10" w="100" h="100" radius="20" fill="#000000"
+                          corner-smoothing="{smoothing}" />
+                  </frame>
+                </gui>
+                "##
+            ))
+        };
+
+        let corner_reach = |painted: &image::RgbaImage| {
+            (0..40)
+                .find(|step| painted.get_pixel(10 + step, 10 + step)[0] < 128)
+                .expect("the diagonal enters the box")
+        };
+
+        assert_eq!(corner_reach(&box_of("0")), corner_reach(&box_of("1")));
     }
 
     #[test]
