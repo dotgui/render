@@ -51,8 +51,9 @@ This is an early native renderer. It can already:
 - parse tokens, fonts, text styles, nodes, attributes, and children
 - compute a flexbox layout tree (Taffy) for rows, columns, stacks, frames,
   groups, and leaves
-- support `hug`, `fill`, numeric and percentage sizes, `min-w`/`max-w`/
-  `min-h`/`max-h`, padding, gap, `gap="auto"`, basic align, `align="stretch"`,
+- support `hug`, `fill`, numeric and percentage sizes, `min-width`/`max-width`/
+  `min-height`/`max-height` (with `min-w`/`max-w`/`min-h`/`max-h` accepted as
+  aliases), padding, gap, `gap="auto"`, basic align, `align="stretch"`,
   absolute children, lines, and text wrapping
 - measure text with real font metrics during layout, so wrapped text reserves
   the height it is painted at
