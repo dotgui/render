@@ -30,6 +30,66 @@ pub struct FontFace {
     collection_index: u32,
 }
 
+/// The variable-font axes a run of text asks for, beyond its weight.
+///
+/// A face that has no such axis ignores the setting, so these are safe to pass
+/// for any font.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FontAxes {
+    /// `wdth`, a percentage where 100 is normal, from `font-stretch`.
+    pub width: Option<f32>,
+    /// `opsz`, which CSS drives from the font size unless
+    /// `font-optical-sizing="none"` turns it off.
+    pub optical_size: Option<f32>,
+}
+
+impl FontAxes {
+    /// The axes a resolved text style asks for.
+    ///
+    /// `font-optical-sizing` is honoured when a document asks for it, and only
+    /// then. CSS defaults it to `auto`, so a browser — and therefore kit —
+    /// applies it to every face with an `opsz` axis; matching that here would
+    /// change the metrics of existing documents and reflow their text, which
+    /// is a deliberate fidelity change rather than a side effect of reading a
+    /// new attribute. It is tracked separately.
+    pub fn from_style(
+        font_stretch: Option<&str>,
+        font_optical_sizing: Option<&str>,
+        font_size: f32,
+    ) -> Self {
+        Self {
+            width: font_stretch.and_then(font_stretch_percentage),
+            optical_size: (font_optical_sizing == Some("auto")).then_some(font_size),
+        }
+    }
+}
+
+/// `font-stretch` as a `wdth` percentage.
+///
+/// CSS defines the keywords as exact percentages, which is what the `wdth`
+/// axis is measured in, so a keyword and its percentage are the same request.
+fn font_stretch_percentage(value: &str) -> Option<f32> {
+    let value = value.trim();
+    match value {
+        "ultra-condensed" => Some(50.0),
+        "extra-condensed" => Some(62.5),
+        "condensed" => Some(75.0),
+        "semi-condensed" => Some(87.5),
+        "normal" => Some(100.0),
+        "semi-expanded" => Some(112.5),
+        "expanded" => Some(125.0),
+        "extra-expanded" => Some(150.0),
+        "ultra-expanded" => Some(200.0),
+        _ => value
+            .strip_suffix('%')
+            .unwrap_or(value)
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|percentage| *percentage > 0.0),
+    }
+}
+
 impl FontFace {
     fn new(bytes: Vec<u8>, weight: &str, collection_index: u32) -> Result<Self, String> {
         let fallback = Font::from_bytes(
@@ -52,8 +112,8 @@ impl FontFace {
         &self.fallback
     }
 
-    pub fn text_width(&self, value: &str, font_size: f32) -> f32 {
-        if let Some(width) = self.variable_text_width(value, font_size) {
+    pub fn text_width(&self, value: &str, font_size: f32, axes: FontAxes) -> f32 {
+        if let Some(width) = self.variable_text_width(value, font_size, axes) {
             return width;
         }
 
@@ -63,8 +123,8 @@ impl FontFace {
             .sum()
     }
 
-    pub fn baseline_offset(&self, font_size: f32, line_height: f32) -> f32 {
-        if let Some(face) = self.variable_face() {
+    pub fn baseline_offset(&self, font_size: f32, line_height: f32, axes: FontAxes) -> f32 {
+        if let Some(face) = self.variable_face(axes) {
             let scale = font_size / face.units_per_em() as f32;
             let ascender = face.ascender() as f32 * scale;
             let descender = face.descender() as f32 * scale;
@@ -97,14 +157,20 @@ impl FontFace {
             .collect()
     }
 
-    pub fn variable_face(&self) -> Option<Face<'_>> {
+    pub fn variable_face(&self, axes: FontAxes) -> Option<Face<'_>> {
         let mut face = Face::parse(&self.bytes, self.collection_index).ok()?;
         let _ = face.set_variation(Tag::from_bytes(b"wght"), self.weight);
+        if let Some(width) = axes.width {
+            let _ = face.set_variation(Tag::from_bytes(b"wdth"), width);
+        }
+        if let Some(optical_size) = axes.optical_size {
+            let _ = face.set_variation(Tag::from_bytes(b"opsz"), optical_size);
+        }
         Some(face)
     }
 
-    fn variable_text_width(&self, value: &str, font_size: f32) -> Option<f32> {
-        let face = self.variable_face()?;
+    fn variable_text_width(&self, value: &str, font_size: f32, axes: FontAxes) -> Option<f32> {
+        let face = self.variable_face(axes)?;
         let scale = font_size / face.units_per_em() as f32;
         Some(
             value
@@ -254,9 +320,10 @@ impl TextMeasurer for FontStore {
         font_weight: Option<&str>,
         font_style: Option<&str>,
         font_size: f32,
+        axes: FontAxes,
     ) -> f32 {
         if let Some(face) = self.get(font_family, font_weight, font_style) {
-            return face.text_width(value, font_size);
+            return face.text_width(value, font_size, axes);
         }
 
         fallback_text_width(value, font_size)
@@ -694,11 +761,69 @@ mod tests {
     use super::*;
 
     #[test]
+    fn font_stretch_keywords_are_the_percentages_css_defines() {
+        for (keyword, percentage) in [
+            ("ultra-condensed", 50.0),
+            ("condensed", 75.0),
+            ("normal", 100.0),
+            ("expanded", 125.0),
+            ("ultra-expanded", 200.0),
+        ] {
+            let axes = FontAxes::from_style(Some(keyword), None, 16.0);
+            assert_eq!(axes.width, Some(percentage), "{keyword}");
+        }
+    }
+
+    #[test]
+    fn font_stretch_takes_a_percentage_directly() {
+        assert_eq!(
+            FontAxes::from_style(Some("87.5%"), None, 16.0).width,
+            Some(87.5)
+        );
+        assert_eq!(
+            FontAxes::from_style(Some("120"), None, 16.0).width,
+            Some(120.0)
+        );
+    }
+
+    #[test]
+    fn a_meaningless_font_stretch_sets_no_axis() {
+        assert_eq!(
+            FontAxes::from_style(Some("wide-ish"), None, 16.0).width,
+            None
+        );
+        assert_eq!(FontAxes::from_style(Some("0%"), None, 16.0).width, None);
+        assert_eq!(FontAxes::from_style(None, None, 16.0).width, None);
+    }
+
+    #[test]
+    fn optical_sizing_is_driven_by_the_font_size_when_asked_for() {
+        assert_eq!(
+            FontAxes::from_style(None, Some("auto"), 28.0).optical_size,
+            Some(28.0)
+        );
+        assert_eq!(
+            FontAxes::from_style(None, Some("none"), 28.0).optical_size,
+            None
+        );
+        // Absent, not `auto`: applying it by default would reflow existing
+        // documents, which is tracked as its own change.
+        assert_eq!(FontAxes::from_style(None, None, 28.0).optical_size, None);
+    }
+
+    #[test]
     fn empty_store_falls_back_to_approximate_width() {
         let store = FontStore::default();
 
         assert_eq!(
-            store.text_width("Hello", Some("Roboto"), Some("400"), Some("normal"), 10.0),
+            store.text_width(
+                "Hello",
+                Some("Roboto"),
+                Some("400"),
+                Some("normal"),
+                10.0,
+                FontAxes::default()
+            ),
             27.5
         );
     }

@@ -1,4 +1,5 @@
 use crate::{
+    fonts::FontAxes,
     grid::{self, GridMode},
     text,
     text_style::{resolve_text_runs, resolve_token, TextRunStyle},
@@ -546,6 +547,11 @@ fn measure_text(
             style.font_weight.as_deref(),
             style.font_style.as_deref(),
             style.font_size,
+            FontAxes::from_style(
+                style.font_stretch.as_deref(),
+                style.font_optical_sizing.as_deref(),
+                style.font_size,
+            ),
         ) + value.chars().count() as f32 * style.letter_spacing
     };
 

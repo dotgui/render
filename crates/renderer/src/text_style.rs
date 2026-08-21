@@ -65,6 +65,12 @@ pub(crate) struct TextStyle {
     pub line_height: f32,
     pub letter_spacing: f32,
     pub color: Option<String>,
+    /// `font-stretch`, as a CSS keyword or a percentage.
+    pub font_stretch: Option<String>,
+    /// `font-optical-sizing`: `auto` or `none`.
+    pub font_optical_sizing: Option<String>,
+    /// `font-smoothing`: `antialiased`, `subpixel-antialiased` or `none`.
+    pub font_smoothing: Option<String>,
 }
 
 /// One styled run of a `<text>` node.
@@ -98,6 +104,9 @@ pub(crate) fn resolve_text_style<S: TextSource>(node: &S, metadata: &GuiMetadata
             .get("fill")
             .or_else(|| node.attributes().get("color"))
             .map(|value| resolve_token(value, metadata)),
+        font_stretch: style_value(node, metadata, "font-stretch"),
+        font_optical_sizing: style_value(node, metadata, "font-optical-sizing"),
+        font_smoothing: style_value(node, metadata, "font-smoothing"),
     }
 }
 
@@ -189,6 +198,12 @@ fn inherit_style<S: TextSource>(node: &S, metadata: &GuiMetadata, parent: &TextS
             .or_else(|| node.attributes().get("color"))
             .map(|value| resolve_token(value, metadata))
             .or_else(|| parent.color.clone()),
+        font_stretch: style_value(node, metadata, "font-stretch")
+            .or_else(|| parent.font_stretch.clone()),
+        font_optical_sizing: style_value(node, metadata, "font-optical-sizing")
+            .or_else(|| parent.font_optical_sizing.clone()),
+        font_smoothing: style_value(node, metadata, "font-smoothing")
+            .or_else(|| parent.font_smoothing.clone()),
     }
 }
 

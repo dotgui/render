@@ -49,6 +49,10 @@ pub struct SceneNode {
     pub clip_path: Option<String>,
     /// The node's own transform, if it declares one.
     pub transform: Option<Transform2D>,
+    /// A link target. It has nothing to paint in a still frame, but an
+    /// interactive consumer of the scene needs it, so it is carried rather
+    /// than dropped.
+    pub href: Option<String>,
     pub opacity: f32,
     /// Whether the node clips its children horizontally and vertically.
     ///
@@ -220,6 +224,9 @@ pub struct TextSegment {
     pub line_height: f32,
     pub letter_spacing: f32,
     pub color: Option<String>,
+    pub font_stretch: Option<String>,
+    pub font_optical_sizing: Option<String>,
+    pub font_smoothing: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -239,6 +246,10 @@ pub enum PaintContent {
     Image {
         src: String,
         fit: Option<String>,
+        /// Where the image sits in its box when `fit` leaves it a choice.
+        object_position: Option<String>,
+        /// `auto`, `smooth`, `pixelated` or `crisp-edges`.
+        image_rendering: Option<String>,
     },
 }
 
@@ -267,6 +278,7 @@ fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata) -> SceneNode {
         filter: attr(layout, "filter")
             .map(|value| resolve_token(value, metadata))
             .filter(|value| !value.trim().is_empty() && value.trim() != "none"),
+        href: attr(layout, "href").map(ToOwned::to_owned),
         transform: transform_for(layout, metadata),
         mask: attr(layout, "mask").is_some_and(|value| value != "false"),
         image_mask: image_mask_for(layout, metadata),
@@ -740,6 +752,9 @@ fn content_for(layout: &LayoutBox, metadata: &GuiMetadata) -> PaintContent {
                     line_height: run.style.line_height,
                     letter_spacing: run.style.letter_spacing,
                     color: run.style.color,
+                    font_stretch: run.style.font_stretch,
+                    font_optical_sizing: run.style.font_optical_sizing,
+                    font_smoothing: run.style.font_smoothing,
                 })
                 .collect();
 
@@ -758,6 +773,8 @@ fn content_for(layout: &LayoutBox, metadata: &GuiMetadata) -> PaintContent {
             .map(|src| PaintContent::Image {
                 src,
                 fit: layout.attributes.get("fit").cloned(),
+                object_position: layout.attributes.get("object-position").cloned(),
+                image_rendering: layout.attributes.get("image-rendering").cloned(),
             })
             .unwrap_or(PaintContent::None),
         _ => PaintContent::None,
@@ -911,6 +928,9 @@ mod tests {
                     line_height: 19.2,
                     letter_spacing: 0.0,
                     color: None,
+                    font_stretch: None,
+                    font_optical_sizing: None,
+                    font_smoothing: None,
                 }],
                 max_lines: None,
                 truncate: false,
@@ -922,6 +942,8 @@ mod tests {
             PaintContent::Image {
                 src: "assets/icon.svg".to_owned(),
                 fit: None,
+                object_position: None,
+                image_rendering: None,
             }
         );
     }
@@ -960,6 +982,9 @@ mod tests {
                     line_height: 28.0,
                     letter_spacing: 0.0,
                     color: None,
+                    font_stretch: None,
+                    font_optical_sizing: None,
+                    font_smoothing: None,
                 }],
                 max_lines: None,
                 truncate: false,
@@ -999,6 +1024,9 @@ mod tests {
                     line_height: 20.0,
                     letter_spacing: 0.0,
                     color: None,
+                    font_stretch: None,
+                    font_optical_sizing: None,
+                    font_smoothing: None,
                 }],
                 max_lines: Some(1),
                 truncate: true,
@@ -1736,6 +1764,85 @@ mod tests {
                 "{origin}"
             );
         }
+    }
+
+    #[test]
+    fn href_is_carried_into_the_scene() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50">
+                <text value="Docs" href="https://example.com/docs" />
+                <text value="Plain" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            scene.root.children[0].href.as_deref(),
+            Some("https://example.com/docs")
+        );
+        assert_eq!(scene.root.children[1].href, None);
+    }
+
+    #[test]
+    fn image_rendering_and_object_position_reach_the_scene() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50">
+                <img src="assets/a.png" w="40" h="40" fit="cover"
+                     object-position="left top" image-rendering="pixelated" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            scene.root.children[0].content,
+            PaintContent::Image {
+                src: "assets/a.png".to_owned(),
+                fit: Some("cover".to_owned()),
+                object_position: Some("left top".to_owned()),
+                image_rendering: Some("pixelated".to_owned()),
+            }
+        );
+    }
+
+    #[test]
+    fn font_attributes_reach_the_segments_and_are_inherited() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="200" h="50">
+                <text font-stretch="condensed" font-optical-sizing="auto"
+                      font-smoothing="none" value="Outer">
+                  <segment value="Inner" font-stretch="expanded" />
+                </text>
+              </col>
+            </gui>
+            "##,
+        );
+
+        let PaintContent::Text { segments, .. } = &scene.root.children[0].content else {
+            panic!("expected text content");
+        };
+
+        assert_eq!(segments[0].font_stretch.as_deref(), Some("condensed"));
+        assert_eq!(segments[0].font_optical_sizing.as_deref(), Some("auto"));
+        assert_eq!(segments[0].font_smoothing.as_deref(), Some("none"));
+
+        assert_eq!(
+            segments[1].font_stretch.as_deref(),
+            Some("expanded"),
+            "a segment overrides what it declares"
+        );
+        assert_eq!(
+            segments[1].font_smoothing.as_deref(),
+            Some("none"),
+            "and inherits what it does not"
+        );
     }
 
     #[test]

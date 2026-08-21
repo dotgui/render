@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **72** |
+| Implemented | **78** |
 | Partial | **1** |
-| Not implemented | **47** |
+| Not implemented | **41** |
 | Total | **120** |
 
 ## Not implemented
@@ -34,20 +34,14 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `decoration-thickness` | `<text>` |
 | `fill-rule` | `<rect>`, `<ellipse>` |
 | `font-feature` | `<text>` |
-| `font-optical-sizing` | `<text>` |
 | `font-postscript` | `<text>` |
-| `font-smoothing` | `<text>` |
-| `font-stretch` | `<text>` |
 | `font-style-name` | `<text>` |
 | `font-variation` | `<text>` |
-| `href` | `<text>` |
-| `image-rendering` | `<img>` |
 | `leading-trim` | `<text>` |
 | `list` | `<text>` |
 | `list-level` | `<text>` |
 | `list-marker` | `<text>` |
 | `name` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `object-position` | `<img>` |
 | `paragraph-indent` | `<text>` |
 | `paragraph-spacing` | `<text>` |
 | `reverse-z` | `<stack>`, `<row>`, `<col>` |
@@ -98,7 +92,10 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `fit` | `<img>` |
 | `flip` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `font-family` | `<text>` |
+| `font-optical-sizing` | `<text>` |
 | `font-size` | `<text>` |
+| `font-smoothing` | `<text>` |
+| `font-stretch` | `<text>` |
 | `font-style` | `<text>` |
 | `font-weight` | `<text>` |
 | `gap` | `<stack>`, `<row>`, `<col>` |
@@ -107,6 +104,8 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `grid-row-gap` | `<stack>` |
 | `grid-rows` | `<stack>` |
 | `h` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>` |
+| `href` | `<text>` |
+| `image-rendering` | `<img>` |
 | `isolation` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `letter-spacing` | `<text>` |
 | `line-height` | `<text>` |
@@ -123,6 +122,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `max-width` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `min-height` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `min-width` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `object-position` | `<img>` |
 | `opacity` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `outline` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `outline-offset` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |

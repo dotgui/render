@@ -70,6 +70,8 @@ This is an early native renderer. It can already:
 - mask with `clip-path`, an image `mask-src`, or a `mask` child
 - transform with `rotation`, `scale-x`/`scale-y`, `skew-x`/`skew-y`, `flip` and
   `transform-origin`, and shape boxes with `aspect-ratio`
+- drive variable axes from `font-stretch` and `font-optical-sizing`, and place
+  and resample images with `object-position` and `image-rendering`
 - draw rich text: `<segment>` runs with their own weight, style, size, and
   colour, wrapping as one continuous string
 - resolve Google fonts through the renderer cache, and system fonts from the
@@ -280,6 +282,32 @@ blank.
 `z-index` is resolved when the scene is built, not when it is painted: a node
 without one sorts as 0 and the sort is stable, so document order still decides
 between equals.
+
+### Fonts And Images
+
+`font-stretch` drives a variable face's `wdth` axis, the way `font-weight`
+already drives `wght`. CSS's keywords are exact percentages — `condensed` is
+75%, `expanded` is 125% — so a keyword and its percentage are the same request.
+
+`font-optical-sizing="auto"` drives the `opsz` axis from the font size;
+`"none"` leaves it alone. **Absent is not `auto` here.** CSS defaults it to
+`auto`, so a browser — and therefore kit — optically sizes every face that has
+the axis. Matching that changes the metrics of existing documents and reflows
+their text, so it is a deliberate fidelity change rather than a side effect of
+reading a new attribute, and is tracked separately.
+
+`font-smoothing="none"` draws glyphs without antialiasing. `antialiased` and
+`subpixel-antialiased` are both the grayscale antialiasing already used;
+subpixel rendering needs the target display's own stripe order, which a PNG has
+no business assuming.
+
+`image-rendering` picks the resampling filter: `pixelated` and `crisp-edges`
+keep hard pixel edges, and anything else smooths. `object-position` decides
+where an image sits in whatever room its `fit` mode leaves over — it has no
+effect under `fit="fill"`, which stretches to every edge.
+
+`href` has nothing to paint in a still frame, so it is carried into the scene
+for an interactive consumer rather than dropped.
 
 ### Transforms
 
