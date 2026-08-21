@@ -25,7 +25,11 @@ pub struct SceneNode {
     /// Per the spec, an `<appearance>` carrying at least one `<border>` makes
     /// the `border` shorthand attribute on the node ignored.
     pub borders: Vec<Border>,
+    /// A stroke drawn outside the node's box, which never affects layout.
+    pub outline: Option<Outline>,
     pub radius: Option<f32>,
+    /// Squircle factor for the node's corners, 0 (a circular arc) to 1.
+    pub corner_smoothing: f32,
     pub opacity: f32,
     pub clip: bool,
     /// Visual effects from `<appearance>`, in document order.
@@ -46,6 +50,20 @@ impl SceneNode {
             .find(|fill| fill.kind == "color")
             .and_then(|fill| fill.value.as_deref())
     }
+}
+
+/// A stroke drawn outside the node's box, as in CSS `outline`.
+///
+/// Unlike a border, an outline sits outside the box entirely and does not take
+/// part in layout, so it can overlap its neighbours.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Outline {
+    pub width: f32,
+    pub color: String,
+    pub style: String,
+    /// Gap between the node's edge and the outline, as in CSS
+    /// `outline-offset`. Negative values pull the outline inwards.
+    pub offset: f32,
 }
 
 /// One entry of a node's fill stack.
@@ -164,9 +182,11 @@ fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata) -> SceneNode {
         bounds: layout.rect,
         fills: fills_for(layout, metadata),
         borders: borders_for(layout, metadata),
+        outline: outline_for(layout, metadata),
         radius: attr(layout, "radius")
             .map(|value| resolve_token(value, metadata))
             .and_then(|value| parse_number(&value)),
+        corner_smoothing: corner_smoothing_for(layout, metadata),
         opacity: attr(layout, "opacity")
             .and_then(parse_number)
             .unwrap_or(1.0),
@@ -270,8 +290,133 @@ fn borders_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Border> {
         .collect()
 }
 
-/// Reads the ordered effect stack out of a node's `<appearance>` block.
+/// Reads `outline` and `outline-offset`.
+///
+/// The value grammar is the `border` shorthand's, so it is parsed with the
+/// same reader. CSS outlines are uniform, so a sided value collapses to its
+/// widest side rather than drawing four different strokes.
+fn outline_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Option<Outline> {
+    let border = parse_border(&resolve_token(attr(layout, "outline")?, metadata))?;
+
+    Some(Outline {
+        width: border.width,
+        color: border.color,
+        style: border.style,
+        offset: attr(layout, "outline-offset")
+            .map(|value| resolve_token(value, metadata))
+            .and_then(|value| parse_number(&value))
+            .unwrap_or(0.0),
+    })
+}
+
+/// Reads `corner-smoothing`, accepting both `0.6` and `60%`.
+///
+/// Figma's control is a percentage and the spec types it as a number, so both
+/// spellings show up in the wild. Out-of-range values clamp rather than
+/// producing a corner that escapes its own box.
+fn corner_smoothing_for(layout: &LayoutBox, metadata: &GuiMetadata) -> f32 {
+    let Some(raw) = attr(layout, "corner-smoothing").map(|value| resolve_token(value, metadata))
+    else {
+        return 0.0;
+    };
+
+    let value = match raw.trim().strip_suffix('%') {
+        Some(percentage) => parse_number(percentage).map(|value| value / 100.0),
+        None => parse_number(&raw),
+    };
+
+    value.unwrap_or(0.0).clamp(0.0, 1.0)
+}
+
+/// The single-shadow shorthand, read as one entry of the effect stack.
+///
+/// The value is CSS `box-shadow`: `x y blur [spread] color`, with `inset`
+/// turning it into an inner shadow. `<appearance>` supersedes it, so the
+/// shorthand only applies to a node that declares no `<effect>` of its own.
+fn shadow_shorthand(layout: &LayoutBox, metadata: &GuiMetadata) -> Option<Effect> {
+    let raw = resolve_token(attr(layout, "shadow")?, metadata);
+    if raw.trim().is_empty() || raw.trim() == "none" {
+        return None;
+    }
+
+    let mut numbers = Vec::new();
+    let mut color = None;
+    let mut inset = false;
+    for part in split_shadow_parts(&raw) {
+        match part.as_str() {
+            "inset" => inset = true,
+            _ if color_like(&part) => color = Some(part),
+            _ => {
+                if let Some(number) = parse_number(&part) {
+                    numbers.push(number);
+                }
+            }
+        }
+    }
+
+    // `x` and `y` are the minimum that makes a shadow mean anything; a blur
+    // radius and a spread are optional, as in CSS.
+    let [x, y, ..] = numbers[..] else {
+        return None;
+    };
+
+    Some(Effect {
+        kind: if inset { "inner-shadow" } else { "drop-shadow" }.to_owned(),
+        x,
+        y,
+        radius: numbers.get(2).copied().unwrap_or(0.0),
+        spread: numbers.get(3).copied().unwrap_or(0.0),
+        color,
+        opacity: 1.0,
+        saturation: 180.0,
+    })
+}
+
+/// Splits a shadow value on whitespace without breaking `rgba(0, 0, 0, 0.2)`
+/// apart at its commas and spaces.
+fn split_shadow_parts(value: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0usize;
+
+    for character in value.chars() {
+        match character {
+            '(' => {
+                depth += 1;
+                current.push(character);
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                current.push(character);
+            }
+            _ if character.is_whitespace() && depth == 0 => {
+                if !current.is_empty() {
+                    parts.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(character),
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+
+    parts
+}
+
+/// Reads the ordered effect stack out of a node's `<appearance>` block,
+/// falling back to the `shadow` shorthand.
 fn effects_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Effect> {
+    let effects: Vec<Effect> = appearance_effects(layout, metadata);
+
+    if !effects.is_empty() {
+        return effects;
+    }
+
+    shadow_shorthand(layout, metadata).into_iter().collect()
+}
+
+fn appearance_effects(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Effect> {
     appearance_children(layout, "effect")
         .filter_map(|effect| {
             let number = |name: &str, fallback: f32| {
@@ -766,6 +911,143 @@ mod tests {
 
         assert_eq!(scene.root.fill_color(), Some("#FFFFFF"));
         assert_eq!(scene.root.borders[0].color, "#E0CFC4");
+    }
+
+    #[test]
+    fn outline_and_offset_reach_the_scene() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50" outline="2 #0d99ff" outline-offset="4" />
+            </gui>
+            "##,
+        );
+
+        let outline = scene.root.outline.as_ref().expect("outline is read");
+        assert_eq!(outline.width, 2.0);
+        assert_eq!(outline.color, "#0d99ff");
+        assert_eq!(outline.style, "solid");
+        assert_eq!(outline.offset, 4.0);
+    }
+
+    #[test]
+    fn an_outline_without_an_offset_sits_on_the_edge() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50" outline="1 dashed #333333" />
+            </gui>
+            "##,
+        );
+
+        let outline = scene.root.outline.as_ref().expect("outline is read");
+        assert_eq!(outline.offset, 0.0);
+        assert_eq!(outline.style, "dashed");
+    }
+
+    #[test]
+    fn corner_smoothing_accepts_a_number_or_a_percentage() {
+        for value in ["0.6", "60%"] {
+            let scene = scene_of(&format!(
+                r##"
+                <gui version="0.2">
+                  <col w="100" h="50" radius="12" corner-smoothing="{value}" />
+                </gui>
+                "##
+            ));
+
+            assert!(
+                (scene.root.corner_smoothing - 0.6).abs() < 1e-6,
+                "{value} read as {}",
+                scene.root.corner_smoothing
+            );
+        }
+    }
+
+    #[test]
+    fn corner_smoothing_clamps_and_defaults_to_none() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50" radius="12">
+                <rect w="10" h="10" corner-smoothing="4" />
+                <rect w="10" h="10" corner-smoothing="-1" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(scene.root.corner_smoothing, 0.0);
+        assert_eq!(scene.root.children[0].corner_smoothing, 1.0);
+        assert_eq!(scene.root.children[1].corner_smoothing, 0.0);
+    }
+
+    #[test]
+    fn the_shadow_shorthand_becomes_one_effect() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50" shadow="0 2 6 -1 #0000001F" />
+            </gui>
+            "##,
+        );
+
+        let effect = &scene.root.effects[0];
+        assert_eq!(effect.kind, "drop-shadow");
+        assert_eq!((effect.x, effect.y), (0.0, 2.0));
+        assert_eq!(effect.radius, 6.0);
+        assert_eq!(effect.spread, -1.0);
+        assert_eq!(effect.color.as_deref(), Some("#0000001F"));
+    }
+
+    #[test]
+    fn an_inset_shadow_shorthand_becomes_an_inner_shadow() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50" shadow="inset 0 1 2 #00000033" />
+            </gui>
+            "##,
+        );
+
+        assert_eq!(scene.root.effects[0].kind, "inner-shadow");
+        assert_eq!(scene.root.effects[0].radius, 2.0);
+    }
+
+    #[test]
+    fn a_shadow_colour_keeps_its_own_commas_and_spaces() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50" shadow="0 2 6 rgba(0, 0, 0, 0.2)" />
+            </gui>
+            "##,
+        );
+
+        assert_eq!(scene.root.effects.len(), 1);
+        assert_eq!(
+            scene.root.effects[0].color.as_deref(),
+            Some("rgba(0, 0, 0, 0.2)")
+        );
+        assert_eq!(scene.root.effects[0].radius, 6.0);
+    }
+
+    #[test]
+    fn an_appearance_effect_beats_the_shadow_shorthand() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50" shadow="0 2 6 #0000001F">
+                <appearance>
+                  <effect type="drop-shadow" x="0" y="8" radius="24" color="#00000033" />
+                </appearance>
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(scene.root.effects.len(), 1);
+        assert_eq!(scene.root.effects[0].y, 8.0);
     }
 
     #[test]
