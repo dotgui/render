@@ -331,6 +331,34 @@ The renderer cache lives at:
 It is ignored by git. It can be deleted at any time; the renderer will recreate
 it as needed.
 
+## Spec Coverage
+
+[`COVERAGE.md`](COVERAGE.md) records which spec attributes this renderer
+implements, per element. It is generated, never hand-edited, and a stale copy
+fails the build — so it cannot drift into claiming more than is true.
+
+Coverage is *declared* in `crates/renderer/src/coverage.rs` rather than
+inferred by scanning the sources for attribute names, which would count an
+attribute as implemented because it appears in a comment. Implementing an
+attribute means adding it to that list in the same change.
+
+```bash
+UPDATE_COVERAGE=1 cargo test -p dotgui-renderer --test spec_coverage
+```
+
+The spec itself is vendored at `spec/spec.json` rather than read from a
+sibling `dotgui/core` checkout, so generation and the check work from a
+checkout of this repository alone. Refresh it deliberately:
+
+```bash
+cargo run -p dotgui-renderer --example refresh_spec
+```
+
+A weekly job watches `dotgui/core` and opens an issue when the vendored copy
+falls behind. That job is allowed to reach the network because its failure
+means "the spec moved", not "the renderer is broken"; the build gate stays
+offline.
+
 ## What The Tests Cover
 
 Three layers, deliberately split by what each one can promise:

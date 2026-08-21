@@ -1,0 +1,94 @@
+name: Spec drift
+
+# The coverage gate reads a vendored copy of the spec so it stays hermetic.
+# This job is the other half: it watches dotgui/core for changes and says so,
+# instead of the vendored copy going quietly stale.
+#
+# It is allowed to touch the network because a failure here means "the spec
+# moved", not "the renderer is broken". Keeping those two signals apart is the
+# point — a build gate must never depend on another repository.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the current spec from core
+        id: fetch
+        run: |
+          curl -fsSL \
+            https://raw.githubusercontent.com/dotgui/core/main/spec/spec.json \
+            -o /tmp/spec-upstream.json
+          if diff -q /tmp/spec-upstream.json spec/spec.json >/dev/null; then
+            echo "drifted=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "drifted=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summarise what changed
+        if: steps.fetch.outputs.drifted == 'true'
+        id: summary
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          def names(path):
+              d = json.load(open(path))
+              out = set()
+              for e in d.get('elements', []):
+                  tag = e.get('tag')
+                  for a in (e.get('attributes') or []):
+                      out.add((tag, a['name']))
+              for a in d.get('sharedAttributes', []):
+                  out.add(('(shared)', a['name']))
+              return out
+          before, after = names('spec/spec.json'), names('/tmp/spec-upstream.json')
+          added   = sorted(after - before)
+          removed = sorted(before - after)
+          body = []
+          if added:
+              body.append("Added upstream:")
+              body += ["- `%s` on `%s`" % (n, t) for t, n in added]
+          if removed:
+              body.append("Removed upstream:")
+              body += ["- `%s` on `%s`" % (n, t) for t, n in removed]
+          if not body:
+              body.append("The file changed but no attributes were added or removed — "
+                          "descriptions or examples only.")
+          print("body<<EOF")
+          print("\n".join(body))
+          print("EOF")
+          PY
+
+      - name: Open or update the drift issue
+        if: steps.fetch.outputs.drifted == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUMMARY: ${{ steps.summary.outputs.body }}
+        run: |
+          TITLE="Vendored spec is behind dotgui/core"
+          BODY=$(printf '%s\n\n%s\n\n%s\n' \
+            "\`spec/spec.json\` no longer matches \`dotgui/core@main\`." \
+            "$SUMMARY" \
+            "Refresh with:
+          \`\`\`bash
+          cargo run -p dotgui-renderer --example refresh_spec
+          UPDATE_COVERAGE=1 cargo test -p dotgui-renderer --test spec_coverage
+          \`\`\`
+          Then commit both, and file issues for anything newly listed as missing in \`COVERAGE.md\`.")
+
+          EXISTING=$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --label spec-coverage --body "$BODY"
+          fi

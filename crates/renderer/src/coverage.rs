@@ -1,0 +1,182 @@
+//! What this renderer implements, declared rather than inferred.
+//!
+//! Coverage against the `.gui` spec used to be measured by scanning these
+//! sources for attribute names, which counts an attribute as implemented when
+//! it appears in a comment. This module is the honest version: each entry is a
+//! claim that the renderer reads the attribute and acts on it.
+//!
+//! Two things read this list:
+//!
+//! - `tests/spec_coverage.rs` joins it against the vendored `spec/spec.json`
+//!   to generate `COVERAGE.md`, and fails when the committed file is stale.
+//! - Diagnostics, so a document using something unimplemented can be told so
+//!   rather than silently rendering wrong.
+//!
+//! Adding support for an attribute means adding it here in the same change.
+
+/// Attributes honoured on every element that the spec marks as taking the
+/// shared set.
+///
+/// `min-width` and friends are deliberately absent: the renderer reads
+/// `min-w` / `max-h`, which are not spec names. See the tracking issue.
+pub const SHARED: &[&str] = &["abs", "opacity"];
+
+/// Attributes honoured per element, beyond [`SHARED`].
+pub const BY_ELEMENT: &[(&str, &[&str])] = &[
+    (
+        "frame",
+        &["w", "h", "x", "y", "fill", "border", "radius", "clip"],
+    ),
+    (
+        "stack",
+        &[
+            "w",
+            "h",
+            "x",
+            "y",
+            "fill",
+            "border",
+            "radius",
+            "clip",
+            "align",
+            "direction",
+            "gap",
+            "p",
+            "pt",
+            "pr",
+            "pb",
+            "pl",
+            "grid-columns",
+            "grid-rows",
+            "grid-col-gap",
+            "grid-row-gap",
+        ],
+    ),
+    (
+        "row",
+        &[
+            "w", "h", "x", "y", "fill", "border", "radius", "clip", "align", "gap", "p", "pt",
+            "pr", "pb", "pl",
+        ],
+    ),
+    (
+        "col",
+        &[
+            "w", "h", "x", "y", "fill", "border", "radius", "clip", "align", "gap", "p", "pt",
+            "pr", "pb", "pl",
+        ],
+    ),
+    (
+        "grid",
+        &[
+            "w", "h", "x", "y", "fill", "border", "radius", "clip", "p", "pt", "pr", "pb", "pl",
+            "columns", "rows",
+        ],
+    ),
+    ("group", &["w", "h", "x", "y"]),
+    (
+        "text",
+        &[
+            "w",
+            "h",
+            "x",
+            "y",
+            "fill",
+            "align",
+            "value",
+            "font-family",
+            "font-size",
+            "font-style",
+            "font-weight",
+            "letter-spacing",
+            "line-height",
+            "max-lines",
+            "overflow",
+            "text-style",
+            "truncate",
+        ],
+    ),
+    (
+        "img",
+        &["w", "h", "x", "y", "src", "fit", "radius", "border"],
+    ),
+    ("rect", &["w", "h", "x", "y", "fill", "border", "radius"]),
+    ("ellipse", &["w", "h", "x", "y", "fill", "border"]),
+    ("line", &["w", "h", "x", "y", "fill"]),
+    // `<appearance>` holds child elements rather than attributes. Only the
+    // effect stack is read; fills and borders are not.
+    ("appearance", &["<effect>"]),
+];
+
+/// Attributes this renderer supports that the vendored spec does not yet
+/// describe.
+///
+/// `spec.json` predates RFC-0032, so it still documents `<grid>` with
+/// `columns` / `rows` / `col-gap` / `row-gap` and knows nothing of track
+/// templates, unit grids, or child placement. These are listed so the coverage
+/// report can say the renderer is ahead here rather than appearing to ignore
+/// them.
+pub const AHEAD_OF_SPEC: &[(&str, &[&str])] = &[
+    ("grid", &["cols", "unit"]),
+    ("*", &["gc", "gr", "col-span", "row-span", "segment"]),
+];
+
+/// Whether an attribute is implemented on an element.
+pub fn is_supported(tag: &str, attribute: &str, shared_applies: bool) -> bool {
+    if shared_applies && SHARED.contains(&attribute) {
+        return true;
+    }
+    BY_ELEMENT
+        .iter()
+        .find(|(element, _)| *element == tag)
+        .is_some_and(|(_, attributes)| attributes.contains(&attribute))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_attributes_apply_only_where_the_spec_says_so() {
+        assert!(is_supported("row", "opacity", true));
+        assert!(!is_supported("row", "opacity", false));
+    }
+
+    #[test]
+    fn element_attributes_do_not_leak_between_elements() {
+        assert!(is_supported("text", "line-height", true));
+        assert!(!is_supported("rect", "line-height", true));
+    }
+
+    #[test]
+    fn the_declaration_matches_what_the_renderer_reads() {
+        // A spot check that this list is not drifting from the code. Each of
+        // these is read in `taffy_layout`, `scene`, or `text_style`.
+        for (tag, attribute) in [
+            ("col", "gap"),
+            ("row", "align"),
+            ("grid", "columns"),
+            ("text", "truncate"),
+            ("img", "fit"),
+            ("ellipse", "fill"),
+        ] {
+            assert!(
+                is_supported(tag, attribute, true),
+                "<{tag}> {attribute} is read by the renderer but not declared"
+            );
+        }
+
+        // And that known gaps stay declared as gaps.
+        for (tag, attribute) in [
+            ("rect", "shadow"),
+            ("text", "decoration"),
+            ("group", "mask-src"),
+            ("row", "wrap"),
+        ] {
+            assert!(
+                !is_supported(tag, attribute, true),
+                "<{tag}> {attribute} is declared but the renderer does not read it"
+            );
+        }
+    }
+}
