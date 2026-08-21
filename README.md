@@ -282,9 +282,13 @@ list. `z-index` decides paint order among siblings:
 <rect w="80" h="60" fill="$brand" z-index="1" />
 ```
 
-A node with a blend mode, a filter or `isolation` is painted onto a layer of
-its own and composited in one go; everything else paints straight onto the
-canvas. Backdrop effects read what is behind a node, and inside its own layer
+`opacity` is a group property, as in CSS: the subtree is drawn solid and the
+whole thing is faded once. Overlapping children inside a translucent group do
+not compound, and a group's shadow fades with it.
+
+A node with an opacity, a blend mode, a filter or `isolation` is painted onto a
+layer of its own and composited in one go; everything else paints straight onto
+the canvas. Backdrop effects read what is behind a node, and inside its own layer
 that is nothing, so a node that both isolates and blurs its backdrop is a known
 gap.
 
@@ -740,7 +744,6 @@ mean anyone looked. Run the goldens by hand when changing anything visual.
 - Add `border-image`; the spec types it as a string but does not define the
   value grammar, so it needs pinning down against kit first.
 - Improve antialiasing quality for text and vector shapes.
-- Add opacity groups; `opacity` is still applied per draw, not per group.
 - Add layer blur.
 - Add PDF export once the scene model is stable.
 
