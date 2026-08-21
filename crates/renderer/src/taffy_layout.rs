@@ -1012,6 +1012,58 @@ mod tests {
     // ── RFC-0032 grid ────────────────────────────────────────────────────
 
     #[test]
+    fn a_legacy_stack_grid_reads_its_rows_and_gaps() {
+        // `<stack direction="grid">` predates `<grid>`: it takes counts rather
+        // than track templates, and its gaps have their own names.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <stack direction="grid" grid-columns="2" grid-rows="2"
+                     grid-col-gap="10" grid-row-gap="20" w="210" h="120">
+                <rect />
+                <rect />
+                <rect />
+                <rect />
+              </stack>
+            </gui>
+            "#,
+        );
+
+        let at = |index: usize| {
+            let rect = layout.children[index].rect;
+            (rect.x, rect.y)
+        };
+
+        assert_eq!(at(0), (0.0, 0.0));
+        assert_eq!(at(1), (110.0, 0.0), "one column plus the 10px column gap");
+        assert_eq!(at(2), (0.0, 70.0), "one row plus the 20px row gap");
+        assert_eq!(at(3), (110.0, 70.0));
+    }
+
+    #[test]
+    fn a_grid_child_spans_the_rows_it_asks_for() {
+        // `col-span` has a test through `grid_ranges_are_inclusive`; this is
+        // its vertical twin.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <grid cols="2" rows="2" w="200" h="200">
+                <rect row-span="2" />
+                <rect />
+                <rect />
+              </grid>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(
+            layout.children[0].rect.height, 200.0,
+            "the spanning child covers both rows"
+        );
+        assert_eq!(layout.children[1].rect.height, 100.0);
+    }
+
+    #[test]
     fn track_grid_splits_equal_columns() {
         let layout = layout_of(
             r#"
@@ -1529,6 +1581,129 @@ mod tests {
         assert_eq!(
             (layout.children[0].rect.x, layout.children[0].rect.y),
             (0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn max_height_clamps_a_box() {
+        // The sibling of `min_and_max_constraints_clamp_boxes`, which covers
+        // the other three constraints.
+        for name in ["max-height", "max-h"] {
+            let layout = layout_of(&format!(
+                r#"
+                <gui version="0.2">
+                  <col w="100" {name}="40">
+                    <rect w="10" h="200" />
+                  </col>
+                </gui>
+                "#
+            ));
+
+            assert_eq!(layout.rect.height, 40.0, "{name}");
+        }
+    }
+
+    #[test]
+    fn bottom_padding_is_read_like_the_other_three_sides() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col pb="12">
+                <rect w="10" h="10" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.rect.height, 22.0, "the box grows by its padding");
+        assert_eq!(layout.children[0].rect.y, 0.0, "which sits below the child");
+    }
+
+    #[test]
+    fn every_padding_side_is_wired_to_its_own_edge() {
+        // `pt`/`pr`/`pb`/`pl` are four near-identical readers, which is where a
+        // copy-paste slip would sit unnoticed.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="100" h="100" pt="4" pr="8" pb="16" pl="32">
+                <rect w="10" h="10" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        let child = &layout.children[0];
+        assert_eq!((child.rect.x, child.rect.y), (32.0, 4.0), "left and top");
+
+        let hugging = layout_of(
+            r#"
+            <gui version="0.2">
+              <col pt="4" pr="8" pb="16" pl="32">
+                <rect w="10" h="10" />
+              </col>
+            </gui>
+            "#,
+        );
+        assert_eq!(hugging.rect.width, 50.0, "10 + 32 left + 8 right");
+        assert_eq!(hugging.rect.height, 30.0, "10 + 4 top + 16 bottom");
+    }
+
+    #[test]
+    fn the_text_wrap_attribute_reaches_the_wrapper() {
+        // `WrapOptions::new` is unit-tested; this is the attribute wiring.
+        let wrapped = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="50">
+                <text value="aaaa bbbb cccc" font-size="10" line-height="12" />
+              </col>
+            </gui>
+            "#,
+        );
+        let flat = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="50">
+                <text value="aaaa bbbb cccc" font-size="10" line-height="12"
+                      text-wrap="nowrap" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert!(wrapped.children[0].rect.height > 12.0);
+        assert_eq!(flat.children[0].rect.height, 12.0);
+    }
+
+    #[test]
+    fn the_word_break_attribute_reaches_the_wrapper() {
+        // `break-all` lets a long word split, so it stops overflowing and the
+        // box needs more lines for it.
+        let normal = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="40">
+                <text value="aaaaaaaaaaaaaaaa" font-size="10" line-height="12" />
+              </col>
+            </gui>
+            "#,
+        );
+        let broken = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="40">
+                <text value="aaaaaaaaaaaaaaaa" font-size="10" line-height="12"
+                      word-break="break-all" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(normal.children[0].rect.height, 12.0, "one overflowing line");
+        assert!(
+            broken.children[0].rect.height > 12.0,
+            "break-all splits it across lines"
         );
     }
 

@@ -2091,6 +2091,71 @@ mod tests {
     }
 
     #[test]
+    fn every_transform_part_is_wired_to_its_own_axis() {
+        // Four near-identical readers, which is where a copy-paste slip would
+        // sit unnoticed — `scale-x` and `skew-y` alone would not catch it.
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50" scale-x="2" scale-y="3" skew-x="10" skew-y="20" />
+            </gui>
+            "##,
+        );
+
+        let transform = scene.root.transform.expect("transform is read");
+        assert_eq!(transform.scale_x, 2.0);
+        assert_eq!(transform.scale_y, 3.0);
+        assert_eq!(transform.skew_x, 10.0);
+        assert_eq!(transform.skew_y, 20.0);
+    }
+
+    #[test]
+    fn each_transform_part_can_stand_alone() {
+        // Declared on its own, each part still has to make a transform — a
+        // reader wired to the wrong field would fall back to the identity and
+        // silently do nothing.
+        let alone = |attribute: &str| {
+            scene_of(&format!(
+                r##"
+                <gui version="0.2">
+                  <col w="100" h="50" {attribute}="2" />
+                </gui>
+                "##
+            ))
+            .root
+            .transform
+            .unwrap_or_else(|| panic!("{attribute} alone should be a transform"))
+        };
+
+        assert_eq!(alone("scale-y").scale_y, 2.0);
+        assert_eq!(alone("skew-x").skew_x, 2.0);
+    }
+
+    #[test]
+    fn letter_spacing_reaches_the_segments_and_is_inherited() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="200" h="50">
+                <text letter-spacing="3" value="Outer">
+                  <segment value="Inner" />
+                  <segment value="Wide" letter-spacing="6" />
+                </text>
+              </col>
+            </gui>
+            "##,
+        );
+
+        let PaintContent::Text { segments, .. } = &scene.root.children[0].content else {
+            panic!("expected text content");
+        };
+
+        assert_eq!(segments[0].letter_spacing, 3.0);
+        assert_eq!(segments[1].letter_spacing, 3.0, "inherited by a segment");
+        assert_eq!(segments[2].letter_spacing, 6.0, "and overridable");
+    }
+
+    #[test]
     fn scene_preserves_sided_border_widths() {
         let document = parse_gui_xml(
             r##"

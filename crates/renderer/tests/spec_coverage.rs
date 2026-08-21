@@ -295,3 +295,71 @@ fn attribute_name(attribute: &Value) -> Option<String> {
         .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
         .then(|| name.to_owned())
 }
+
+/// Every declared property is named somewhere in a test.
+///
+/// This is a weak signal deliberately: a name in a test file is not proof the
+/// property behaves, only that someone wrote something about it. It exists
+/// because the opposite — a property declared implemented with nothing at all
+/// pinning it — is how `<fill>` came to count as done while gradients silently
+/// painted nothing for eight releases.
+///
+/// Declaring a property and leaving it untested should be a decision, not an
+/// oversight. If a property genuinely cannot be tested, say so here.
+#[test]
+fn every_declared_property_is_named_in_a_test() {
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    let mut tests = String::new();
+    collect_test_sources(&crate_dir.join("src"), &mut tests);
+    collect_test_sources(&crate_dir.join("tests"), &mut tests);
+
+    let mut declared: Vec<&str> = coverage::SHARED.to_vec();
+    for (_, attributes) in coverage::BY_ELEMENT {
+        declared.extend(attributes.iter().copied());
+    }
+    declared.sort_unstable();
+    declared.dedup();
+
+    let untested: Vec<&str> = declared
+        .into_iter()
+        // `<fill>` and friends are child elements, exercised through the
+        // documents that use them rather than by name.
+        .filter(|name| !name.starts_with('<'))
+        .filter(|name| !tests.contains(*name))
+        .collect();
+
+    assert!(
+        untested.is_empty(),
+        "declared but never named in a test: {untested:?}\n\n\
+         Add a test that exercises each, or stop declaring it implemented."
+    );
+}
+
+/// Appends the test halves of every Rust file under `dir`.
+fn collect_test_sources(dir: &std::path::Path, out: &mut String) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_test_sources(&path, out);
+            continue;
+        }
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            // A unit test module is one half of its file; an integration test
+            // file is all test.
+            match text.split_once("#[cfg(test)]") {
+                Some((_, tests)) => out.push_str(tests),
+                None if path.starts_with(dir) && dir.ends_with("tests") => out.push_str(&text),
+                None => {}
+            }
+            out.push('\n');
+        }
+    }
+}
