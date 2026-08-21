@@ -1,6 +1,9 @@
 use crate::{
-    blur, filter::apply_filter, text, AssetCache, Border, BorderWidths, Effect, Fill, FontFace,
-    FontStore, PaintContent, Scene, SceneNode, TextSegment,
+    blur,
+    clip_path::{self, ClipBox},
+    filter::apply_filter,
+    text, AssetCache, Border, BorderWidths, Effect, Fill, FontFace, FontStore, ImageMask,
+    PaintContent, Scene, SceneNode, TextSegment,
 };
 use fontdue::{Font, FontSettings};
 use std::{fs, path::Path};
@@ -113,6 +116,11 @@ fn paint_node(
         apply_filter(&mut layer, filter);
     }
 
+    // A mask cuts the finished layer down before it is composited, so it
+    // shapes the node's own paint as well as its children — which is what
+    // `mask-image` does in CSS, unlike `clip`, which only holds children in.
+    let mask = node_mask(pixmap.width(), pixmap.height(), node, asset_cache);
+
     pixmap.draw_pixmap(
         0,
         0,
@@ -126,7 +134,7 @@ fn paint_node(
             ..Default::default()
         },
         Transform::identity(),
-        None,
+        mask.as_ref(),
     );
 }
 
@@ -134,6 +142,9 @@ fn paint_node(
 fn needs_layer(node: &SceneNode) -> bool {
     node.isolation
         || node.filter.is_some()
+        || node.clip_path.is_some()
+        || node.image_mask.is_some()
+        || node.children.iter().any(|child| child.mask)
         || node
             .blend
             .as_deref()
@@ -181,6 +192,9 @@ fn paint_node_direct(
     if (node.clip_x || node.clip_y) && !node.children.is_empty() {
         if let Some(mut child_pixmap) = Pixmap::new(pixmap.width(), pixmap.height()) {
             for child in &node.children {
+                if child.mask {
+                    continue;
+                }
                 paint_node(&mut child_pixmap, child, font, asset_cache, fonts);
             }
             if let Some(mask) = create_clip_mask(pixmap.width(), pixmap.height(), node) {
@@ -205,12 +219,229 @@ fn paint_node_direct(
         }
     } else {
         for child in &node.children {
+            // A masking child shapes its parent rather than being drawn.
+            if child.mask {
+                continue;
+            }
             paint_node(pixmap, child, font, asset_cache, fonts);
         }
     }
 
     paint_border(pixmap, node);
     paint_outline(pixmap, node);
+}
+
+/// The mask a node composites through, from whichever source it declares.
+///
+/// A `clip-path`, an image mask and a masking child are all one thing by the
+/// time they reach here: coverage per pixel. They are intersected when a node
+/// carries more than one, because each is a further restriction.
+fn node_mask(
+    width: u32,
+    height: u32,
+    node: &SceneNode,
+    asset_cache: Option<&AssetCache>,
+) -> Option<tiny_skia::Mask> {
+    let mut mask: Option<tiny_skia::Mask> = None;
+
+    if let Some(clip_path) = node.clip_path.as_deref() {
+        mask = intersect(mask, clip_path_mask(width, height, node, clip_path));
+    }
+    if let Some(image_mask) = node.image_mask.as_ref() {
+        mask = intersect(
+            mask,
+            image_mask_of(width, height, node, image_mask, asset_cache),
+        );
+    }
+    if let Some(child) = node.children.iter().find(|child| child.mask) {
+        mask = intersect(mask, child_shape_mask(width, height, child));
+    }
+
+    mask
+}
+
+/// Keeps only what both masks cover.
+///
+/// A missing mask means "nothing to add", not "hide everything", so a source
+/// that failed to resolve leaves the others in charge rather than blanking the
+/// node.
+fn intersect(
+    current: Option<tiny_skia::Mask>,
+    next: Option<tiny_skia::Mask>,
+) -> Option<tiny_skia::Mask> {
+    match (current, next) {
+        (Some(mut current), Some(next)) => {
+            for (a, b) in current.data_mut().iter_mut().zip(next.data()) {
+                *a = ((*a as u16 * *b as u16 + 127) / 255) as u8;
+            }
+            Some(current)
+        }
+        (current, next) => current.or(next),
+    }
+}
+
+fn clip_path_mask(
+    width: u32,
+    height: u32,
+    node: &SceneNode,
+    value: &str,
+) -> Option<tiny_skia::Mask> {
+    let area = ClipBox {
+        x: node.bounds.x,
+        y: node.bounds.y,
+        width: node.bounds.width,
+        height: paint_height(node),
+    };
+
+    if let Some(path) = clip_path::clip_path(value, area) {
+        let mut mask = tiny_skia::Mask::new(width, height)?;
+        mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+        return Some(mask);
+    }
+
+    // `path()` carries an SVG `d`, so it goes through the SVG parser rather
+    // than a second implementation of that grammar.
+    let data = clip_path::svg_path_data(value)?;
+    let rule = if value.contains("evenodd") {
+        "evenodd"
+    } else {
+        "nonzero"
+    };
+    let svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\">\
+         <path d=\"{data}\" fill=\"#ffffff\" fill-rule=\"{rule}\" \
+         transform=\"translate({x} {y})\"/></svg>",
+        x = area.x,
+        y = area.y,
+    );
+
+    let rendered = render_svg_to_pixmap(svg.as_bytes(), width, height)?;
+    Some(alpha_mask(&rendered))
+}
+
+/// The mask a `mask-src` image gives, drawn once at its declared box.
+fn image_mask_of(
+    width: u32,
+    height: u32,
+    node: &SceneNode,
+    image_mask: &ImageMask,
+    asset_cache: Option<&AssetCache>,
+) -> Option<tiny_skia::Mask> {
+    let asset = asset_cache?.resolve(&image_mask.src).ok()?;
+    let target_width = image_mask.width.unwrap_or(node.bounds.width);
+    let target_height = image_mask.height.unwrap_or(paint_height(node));
+    if target_width <= 0.0 || target_height <= 0.0 {
+        return None;
+    }
+
+    // The mask box is relative to the node, and `mask-repeat` is always
+    // `no-repeat`, so this is one draw at one place.
+    let x = node.bounds.x + image_mask.x;
+    let y = node.bounds.y + image_mask.y;
+    let source = decode_mask_source(
+        &asset.bytes,
+        target_width.ceil() as u32,
+        target_height.ceil() as u32,
+    )?;
+
+    let mut canvas = Pixmap::new(width, height)?;
+    canvas.draw_pixmap(
+        x.round() as i32,
+        y.round() as i32,
+        source.as_ref(),
+        &PixmapPaint::default(),
+        Transform::identity(),
+        None,
+    );
+
+    let mut mask = if image_mask.mode == "luminance" {
+        luminance_mask(&canvas)
+    } else {
+        alpha_mask(&canvas)
+    };
+
+    // With a single mask layer CSS's compositing operators have nothing to
+    // combine against. Figma's do: `mask-src` is hoisted off a Figma group
+    // mask, and there `subtract` and `exclude` mean "cut this shape out".
+    if image_mask.composite == "subtract" || image_mask.composite == "exclude" {
+        for coverage in mask.data_mut() {
+            *coverage = 255 - *coverage;
+        }
+    }
+
+    Some(mask)
+}
+
+/// The mask a `mask="true"` child gives: its own outline.
+fn child_shape_mask(width: u32, height: u32, child: &SceneNode) -> Option<tiny_skia::Mask> {
+    let mut mask = tiny_skia::Mask::new(width, height)?;
+    let path = if child.tag == "ellipse" {
+        ellipse_path(
+            child.bounds.x,
+            child.bounds.y,
+            child.bounds.width,
+            paint_height(child),
+        )?
+    } else {
+        smoothed_rect_path(
+            child.bounds.x,
+            child.bounds.y,
+            child.bounds.width,
+            paint_height(child),
+            child.radius.unwrap_or(0.0),
+            child.corner_smoothing,
+        )?
+    };
+
+    mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+    Some(mask)
+}
+
+fn alpha_mask(pixmap: &Pixmap) -> tiny_skia::Mask {
+    tiny_skia::Mask::from_pixmap(pixmap.as_ref(), tiny_skia::MaskType::Alpha)
+}
+
+fn luminance_mask(pixmap: &Pixmap) -> tiny_skia::Mask {
+    tiny_skia::Mask::from_pixmap(pixmap.as_ref(), tiny_skia::MaskType::Luminance)
+}
+
+/// Decodes a mask source — SVG or raster — at the size it is drawn.
+fn decode_mask_source(bytes: &[u8], width: u32, height: u32) -> Option<Pixmap> {
+    if looks_like_svg(bytes) {
+        return render_svg_to_pixmap(bytes, width, height);
+    }
+
+    let decoded = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let source = Pixmap::from_vec(
+        premultiply_rgba(decoded.as_raw()),
+        tiny_skia::IntSize::from_wh(decoded.width(), decoded.height())?,
+    )?;
+
+    let mut scaled = Pixmap::new(width, height)?;
+    scaled.draw_pixmap(
+        0,
+        0,
+        source.as_ref(),
+        &PixmapPaint::default(),
+        Transform::from_scale(
+            width as f32 / decoded.width() as f32,
+            height as f32 / decoded.height() as f32,
+        ),
+        None,
+    );
+    Some(scaled)
+}
+
+fn render_svg_to_pixmap(bytes: &[u8], width: u32, height: u32) -> Option<Pixmap> {
+    let tree = resvg::usvg::Tree::from_data(bytes, &resvg::usvg::Options::default()).ok()?;
+    let size = tree.size();
+    let mut pixmap = Pixmap::new(width.max(1), height.max(1))?;
+    resvg::render(
+        &tree,
+        Transform::from_scale(width as f32 / size.width(), height as f32 / size.height()),
+        &mut pixmap.as_mut(),
+    );
+    Some(pixmap)
 }
 
 fn create_clip_mask(width: u32, height: u32, node: &SceneNode) -> Option<tiny_skia::Mask> {
@@ -1762,7 +1993,7 @@ fn fill_circle(pixmap: &mut Pixmap, cx: f32, cy: f32, radius: f32, color: Color)
     );
 }
 
-fn rounded_rect_path(
+pub(crate) fn rounded_rect_path(
     x: f32,
     y: f32,
     width: f32,
@@ -1851,7 +2082,7 @@ fn smoothed_rect_path(
     pb.finish()
 }
 
-fn ellipse_path(x: f32, y: f32, width: f32, height: f32) -> Option<tiny_skia::Path> {
+pub(crate) fn ellipse_path(x: f32, y: f32, width: f32, height: f32) -> Option<tiny_skia::Path> {
     if width <= 0.0 || height <= 0.0 {
         return None;
     }
@@ -2221,6 +2452,186 @@ mod tests {
             [255, 0, 0],
             "the red rect is listed first but lifted above the blue one"
         );
+    }
+
+    #[test]
+    fn a_masking_child_shapes_its_parent_and_is_not_drawn() {
+        // The mask is a 10x10 square in the corner of a 20x20 red group, so
+        // only that corner survives — and the mask's own fill never appears.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="20" h="20" fill="#ffffff">
+                <group abs x="0" y="0" w="20" h="20">
+                  <rect abs x="0" y="0" w="10" h="10" fill="#00ff00" mask="true" />
+                  <rect abs x="0" y="0" w="20" h="20" fill="#ff0000" />
+                </group>
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            painted.get_pixel(5, 5).0[0..3],
+            [255, 0, 0],
+            "inside the mask, the red rect shows"
+        );
+        assert_eq!(
+            painted.get_pixel(15, 15).0[0..3],
+            [255, 255, 255],
+            "outside the mask, nothing does"
+        );
+    }
+
+    #[test]
+    fn a_clip_path_cuts_the_node_and_not_only_its_children() {
+        // `clip` holds children in but leaves the node's own fill alone; a
+        // clip-path shapes the fill too.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <frame abs x="0" y="0" w="40" h="40" fill="#ff0000"
+                       clip-path="inset(10px)" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(painted.get_pixel(20, 20).0[0..3], [255, 0, 0], "inside");
+        assert_eq!(
+            painted.get_pixel(5, 20).0[0..3],
+            [255, 255, 255],
+            "cut away"
+        );
+    }
+
+    #[test]
+    fn a_polygon_clip_path_keeps_its_own_side_of_the_edge() {
+        // A triangle over the top-left half of the box.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <frame abs x="0" y="0" w="40" h="40" fill="#ff0000"
+                       clip-path="polygon(0% 0%, 100% 0%, 0% 100%)" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            painted.get_pixel(5, 5).0[0..3],
+            [255, 0, 0],
+            "above the edge"
+        );
+        assert_eq!(
+            painted.get_pixel(35, 35).0[0..3],
+            [255, 255, 255],
+            "below the edge"
+        );
+    }
+
+    #[test]
+    fn an_svg_mask_source_shapes_the_group() {
+        // A circle of radius 10 centred in a 40x40 mask, so the middle
+        // survives and the corner does not.
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">
+              <circle cx="20" cy="20" r="10" fill="#ffffff"/></svg>"##;
+
+        let document = parse_gui_xml(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <group abs x="0" y="0" w="40" h="40" mask-src="assets/mask.svg">
+                  <rect abs x="0" y="0" w="40" h="40" fill="#ff0000" />
+                </group>
+              </frame>
+            </gui>
+            "##,
+        )
+        .expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+
+        let mut package_assets = std::collections::BTreeMap::new();
+        package_assets.insert("assets/mask.svg".to_owned(), svg.to_vec());
+        let cache = AssetCache::new(std::env::temp_dir()).with_package_assets(package_assets);
+
+        let png = paint_scene_to_png_bytes(&scene, Some(&cache), None).expect("scene paints");
+        let painted = image::load_from_memory(&png)
+            .expect("painted png decodes")
+            .to_rgba8();
+
+        assert_eq!(
+            painted.get_pixel(20, 20).0[0..3],
+            [255, 0, 0],
+            "in the circle"
+        );
+        assert_eq!(
+            painted.get_pixel(2, 2).0[0..3],
+            [255, 255, 255],
+            "outside it"
+        );
+    }
+
+    #[test]
+    fn mask_composite_subtract_cuts_the_shape_out_instead() {
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">
+              <circle cx="20" cy="20" r="10" fill="#ffffff"/></svg>"##;
+
+        let painted = |composite: &str| {
+            let document = parse_gui_xml(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="40" h="40" fill="#ffffff">
+                    <group abs x="0" y="0" w="40" h="40" mask-src="assets/mask.svg"
+                           mask-composite="{composite}">
+                      <rect abs x="0" y="0" w="40" h="40" fill="#ff0000" />
+                    </group>
+                  </frame>
+                </gui>
+                "##
+            ))
+            .expect("valid gui");
+            let layout = compute_taffy_layout(&document).expect("layout computes");
+            let scene = build_scene(&document, &layout);
+
+            let mut package_assets = std::collections::BTreeMap::new();
+            package_assets.insert("assets/mask.svg".to_owned(), svg.to_vec());
+            let cache = AssetCache::new(std::env::temp_dir()).with_package_assets(package_assets);
+            let png = paint_scene_to_png_bytes(&scene, Some(&cache), None).expect("scene paints");
+            image::load_from_memory(&png)
+                .expect("painted png decodes")
+                .to_rgba8()
+        };
+
+        let cut = painted("subtract");
+        assert_eq!(
+            cut.get_pixel(20, 20).0[0..3],
+            [255, 255, 255],
+            "the circle is what is removed"
+        );
+        assert_eq!(cut.get_pixel(2, 2).0[0..3], [255, 0, 0], "the rest stays");
+    }
+
+    #[test]
+    fn a_mask_that_cannot_be_resolved_leaves_the_node_alone() {
+        // No asset cache, so `mask-src` resolves to nothing. Blanking the node
+        // would lose content over a missing file.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="20" h="20" fill="#ffffff">
+                <group abs x="0" y="0" w="20" h="20" mask-src="assets/missing.svg">
+                  <rect abs x="0" y="0" w="20" h="20" fill="#ff0000" />
+                </group>
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(painted.get_pixel(10, 10).0[0..3], [255, 0, 0]);
     }
 
     #[test]
