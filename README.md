@@ -485,6 +485,27 @@ The effect stack (RFC-0027) is drawn in document order:
 Blur is three successive box blurs, the approximation the SVG filter spec
 prescribes and browsers use.
 
+## Positioned Containers
+
+`<frame>` and `<group>` position their children: a child sits at its own
+`x`/`y` relative to the container, and siblings overlap rather than stacking.
+That is what a card overlay, a badge on a photo, or a knob on a slider track is
+written as.
+
+```xml
+<frame w="328" h="200" radius="16" clip>
+  <img src="assets/hero.webp" x="0" y="0" w="328" h="200" fit="cover" />
+  <rect x="0" y="86" w="328" h="114" fill="linear-gradient(180deg, #0000, #000C)" />
+  <text x="16" y="128" value="Wheel throwing" font-size="28" fill="#FFFFFF" />
+</frame>
+```
+
+Only `<stack>`, `<row>`, `<col>` and `<grid>` lay their children out in flow,
+where `abs` takes an individual child out of it. This matches kit, which
+renders a `<frame>`'s children with `isAbsolute = !isStack`, and the spec,
+which says a `<group>`'s "children are absolutely positioned relative to the
+group origin".
+
 ## Grid
 
 `<grid>` has three shapes, chosen by which attributes are present (RFC-0032).
