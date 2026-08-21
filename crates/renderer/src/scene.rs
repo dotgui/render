@@ -30,6 +30,14 @@ pub struct SceneNode {
     pub radius: Option<f32>,
     /// Squircle factor for the node's corners, 0 (a circular arc) to 1.
     pub corner_smoothing: f32,
+    /// How the node composites against what is already painted behind it,
+    /// as in CSS `mix-blend-mode`. `None` is the normal mode.
+    pub blend: Option<String>,
+    /// Whether the node is its own stacking context, so a descendant's blend
+    /// mode sees only this subtree, as in CSS `isolation: isolate`.
+    pub isolation: bool,
+    /// A CSS `filter` string, e.g. `brightness(1.2) contrast(0.9)`.
+    pub filter: Option<String>,
     pub opacity: f32,
     /// Whether the node clips its children horizontally and vertically.
     ///
@@ -193,6 +201,13 @@ fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata) -> SceneNode {
             .map(|value| resolve_token(value, metadata))
             .and_then(|value| parse_number(&value)),
         corner_smoothing: corner_smoothing_for(layout, metadata),
+        blend: attr(layout, "blend")
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty() && value != "normal"),
+        isolation: attr(layout, "isolation").is_some_and(|value| value != "false"),
+        filter: attr(layout, "filter")
+            .map(|value| resolve_token(value, metadata))
+            .filter(|value| !value.trim().is_empty() && value.trim() != "none"),
         opacity: attr(layout, "opacity")
             .and_then(parse_number)
             .unwrap_or(1.0),
@@ -200,12 +215,7 @@ fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata) -> SceneNode {
         clip_y: clips_axis(layout, "overflow-y"),
         effects: effects_for(layout, metadata),
         content: content_for(layout, metadata),
-        children: layout
-            .children
-            .iter()
-            .filter(|child| child.tag != "segment" && child.tag != "appearance")
-            .map(|child| build_scene_node(child, metadata))
-            .collect(),
+        children: paint_ordered_children(layout, metadata),
     }
 }
 
@@ -295,6 +305,35 @@ fn borders_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Border> {
         .and_then(|value| parse_border(&resolve_token(value, metadata)))
         .into_iter()
         .collect()
+}
+
+/// The node's children in the order they are painted.
+///
+/// The scene is a paint model, so `z-index` is resolved here rather than left
+/// for the painter to re-derive. A node without one sorts as 0, and the sort
+/// is stable, so document order still decides between equals.
+fn paint_ordered_children(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<SceneNode> {
+    let mut children: Vec<(i32, SceneNode)> = layout
+        .children
+        .iter()
+        .filter(|child| child.tag != "segment" && child.tag != "appearance")
+        .map(|child| {
+            (
+                z_index_of(child, metadata),
+                build_scene_node(child, metadata),
+            )
+        })
+        .collect();
+
+    children.sort_by_key(|(z, _)| *z);
+    children.into_iter().map(|(_, child)| child).collect()
+}
+
+fn z_index_of(layout: &LayoutBox, metadata: &GuiMetadata) -> i32 {
+    attr(layout, "z-index")
+        .map(|value| resolve_token(value, metadata))
+        .and_then(|value| value.trim().parse::<i32>().ok())
+        .unwrap_or(0)
 }
 
 /// Whether one axis clips, from `clip` and the per-axis `overflow`.
@@ -430,13 +469,50 @@ fn split_shadow_parts(value: &str) -> Vec<String> {
 /// Reads the ordered effect stack out of a node's `<appearance>` block,
 /// falling back to the `shadow` shorthand.
 fn effects_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Effect> {
-    let effects: Vec<Effect> = appearance_effects(layout, metadata);
+    // A named style sits under the node's own effects, so a node can add to
+    // the style rather than only replace it.
+    let mut effects = effect_style_effects(layout, metadata);
+    effects.extend(appearance_effects(layout, metadata));
 
     if !effects.is_empty() {
         return effects;
     }
 
     shadow_shorthand(layout, metadata).into_iter().collect()
+}
+
+/// The effects a node picks up from `effect-style="name"`.
+fn effect_style_effects(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Effect> {
+    let Some(name) = attr(layout, "effect-style") else {
+        return Vec::new();
+    };
+    let Some(style) = metadata.effect_styles.get(name) else {
+        return Vec::new();
+    };
+
+    style
+        .iter()
+        .filter(|effect| effect.get("visible").map(String::as_str) != Some("false"))
+        .filter_map(|effect| {
+            let get = |name: &str| effect.get(name).map(|value| resolve_token(value, metadata));
+            let number = |name: &str, fallback: f32| {
+                get(name)
+                    .and_then(|value| parse_number(&value))
+                    .unwrap_or(fallback)
+            };
+
+            Some(Effect {
+                kind: effect.get("type")?.to_owned(),
+                x: number("x", 0.0),
+                y: number("y", 0.0),
+                radius: number("radius", 0.0),
+                spread: number("spread", 0.0),
+                color: get("color"),
+                opacity: number("opacity", 1.0),
+                saturation: number("saturation", 180.0),
+            })
+        })
+        .collect()
 }
 
 fn appearance_effects(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Effect> {
@@ -1138,6 +1214,130 @@ mod tests {
             !scene.root.clip_y,
             "overflow-y is the more specific of the two"
         );
+    }
+
+    #[test]
+    fn z_index_decides_paint_order_and_ties_go_to_document_order() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <stack w="100" h="100">
+                <rect w="10" h="10" fill="#111111" z-index="2" />
+                <rect w="10" h="10" fill="#222222" z-index="-1" />
+                <rect w="10" h="10" fill="#333333" />
+                <rect w="10" h="10" fill="#444444" />
+              </stack>
+            </gui>
+            "##,
+        );
+
+        let order: Vec<_> = scene
+            .root
+            .children
+            .iter()
+            .filter_map(|child| child.fill_color())
+            .collect();
+        assert_eq!(
+            order,
+            vec!["#222222", "#333333", "#444444", "#111111"],
+            "sorted by z-index, stable within a level"
+        );
+    }
+
+    #[test]
+    fn an_effect_style_lands_under_the_nodes_own_effects() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <styles>
+                <effect-style name="card">
+                  <effect type="drop-shadow" x="0" y="1" radius="2" color="#0000001F" />
+                  <effect type="drop-shadow" x="0" y="8" radius="24" color="#00000029" />
+                </effect-style>
+              </styles>
+              <col w="100" h="50" effect-style="card">
+                <appearance>
+                  <effect type="inner-shadow" x="0" y="2" radius="4" color="#00000033" />
+                </appearance>
+              </col>
+            </gui>
+            "##,
+        );
+
+        let stack: Vec<_> = scene
+            .root
+            .effects
+            .iter()
+            .map(|effect| (effect.kind.as_str(), effect.y))
+            .collect();
+        assert_eq!(
+            stack,
+            vec![
+                ("drop-shadow", 1.0),
+                ("drop-shadow", 8.0),
+                ("inner-shadow", 2.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn an_effect_style_resolves_tokens_and_honours_visible() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <tokens>
+                <token name="shadow-soft" value="#0000001F" />
+              </tokens>
+              <styles>
+                <effect-style name="card">
+                  <effect type="drop-shadow" x="0" y="4" radius="8" color="$shadow-soft" />
+                  <effect type="drop-shadow" x="0" y="9" radius="9" visible="false" />
+                </effect-style>
+              </styles>
+              <col w="100" h="50" effect-style="card" />
+            </gui>
+            "##,
+        );
+
+        assert_eq!(scene.root.effects.len(), 1);
+        assert_eq!(scene.root.effects[0].color.as_deref(), Some("#0000001F"));
+    }
+
+    #[test]
+    fn an_unknown_effect_style_is_ignored() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50" effect-style="missing" shadow="0 2 6 #0000001F" />
+            </gui>
+            "##,
+        );
+
+        // Nothing came from the style, so the shorthand still applies.
+        assert_eq!(scene.root.effects.len(), 1);
+        assert_eq!(scene.root.effects[0].y, 2.0);
+    }
+
+    #[test]
+    fn blend_isolation_and_filter_reach_the_scene() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50" blend="multiply" isolation filter="brightness(1.2)">
+                <rect w="10" h="10" blend="normal" filter="none" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(scene.root.blend.as_deref(), Some("multiply"));
+        assert!(scene.root.isolation);
+        assert_eq!(scene.root.filter.as_deref(), Some("brightness(1.2)"));
+
+        // `normal` and `none` are the defaults spelled out; they carry nothing.
+        assert_eq!(scene.root.children[0].blend, None);
+        assert_eq!(scene.root.children[0].filter, None);
+        assert!(!scene.root.children[0].isolation);
     }
 
     #[test]

@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **49** |
+| Implemented | **54** |
 | Partial | **1** |
-| Not implemented | **70** |
+| Not implemented | **65** |
 | Total | **120** |
 
 ## Not implemented
@@ -21,7 +21,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 |---|---|
 | `aspect-ratio` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `baseline-shift` | `<text>` |
-| `blend` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `border-align` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `border-color` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `border-image` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
@@ -35,10 +34,8 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `decoration-color` | `<text>` |
 | `decoration-style` | `<text>` |
 | `decoration-thickness` | `<text>` |
-| `effect-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<rect>`, `<ellipse>` |
 | `fill-rule` | `<rect>`, `<ellipse>` |
 | `fill-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
-| `filter` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `flip` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `font-feature` | `<text>` |
 | `font-optical-sizing` | `<text>` |
@@ -49,7 +46,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `font-variation` | `<text>` |
 | `href` | `<text>` |
 | `image-rendering` | `<img>` |
-| `isolation` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `leading-trim` | `<text>` |
 | `list` | `<text>` |
 | `list-level` | `<text>` |
@@ -88,7 +84,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `word-spacing` | `<text>` |
 | `wrap` | `<stack>`, `<row>`, `<col>` |
 | `writing-mode` | `<text>` |
-| `z-index` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 
 ## Partially implemented
 
@@ -107,11 +102,14 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `<fill>` | `<appearance>` |
 | `abs` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `align` | `<stack>`, `<row>`, `<col>`, `<text>` |
+| `blend` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `border` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `clip` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `columns` | `<grid>` |
 | `corner-smoothing` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>` |
+| `effect-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<rect>`, `<ellipse>` |
 | `fill` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
+| `filter` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `fit` | `<img>` |
 | `font-family` | `<text>` |
 | `font-size` | `<text>` |
@@ -123,6 +121,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `grid-row-gap` | `<stack>` |
 | `grid-rows` | `<stack>` |
 | `h` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>` |
+| `isolation` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `letter-spacing` | `<text>` |
 | `line-height` | `<text>` |
 | `max-height` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
@@ -151,6 +150,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `w` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `z-index` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 
 ## Ahead of the vendored spec
 

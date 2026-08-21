@@ -8,6 +8,9 @@ const PRESENCE_ATTRS: &[(&str, &str)] = &[
     ("abs", "true"),
     ("clip", "true"),
     ("gap", "auto"),
+    // The spec writes `isolation` as presence-only. CSS spells the value
+    // `isolate`, and that is what a document carrying one writes too.
+    ("isolation", "isolate"),
     ("mask", "true"),
     ("reverse-z", "true"),
     ("truncate", "true"),
@@ -45,7 +48,7 @@ pub fn parse_gui_xml(xml: &str) -> Result<GuiDocument, ParseError> {
         match tag {
             "tokens" => read_tokens(child, &mut metadata),
             "fonts" => read_fonts(child, &mut metadata),
-            "styles" => read_named_blocks(child, &mut metadata.styles),
+            "styles" => read_styles(child, &mut metadata),
             t if ROOT_LAYOUT_TAGS.contains(&t) => {
                 if layout_root.is_some() {
                     return Err(ParseError::MultipleRootLayouts);
@@ -201,12 +204,29 @@ fn read_tokens(tokens_el: Node, metadata: &mut GuiMetadata) {
     }
 }
 
-fn read_named_blocks(parent: Node, out: &mut BTreeMap<String, BTreeMap<String, String>>) {
-    for child in parent.children().filter(Node::is_element) {
+/// Splits a `<styles>` block into text styles and effect styles.
+///
+/// A `<text-style>` is read as a bag of attributes. An `<effect-style>` holds
+/// ordered `<effect>` children instead, so it is collected separately.
+fn read_styles(styles_el: Node, metadata: &mut GuiMetadata) {
+    for child in styles_el.children().filter(Node::is_element) {
         let Some(name) = attr(child, "name").or_else(|| attr(child, "id")) else {
             continue;
         };
-        out.insert(name, read_attributes(child));
+
+        if child.tag_name().name() == "effect-style" {
+            metadata.effect_styles.insert(
+                name,
+                child
+                    .children()
+                    .filter(Node::is_element)
+                    .filter(|effect| effect.tag_name().name() == "effect")
+                    .map(read_attributes)
+                    .collect(),
+            );
+        } else {
+            metadata.styles.insert(name, read_attributes(child));
+        }
     }
 }
 
