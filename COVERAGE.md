@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **43** |
+| Implemented | **47** |
 | Partial | **1** |
-| Not implemented | **76** |
+| Not implemented | **72** |
 | Total | **120** |
 
 ## Not implemented
