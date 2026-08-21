@@ -47,6 +47,8 @@ pub struct SceneNode {
     pub image_mask: Option<ImageMask>,
     /// A CSS `clip-path` string, e.g. `circle(40% at 50% 50%)`.
     pub clip_path: Option<String>,
+    /// The node's own transform, if it declares one.
+    pub transform: Option<Transform2D>,
     pub opacity: f32,
     /// Whether the node clips its children horizontally and vertically.
     ///
@@ -72,6 +74,36 @@ impl SceneNode {
             .rev()
             .find(|fill| fill.kind == "color")
             .and_then(|fill| fill.value.as_deref())
+    }
+}
+
+/// A node's 2D transform, already resolved to numbers.
+///
+/// The parts are kept separate rather than pre-multiplied into a matrix so a
+/// consumer can still see what the document asked for. The painter composes
+/// them in CSS's order: rotate, flip, scale, skew.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Transform2D {
+    /// Degrees, clockwise, as in CSS `rotate()`.
+    pub rotation: f32,
+    pub scale_x: f32,
+    pub scale_y: f32,
+    /// Degrees, as in CSS `skewX()` and `skewY()`.
+    pub skew_x: f32,
+    pub skew_y: f32,
+    /// The pivot, in pixels from the node's top-left corner.
+    pub origin_x: f32,
+    pub origin_y: f32,
+}
+
+impl Transform2D {
+    /// Whether the transform would move anything.
+    pub fn is_identity(&self) -> bool {
+        self.rotation == 0.0
+            && self.scale_x == 1.0
+            && self.scale_y == 1.0
+            && self.skew_x == 0.0
+            && self.skew_y == 0.0
     }
 }
 
@@ -235,6 +267,7 @@ fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata) -> SceneNode {
         filter: attr(layout, "filter")
             .map(|value| resolve_token(value, metadata))
             .filter(|value| !value.trim().is_empty() && value.trim() != "none"),
+        transform: transform_for(layout, metadata),
         mask: attr(layout, "mask").is_some_and(|value| value != "false"),
         image_mask: image_mask_for(layout, metadata),
         clip_path: attr(layout, "clip-path")
@@ -349,6 +382,94 @@ fn borders_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Border> {
 fn fill_style_value<'a>(layout: &'a LayoutBox, metadata: &'a GuiMetadata) -> Option<&'a str> {
     let name = attr(layout, "fill-style")?;
     metadata.styles.get(name)?.get("value").map(String::as_str)
+}
+
+/// Reads `rotation`, `flip`, the scales and the skews into one transform.
+///
+/// Returns `None` when the node declares nothing, or declares only values that
+/// come to the identity, so the painter can keep such a node on its fast path.
+fn transform_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Option<Transform2D> {
+    let number = |name: &str| {
+        attr(layout, name)
+            .map(|value| resolve_token(value, metadata))
+            .and_then(|value| parse_number(&value))
+    };
+
+    // `flip` is a mirror, which is a scale of -1, so it folds into the scales
+    // rather than needing a matrix of its own.
+    let (flip_x, flip_y) = match attr(layout, "flip") {
+        Some("h") => (-1.0, 1.0),
+        Some("v") => (1.0, -1.0),
+        Some("both") => (-1.0, -1.0),
+        _ => (1.0, 1.0),
+    };
+
+    let (width, height) = (layout.rect.width, layout.rect.height);
+    let (origin_x, origin_y) = transform_origin(
+        attr(layout, "transform-origin").unwrap_or("center"),
+        width,
+        height,
+    );
+
+    let transform = Transform2D {
+        rotation: number("rotation").unwrap_or(0.0),
+        scale_x: number("scale-x").unwrap_or(1.0) * flip_x,
+        scale_y: number("scale-y").unwrap_or(1.0) * flip_y,
+        skew_x: number("skew-x").unwrap_or(0.0),
+        skew_y: number("skew-y").unwrap_or(0.0),
+        origin_x,
+        origin_y,
+    };
+
+    (!transform.is_identity()).then_some(transform)
+}
+
+/// Resolves a `transform-origin` to pixels inside the node's box.
+///
+/// Takes the spec's hyphenated keywords, CSS's own keywords, percentages and
+/// lengths. An unreadable value falls back to the centre, which is what CSS
+/// uses when a transform is present and no origin is given.
+fn transform_origin(value: &str, width: f32, height: f32) -> (f32, f32) {
+    let value = value.trim();
+    let keyword = match value {
+        "top-left" => Some((0.0, 0.0)),
+        "top-center" | "top" => Some((0.5, 0.0)),
+        "top-right" => Some((1.0, 0.0)),
+        "middle-left" | "left" => Some((0.0, 0.5)),
+        "center" | "middle-center" => Some((0.5, 0.5)),
+        "middle-right" | "right" => Some((1.0, 0.5)),
+        "bottom-left" => Some((0.0, 1.0)),
+        "bottom-center" | "bottom" => Some((0.5, 1.0)),
+        "bottom-right" => Some((1.0, 1.0)),
+        _ => None,
+    };
+
+    if let Some((x, y)) = keyword {
+        return (width * x, height * y);
+    }
+
+    let mut parts = value.split_whitespace();
+    let x = parts
+        .next()
+        .and_then(|part| origin_length(part, width))
+        .unwrap_or(width / 2.0);
+    let y = parts
+        .next()
+        .and_then(|part| origin_length(part, height))
+        .unwrap_or(height / 2.0);
+
+    (x, y)
+}
+
+fn origin_length(value: &str, extent: f32) -> Option<f32> {
+    match value.trim().strip_suffix('%') {
+        Some(percentage) => percentage
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|it| it / 100.0 * extent),
+        None => parse_number(value),
+    }
 }
 
 /// Reads `mask-src` and the geometry that positions it.
@@ -1518,6 +1639,103 @@ mod tests {
             Some("circle(40% at 50% 50%)")
         );
         assert_eq!(scene.root.children[0].clip_path, None);
+    }
+
+    #[test]
+    fn a_transform_reads_its_parts_and_pivots_on_the_centre() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50" rotation="45" scale-x="1.5" skew-y="10" />
+            </gui>
+            "##,
+        );
+
+        let transform = scene.root.transform.expect("transform is read");
+        assert_eq!(transform.rotation, 45.0);
+        assert_eq!(transform.scale_x, 1.5);
+        assert_eq!(transform.scale_y, 1.0);
+        assert_eq!(transform.skew_y, 10.0);
+        assert_eq!((transform.origin_x, transform.origin_y), (50.0, 25.0));
+    }
+
+    #[test]
+    fn flip_is_a_scale_of_minus_one() {
+        for (flip, expected) in [
+            ("h", (-1.0, 1.0)),
+            ("v", (1.0, -1.0)),
+            ("both", (-1.0, -1.0)),
+        ] {
+            let scene = scene_of(&format!(
+                r##"
+                <gui version="0.2">
+                  <col w="100" h="50" flip="{flip}" />
+                </gui>
+                "##
+            ));
+
+            let transform = scene.root.transform.expect("transform is read");
+            assert_eq!((transform.scale_x, transform.scale_y), expected, "{flip}");
+        }
+    }
+
+    #[test]
+    fn flip_and_scale_multiply_rather_than_replace() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50" flip="h" scale-x="2" />
+            </gui>
+            "##,
+        );
+
+        assert_eq!(scene.root.transform.expect("read").scale_x, -2.0);
+    }
+
+    #[test]
+    fn a_node_without_a_transform_carries_none() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.2">
+              <col w="100" h="50">
+                <rect w="10" h="10" rotation="0" scale-x="1" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(scene.root.transform, None);
+        assert_eq!(
+            scene.root.children[0].transform, None,
+            "values that come to the identity are not a transform"
+        );
+    }
+
+    #[test]
+    fn transform_origin_takes_keywords_percentages_and_lengths() {
+        for (origin, expected) in [
+            ("top-left", (0.0, 0.0)),
+            ("bottom-right", (100.0, 50.0)),
+            ("middle-left", (0.0, 25.0)),
+            ("0% 100%", (0.0, 50.0)),
+            ("25 10", (25.0, 10.0)),
+            ("nonsense", (50.0, 25.0)),
+        ] {
+            let scene = scene_of(&format!(
+                r##"
+                <gui version="0.2">
+                  <col w="100" h="50" rotation="10" transform-origin="{origin}" />
+                </gui>
+                "##
+            ));
+
+            let transform = scene.root.transform.expect("transform is read");
+            assert_eq!(
+                (transform.origin_x, transform.origin_y),
+                expected,
+                "{origin}"
+            );
+        }
     }
 
     #[test]

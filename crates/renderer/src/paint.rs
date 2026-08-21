@@ -3,7 +3,7 @@ use crate::{
     clip_path::{self, ClipBox},
     filter::apply_filter,
     text, AssetCache, Border, BorderWidths, Effect, Fill, FontFace, FontStore, ImageMask,
-    PaintContent, Scene, SceneNode, TextSegment,
+    PaintContent, Scene, SceneNode, TextSegment, Transform2D,
 };
 use fontdue::{Font, FontSettings};
 use std::{fs, path::Path};
@@ -119,7 +119,13 @@ fn paint_node(
     // A mask cuts the finished layer down before it is composited, so it
     // shapes the node's own paint as well as its children — which is what
     // `mask-image` does in CSS, unlike `clip`, which only holds children in.
-    let mask = node_mask(pixmap.width(), pixmap.height(), node, asset_cache);
+    //
+    // It is applied to the layer rather than handed to `draw_pixmap`, because
+    // a clip mask there would be in canvas space: a node that both masks and
+    // transforms would have its mask left behind by the transform.
+    if let Some(mask) = node_mask(pixmap.width(), pixmap.height(), node, asset_cache) {
+        mask_layer(&mut layer, &mask);
+    }
 
     pixmap.draw_pixmap(
         0,
@@ -131,16 +137,57 @@ fn paint_node(
                 .as_deref()
                 .and_then(blend_mode)
                 .unwrap_or(BlendMode::SourceOver),
+            // Resampling a finished layer is softer than drawing the geometry
+            // transformed would be. It is the price of applying one matrix to
+            // a whole subtree instead of threading it through every draw.
+            quality: tiny_skia::FilterQuality::Bicubic,
             ..Default::default()
         },
-        Transform::identity(),
-        mask.as_ref(),
+        node.transform
+            .map(|transform| node_matrix(node, transform))
+            .unwrap_or_default(),
+        None,
     );
+}
+
+/// Multiplies a mask into a layer's alpha.
+fn mask_layer(layer: &mut Pixmap, mask: &tiny_skia::Mask) {
+    for (pixel, coverage) in layer.data_mut().chunks_exact_mut(4).zip(mask.data()) {
+        // Premultiplied, so every channel scales with the alpha.
+        for channel in pixel {
+            *channel = ((*channel as u16 * *coverage as u16 + 127) / 255) as u8;
+        }
+    }
+}
+
+/// The node's transform as a matrix, pivoted on its `transform-origin`.
+///
+/// CSS applies the functions left to right — rotate, then flip and the scales,
+/// then the skews — and each is a further multiplication, so the skews compose
+/// as two matrices rather than one combined `from_skew`, which would drop the
+/// cross term `skewX(a) skewY(b)` produces.
+///
+/// The origin is stored relative to the node's own box, and the layer this
+/// matrix is applied to is the whole canvas, so the node's position has to be
+/// added back or every node would pivot near the canvas corner.
+fn node_matrix(node: &SceneNode, transform: Transform2D) -> Transform {
+    let pivot_x = node.bounds.x + transform.origin_x;
+    let pivot_y = node.bounds.y + transform.origin_y;
+    let skew_x = transform.skew_x.to_radians().tan();
+    let skew_y = transform.skew_y.to_radians().tan();
+
+    Transform::from_translate(pivot_x, pivot_y)
+        .pre_concat(Transform::from_rotate(transform.rotation))
+        .pre_concat(Transform::from_scale(transform.scale_x, transform.scale_y))
+        .pre_concat(Transform::from_skew(skew_x, 0.0))
+        .pre_concat(Transform::from_skew(0.0, skew_y))
+        .pre_concat(Transform::from_translate(-pivot_x, -pivot_y))
 }
 
 /// Whether the node has to be finished on its own layer before compositing.
 fn needs_layer(node: &SceneNode) -> bool {
     node.isolation
+        || node.transform.is_some()
         || node.filter.is_some()
         || node.clip_path.is_some()
         || node.image_mask.is_some()
@@ -2632,6 +2679,129 @@ mod tests {
         );
 
         assert_eq!(painted.get_pixel(10, 10).0[0..3], [255, 0, 0]);
+    }
+
+    #[test]
+    fn rotation_turns_a_node_about_its_centre() {
+        // A wide bar across the middle of a 40x40 box, turned a quarter turn:
+        // it ends up vertical, so the pixels it covered and the ones it now
+        // covers swap.
+        let bar = |rotation: &str| {
+            render(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="40" h="40" fill="#ffffff">
+                    <rect abs x="0" y="15" w="40" h="10" fill="#ff0000"
+                          rotation="{rotation}" />
+                  </frame>
+                </gui>
+                "##
+            ))
+        };
+
+        let flat = bar("0");
+        assert_eq!(flat.get_pixel(4, 20).0[0..3], [255, 0, 0], "along the bar");
+        assert_eq!(flat.get_pixel(20, 4).0[0..3], [255, 255, 255], "above it");
+
+        let turned = bar("90");
+        assert_eq!(
+            turned.get_pixel(20, 4).0[0..3],
+            [255, 0, 0],
+            "the bar now runs the other way"
+        );
+        assert_eq!(turned.get_pixel(4, 20).0[0..3], [255, 255, 255]);
+    }
+
+    #[test]
+    fn transform_origin_moves_the_pivot() {
+        // Rotated about the top-left corner, a quarter turn sweeps the bar off
+        // the canvas to the left rather than standing it up in place.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <rect abs x="0" y="0" w="40" h="10" fill="#ff0000"
+                      rotation="90" transform-origin="top-left" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            painted.get_pixel(4, 20).0[0..3],
+            [255, 255, 255],
+            "nothing is left in the box"
+        );
+    }
+
+    #[test]
+    fn flip_mirrors_the_node() {
+        // A marker in the left quarter of the box moves to the right quarter.
+        let painted = |flip: &str| {
+            render(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="40" h="40" fill="#ffffff">
+                    <frame abs x="0" y="0" w="40" h="40" {flip}>
+                      <rect abs x="0" y="15" w="10" h="10" fill="#ff0000" />
+                    </frame>
+                  </frame>
+                </gui>
+                "##
+            ))
+        };
+
+        let plain = painted("");
+        assert_eq!(plain.get_pixel(5, 20).0[0..3], [255, 0, 0]);
+
+        let mirrored = painted(r#"flip="h""#);
+        assert_eq!(
+            mirrored.get_pixel(34, 20).0[0..3],
+            [255, 0, 0],
+            "moved over"
+        );
+        assert_eq!(mirrored.get_pixel(5, 20).0[0..3], [255, 255, 255]);
+    }
+
+    #[test]
+    fn scale_grows_the_node_about_its_centre() {
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <rect abs x="10" y="10" w="20" h="20" fill="#ff0000" scale-x="2" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        // 20 wide about a centre at x=20 becomes 40 wide, so it reaches the edge.
+        assert_eq!(painted.get_pixel(2, 20).0[0..3], [255, 0, 0]);
+        assert_eq!(
+            painted.get_pixel(20, 5).0[0..3],
+            [255, 255, 255],
+            "y untouched"
+        );
+    }
+
+    #[test]
+    fn a_mask_travels_with_its_nodes_transform() {
+        // The mask is applied in the node's own space, so turning the node
+        // turns the masked shape with it rather than leaving it behind.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <frame abs x="0" y="0" w="40" h="40" fill="#ff0000"
+                       clip-path="inset(0 30px 0 0)" rotation="90" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        // The strip runs down the left edge; a quarter turn puts it along the top.
+        assert_eq!(painted.get_pixel(20, 5).0[0..3], [255, 0, 0]);
+        assert_eq!(painted.get_pixel(5, 20).0[0..3], [255, 255, 255]);
     }
 
     #[test]

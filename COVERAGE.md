@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **64** |
+| Implemented | **72** |
 | Partial | **1** |
-| Not implemented | **55** |
+| Not implemented | **47** |
 | Total | **120** |
 
 ## Not implemented
@@ -19,7 +19,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 
 | Property | Elements |
 |---|---|
-| `aspect-ratio` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `baseline-shift` | `<text>` |
 | `border-align` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `border-color` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
@@ -34,7 +33,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `decoration-style` | `<text>` |
 | `decoration-thickness` | `<text>` |
 | `fill-rule` | `<rect>`, `<ellipse>` |
-| `flip` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `font-feature` | `<text>` |
 | `font-optical-sizing` | `<text>` |
 | `font-postscript` | `<text>` |
@@ -53,12 +51,7 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `paragraph-indent` | `<text>` |
 | `paragraph-spacing` | `<text>` |
 | `reverse-z` | `<stack>`, `<row>`, `<col>` |
-| `rotation` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `row-gap` | `<grid>` |
-| `scale-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `scale-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `skew-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `skew-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `text-case` | `<text>` |
 | `text-decoration-skip-ink` | `<text>` |
 | `text-rendering` | `<text>` |
@@ -66,7 +59,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `text-underline-offset` | `<text>` |
 | `text-wrap` | `<text>` |
 | `thickness` | `<line>` |
-| `transform-origin` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `vertical-align` | `<text>` |
 | `visible` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `white-space` | `<text>` |
@@ -92,6 +84,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `<fill>` | `<appearance>` |
 | `abs` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `align` | `<stack>`, `<row>`, `<col>`, `<text>` |
+| `aspect-ratio` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `blend` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `border` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `clip` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
@@ -103,6 +96,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `fill-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
 | `filter` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `fit` | `<img>` |
+| `flip` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `font-family` | `<text>` |
 | `font-size` | `<text>` |
 | `font-style` | `<text>` |
@@ -141,10 +135,16 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `pr` | `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `pt` | `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `radius` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>` |
+| `rotation` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `rows` | `<grid>` |
+| `scale-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `scale-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `shadow` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<rect>`, `<ellipse>` |
+| `skew-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `skew-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `src` | `<img>` |
 | `text-style` | `<text>` |
+| `transform-origin` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `truncate` | `<text>` |
 | `value` | `<text>` |
 | `w` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
