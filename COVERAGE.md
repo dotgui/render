@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **78** |
+| Implemented | **85** |
 | Partial | **1** |
-| Not implemented | **41** |
+| Not implemented | **34** |
 | Total | **120** |
 
 ## Not implemented
@@ -42,8 +42,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `list-level` | `<text>` |
 | `list-marker` | `<text>` |
 | `name` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `paragraph-indent` | `<text>` |
-| `paragraph-spacing` | `<text>` |
 | `reverse-z` | `<stack>`, `<row>`, `<col>` |
 | `row-gap` | `<grid>` |
 | `text-case` | `<text>` |
@@ -51,13 +49,8 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `text-rendering` | `<text>` |
 | `text-resize` | `<text>` |
 | `text-underline-offset` | `<text>` |
-| `text-wrap` | `<text>` |
-| `thickness` | `<line>` |
 | `vertical-align` | `<text>` |
 | `visible` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `white-space` | `<text>` |
-| `word-break` | `<text>` |
-| `word-spacing` | `<text>` |
 | `wrap` | `<stack>`, `<row>`, `<col>` |
 | `writing-mode` | `<text>` |
 
@@ -130,6 +123,8 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `overflow-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `overflow-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `p` | `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `paragraph-indent` | `<text>` |
+| `paragraph-spacing` | `<text>` |
 | `pb` | `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `pl` | `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `pr` | `<stack>`, `<row>`, `<col>`, `<grid>` |
@@ -144,10 +139,15 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `skew-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `src` | `<img>` |
 | `text-style` | `<text>` |
+| `text-wrap` | `<text>` |
+| `thickness` | `<line>` |
 | `transform-origin` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `truncate` | `<text>` |
 | `value` | `<text>` |
 | `w` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `white-space` | `<text>` |
+| `word-break` | `<text>` |
+| `word-spacing` | `<text>` |
 | `x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `z-index` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |

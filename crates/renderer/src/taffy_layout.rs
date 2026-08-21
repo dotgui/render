@@ -29,6 +29,8 @@ struct TextContext {
     /// Styled runs, already resolved and inherited.
     runs: Vec<TextRunStyle>,
     max_lines: Option<usize>,
+    /// Where lines may break, so measurement wraps the way painting will.
+    wrap: text::WrapOptions,
 }
 
 /// Lays the document out using rough per-character width estimates.
@@ -242,6 +244,14 @@ fn style_for_node(node: &GuiNode, metadata: &GuiMetadata, parent_layout: ParentL
             bottom: length(padding_side(node, metadata, Side::Bottom)),
         },
         aspect_ratio: aspect_ratio(node, metadata),
+        // `paragraph-spacing` is room after the block, which kit gets from a
+        // bottom margin; the same is true here.
+        margin: Rect {
+            left: zero(),
+            right: zero(),
+            top: zero(),
+            bottom: number_attr(node, metadata, "paragraph-spacing").map_or(zero(), length),
+        },
         gap: gap_size(node, metadata),
         align_items: align_items_for(node),
         justify_content: justify_content_for(node),
@@ -502,6 +512,12 @@ fn text_context(node: &GuiNode, metadata: &GuiMetadata) -> Option<TextContext> {
     Some(TextContext {
         runs: resolve_text_runs(node, metadata),
         max_lines: max_text_lines(node, metadata),
+        wrap: text::WrapOptions::new(
+            node.attributes.get("white-space").map(String::as_str),
+            node.attributes.get("text-wrap").map(String::as_str),
+            node.attributes.get("word-break").map(String::as_str),
+            number_attr(node, metadata, "paragraph-indent").unwrap_or(0.0),
+        ),
     })
 }
 
@@ -553,6 +569,7 @@ fn measure_text(
                 style.font_size,
             ),
         ) + value.chars().count() as f32 * style.letter_spacing
+            + value.chars().filter(|ch| *ch == ' ').count() as f32 * style.word_spacing
     };
 
     // `MinContent` asks how narrow the text can get, which is a zero-width
@@ -573,7 +590,7 @@ fn measure_text(
         })
         .collect::<Vec<_>>();
 
-    let mut lines = text::wrap_runs(&runs, wrap_width, &measure);
+    let mut lines = text::wrap_runs(&runs, wrap_width, &measure, context.wrap);
     if let Some(max_lines) = context.max_lines {
         lines.truncate(max_lines.max(1));
     }
@@ -1287,6 +1304,78 @@ mod tests {
 
         assert_eq!(layout.children[0].rect.height, 40.0);
         assert_eq!(layout.children[1].rect.height, 40.0);
+    }
+
+    #[test]
+    fn nowrap_text_measures_as_one_line() {
+        let wrapped = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="50">
+                <text value="aaaa bbbb cccc" font-size="10" line-height="12" />
+              </col>
+            </gui>
+            "#,
+        );
+        let flat = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="50">
+                <text value="aaaa bbbb cccc" font-size="10" line-height="12"
+                      white-space="nowrap" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert!(wrapped.children[0].rect.height > 12.0, "wraps by default");
+        assert_eq!(flat.children[0].rect.height, 12.0, "one line when nowrap");
+    }
+
+    #[test]
+    fn paragraph_spacing_adds_room_after_the_block() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="200">
+                <text value="One" font-size="10" line-height="12"
+                      paragraph-spacing="8" />
+                <text value="Two" font-size="10" line-height="12" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        // The second block starts a line height plus the spacing below.
+        assert_eq!(layout.children[1].rect.y, 20.0);
+    }
+
+    #[test]
+    fn word_spacing_widens_measurement() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <row>
+                <text value="a b c" font-size="10" word-spacing="6" />
+              </row>
+            </gui>
+            "#,
+        );
+        let plain = layout_of(
+            r#"
+            <gui version="0.2">
+              <row>
+                <text value="a b c" font-size="10" />
+              </row>
+            </gui>
+            "#,
+        );
+
+        // Two spaces, six extra pixels each.
+        assert_eq!(
+            layout.children[0].rect.width - plain.children[0].rect.width,
+            12.0
+        );
     }
 
     #[test]
