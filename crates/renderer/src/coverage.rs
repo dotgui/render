@@ -38,6 +38,8 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "outline",
             "outline-offset",
             "shadow",
+            "overflow-x",
+            "overflow-y",
         ],
     ),
     (
@@ -67,6 +69,8 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "outline",
             "outline-offset",
             "shadow",
+            "overflow-x",
+            "overflow-y",
         ],
     ),
     (
@@ -91,6 +95,8 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "outline",
             "outline-offset",
             "shadow",
+            "overflow-x",
+            "overflow-y",
         ],
     ),
     (
@@ -115,6 +121,8 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "outline",
             "outline-offset",
             "shadow",
+            "overflow-x",
+            "overflow-y",
         ],
     ),
     (
@@ -139,6 +147,8 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "outline",
             "outline-offset",
             "shadow",
+            "overflow-x",
+            "overflow-y",
         ],
     ),
     ("group", &["w", "h", "x", "y"]),

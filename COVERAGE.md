@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **43** |
+| Implemented | **45** |
 | Partial | **1** |
-| Not implemented | **76** |
+| Not implemented | **74** |
 | Total | **120** |
 
 ## Not implemented
@@ -68,8 +68,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `min-width` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `name` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `object-position` | `<img>` |
-| `overflow-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
-| `overflow-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `paragraph-indent` | `<text>` |
 | `paragraph-spacing` | `<text>` |
 | `reverse-z` | `<stack>`, `<row>`, `<col>` |
@@ -136,6 +134,8 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `outline` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `outline-offset` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `overflow` | `<text>` |
+| `overflow-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `overflow-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `p` | `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `pb` | `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `pl` | `<stack>`, `<row>`, `<col>`, `<grid>` |

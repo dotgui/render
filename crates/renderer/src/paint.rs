@@ -93,7 +93,7 @@ fn paint_node(
     paint_inner_shadows(pixmap, node);
     paint_content(pixmap, node, font, asset_cache, fonts);
 
-    if node.clip && !node.children.is_empty() {
+    if (node.clip_x || node.clip_y) && !node.children.is_empty() {
         if let Some(mut child_pixmap) = Pixmap::new(pixmap.width(), pixmap.height()) {
             for child in &node.children {
                 paint_node(&mut child_pixmap, child, font, asset_cache, fonts);
@@ -130,6 +130,24 @@ fn paint_node(
 
 fn create_clip_mask(width: u32, height: u32, node: &SceneNode) -> Option<tiny_skia::Mask> {
     let mut mask = tiny_skia::Mask::new(width, height)?;
+
+    // One axis on its own clips to a band across the canvas: the node's shape
+    // says nothing about where the unclipped direction should stop, and a
+    // rounded corner needs both edges to curve between.
+    if node.clip_x != node.clip_y {
+        let band = if node.clip_x {
+            Rect::from_xywh(node.bounds.x, 0.0, node.bounds.width, height as f32)
+        } else {
+            Rect::from_xywh(0.0, node.bounds.y, width as f32, paint_height(node))
+        }?;
+
+        let mut pb = PathBuilder::new();
+        pb.push_rect(band);
+        let path = pb.finish()?;
+        mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+        return Some(mask);
+    }
+
     let path = if node.tag == "ellipse" {
         ellipse_path(
             node.bounds.x,
@@ -1956,6 +1974,59 @@ mod tests {
         };
 
         assert_eq!(corner_reach(&box_of("0")), corner_reach(&box_of("1")));
+    }
+
+    #[test]
+    fn overflow_hidden_on_one_axis_clips_only_that_axis() {
+        // A 20x20 box at (10, 10) holding a child that runs off both its right
+        // and its bottom edge. With `overflow-x="hidden"` the overhang to the
+        // right is cut and the one below survives.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="60" h="60" fill="#ffffff">
+                <frame abs x="10" y="10" w="20" h="20" fill="#eeeeee" overflow-x="hidden">
+                  <rect abs x="0" y="0" w="40" h="40" fill="#ff0000" />
+                </frame>
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            painted.get_pixel(20, 20).0[0..3],
+            [255, 0, 0],
+            "inside the box"
+        );
+        assert_eq!(
+            painted.get_pixel(35, 20).0[0..3],
+            [255, 255, 255],
+            "past the right edge, clipped by overflow-x"
+        );
+        assert_eq!(
+            painted.get_pixel(20, 35).0[0..3],
+            [255, 0, 0],
+            "past the bottom edge, left alone"
+        );
+    }
+
+    #[test]
+    fn clip_without_overflow_still_clips_both_axes() {
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="60" h="60" fill="#ffffff">
+                <frame abs x="10" y="10" w="20" h="20" fill="#eeeeee" clip>
+                  <rect abs x="0" y="0" w="40" h="40" fill="#ff0000" />
+                </frame>
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(painted.get_pixel(20, 20).0[0..3], [255, 0, 0]);
+        assert_eq!(painted.get_pixel(35, 20).0[0..3], [255, 255, 255]);
+        assert_eq!(painted.get_pixel(20, 35).0[0..3], [255, 255, 255]);
     }
 
     #[test]
