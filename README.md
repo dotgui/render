@@ -830,6 +830,25 @@ the network.
 cargo run -q -p dotgui-renderer --example compare
 ```
 
+#### Naming the element behind a divergence
+
+The ranking says a document went out of alignment at some row. `--boxes` says
+which element did it: both trees are walked in document order, paired up, and
+every box whose size differs is listed with the ancestors it dragged along.
+
+```bash
+cargo run -q -p dotgui-renderer --example compare -- --boxes examples/foo.gui
+```
+
+This is the diagnostic that has found every layout divergence so far. The
+`<line>` bug was three rows of it — `h 1 vs 0` in a document that was three
+pixels short — and it named `beacon`'s remaining six pixels as one `<row>`
+carrying `min-h`.
+
+When the two trees have different shapes the boxes cannot be paired at all.
+That is reported rather than worked around, because it means one renderer
+built nodes the other did not, which is a bigger finding than any size.
+
 ## Backlog
 
 ### Preview And Developer Experience

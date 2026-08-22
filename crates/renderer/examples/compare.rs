@@ -34,7 +34,7 @@
 
 use dotgui_renderer::{
     build_scene, compute_taffy_layout_with_text, paint_scene_to_png_bytes, parse_gui_xml,
-    read_gui_package, AssetCache, FontStore,
+    read_gui_package, AssetCache, FontStore, GuiDocument, LayoutBox,
 };
 use std::{
     env, fmt, fs,
@@ -68,6 +68,21 @@ fn main() {
         .to_path_buf();
 
     let args: Vec<String> = env::args().skip(1).collect();
+
+    if args.first().is_some_and(|arg| arg == "--boxes") {
+        let Some(input) = args.get(1) else {
+            eprintln!("usage: --boxes <document>");
+            process::exit(2);
+        };
+        match diff_boxes(&root, Path::new(input)) {
+            Ok(()) => return,
+            Err(message) => {
+                eprintln!("{message}");
+                process::exit(1);
+            }
+        }
+    }
+
     let inputs = if args.is_empty() {
         corpus(&root)
     } else {
@@ -145,7 +160,15 @@ fn compare(root: &Path, input: &Path) -> Result<Report, Failure> {
     Ok(Report::new(input.to_path_buf(), theirs, ours, substituted))
 }
 
-fn render_native(input: &Path) -> Result<Vec<u8>, String> {
+/// A document laid out exactly as `render_png` does, with real font metrics.
+struct NativeLayout {
+    document: GuiDocument,
+    layout: LayoutBox,
+    cache: AssetCache,
+    fonts: FontStore,
+}
+
+fn layout_native(input: &Path) -> Result<NativeLayout, String> {
     let bytes = fs::read(input).map_err(|err| format!("cannot read {}: {err}", input.display()))?;
 
     let (xml, assets) =
@@ -162,8 +185,19 @@ fn render_native(input: &Path) -> Result<Vec<u8>, String> {
     let fonts = FontStore::from_document(&document, &cache).unwrap_or_default();
     let layout =
         compute_taffy_layout_with_text(&document, &fonts).map_err(|err| err.to_string())?;
-    let scene = build_scene(&document, &layout);
-    paint_scene_to_png_bytes(&scene, Some(&cache), Some(&fonts)).map_err(|err| err.to_string())
+    Ok(NativeLayout {
+        document,
+        layout,
+        cache,
+        fonts,
+    })
+}
+
+fn render_native(input: &Path) -> Result<Vec<u8>, String> {
+    let native = layout_native(input)?;
+    let scene = build_scene(&native.document, &native.layout);
+    paint_scene_to_png_bytes(&scene, Some(&native.cache), Some(&native.fonts))
+        .map_err(|err| err.to_string())
 }
 
 /// kit's rendering of a document, and which of its fonts kit had to fake.
@@ -225,6 +259,133 @@ fn substituted_fonts(stdout: &[u8]) -> Vec<String> {
         .and_then(|value| value.get("unresolvedFonts").cloned())
         .and_then(|fonts| serde_json::from_value::<Vec<String>>(fonts).ok())
         .unwrap_or_default()
+}
+
+// ─── box diff ────────────────────────────────────────────────────────────────
+
+/// One node's box, in the flat pre-order both renderers agree on.
+#[derive(serde::Deserialize)]
+struct Box2D {
+    tag: String,
+    depth: usize,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+/// Names the element behind a divergence, rather than the pixel row.
+///
+/// The row diff says a document went out of alignment at y≈331; this says
+/// which box did it. That is the difference between knowing there is a bug and
+/// knowing where it is — `<line>` sitting at h=0 against kit's h=1, three
+/// times over, is what #58 turned out to be.
+///
+/// Both trees are walked pre-order and paired by position. They line up
+/// because the two renderers build a node per element; when they do not, the
+/// counts differ and that is itself the finding, so it is reported rather than
+/// guessed around.
+fn diff_boxes(root: &Path, input: &Path) -> Result<(), String> {
+    let native = layout_native(input)?;
+    let mut ours = Vec::new();
+    flatten(&native.layout, 0, &mut ours);
+
+    let theirs = kit_boxes(root, input)?;
+
+    println!("{}", short(root, input));
+    println!("kit {} boxes, ours {}", theirs.len(), ours.len());
+
+    if theirs.len() != ours.len() {
+        println!();
+        println!("the two trees have different shapes, so boxes cannot be paired up.");
+        println!("that is the finding: one renderer built nodes the other did not.");
+        print_tag_counts(&theirs, &ours);
+        return Ok(());
+    }
+
+    println!();
+    println!("boxes whose size differs (the causes; everything below one is displaced)");
+    println!("{}", "-".repeat(92));
+    let mut found = false;
+    for (index, (kit, our)) in theirs.iter().zip(&ours).enumerate() {
+        let height = our.h - kit.h;
+        let width = our.w - kit.w;
+        if height.abs() < 0.01 && width.abs() < 0.01 {
+            continue;
+        }
+        found = true;
+        let indent = "  ".repeat(our.depth.min(12));
+        // Our y, so a finding here lines up with the row diff's drift points.
+        print!("  #{index:<4} y≈{:<7.0} {indent}<{}>", our.y, our.tag);
+        if height.abs() >= 0.01 {
+            print!("  h {} vs {} ({height:+.3})", kit.h, our.h);
+        }
+        if width.abs() >= 0.01 {
+            print!(
+                "  w {} vs {} ({width:+.3}) at x {} vs {}",
+                kit.w, our.w, kit.x, our.x
+            );
+        }
+        println!();
+    }
+    if !found {
+        println!("  none — every box is the same size in both renderers");
+    }
+
+    Ok(())
+}
+
+fn flatten(node: &LayoutBox, depth: usize, out: &mut Vec<Box2D>) {
+    out.push(Box2D {
+        tag: node.tag.clone(),
+        depth,
+        x: node.rect.x,
+        y: node.rect.y,
+        w: node.rect.width,
+        h: node.rect.height,
+    });
+    for child in &node.children {
+        flatten(child, depth + 1, out);
+    }
+}
+
+fn print_tag_counts(theirs: &[Box2D], ours: &[Box2D]) {
+    let count = |boxes: &[Box2D]| {
+        let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+        for item in boxes {
+            *counts.entry(item.tag.clone()).or_default() += 1;
+        }
+        counts
+    };
+    println!();
+    println!("  kit : {:?}", count(theirs));
+    println!("  ours: {:?}", count(ours));
+    println!();
+    println!("note that kit spells some elements differently: a `<rect>`, `<ellipse>`");
+    println!("or `<line>` all arrive as `shape`.");
+}
+
+fn kit_boxes(root: &Path, input: &Path) -> Result<Vec<Box2D>, String> {
+    let output = Command::new("bun")
+        .arg("run")
+        .arg(root.join("tools/kit-rasterize.ts"))
+        .arg("--boxes")
+        .arg(input)
+        .output()
+        .map_err(|err| format!("cannot run `bun`: {err}"))?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Dump {
+        boxes: Vec<Box2D>,
+    }
+
+    serde_json::from_slice::<Dump>(&output.stdout)
+        .map(|dump| dump.boxes)
+        .map_err(|err| format!("cannot read kit's box dump: {err}"))
 }
 
 // ─── bitmaps ─────────────────────────────────────────────────────────────────
@@ -764,6 +925,62 @@ mod tests {
             .map(|drift| (drift.to - drift.from).abs())
             .sum();
         assert_eq!(magnitude, 16, "eight rows out and eight back");
+    }
+
+    fn leaf(tag: &str, height: f32) -> LayoutBox {
+        LayoutBox {
+            tag: tag.to_owned(),
+            attributes: Default::default(),
+            text: None,
+            rect: dotgui_renderer::LayoutRect {
+                x: 0.0,
+                y: 0.0,
+                width: 10.0,
+                height,
+            },
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn flattening_walks_the_tree_in_document_order() {
+        // Both sides are paired by position, so pre-order on this side has to
+        // match the DOM walk on kit's. Depth rides along for the indent.
+        let mut root = leaf("col", 100.0);
+        let mut inner = leaf("row", 50.0);
+        inner.children.push(leaf("text", 20.0));
+        root.children.push(inner);
+        root.children.push(leaf("rect", 10.0));
+
+        let mut flat = Vec::new();
+        flatten(&root, 0, &mut flat);
+
+        let seen: Vec<(&str, usize)> = flat
+            .iter()
+            .map(|item| (item.tag.as_str(), item.depth))
+            .collect();
+        assert_eq!(seen, vec![("col", 0), ("row", 1), ("text", 2), ("rect", 1)]);
+    }
+
+    #[test]
+    fn kit_box_dumps_are_read_with_gui_prefixes_already_stripped() {
+        // The bridge strips `gui-` and drops the inner <img>, so the two trees
+        // pair up. Guarding the shape of that contract here, because a silent
+        // change to it would show up as every box being misattributed.
+        let dump = br#"{"boxes":[
+            {"tag":"col","depth":0,"x":0,"y":0,"w":360,"h":841},
+            {"tag":"text","depth":1,"x":16,"y":4,"w":23.6,"h":16}
+        ]}"#;
+
+        #[derive(serde::Deserialize)]
+        struct Dump {
+            boxes: Vec<Box2D>,
+        }
+        let parsed: Dump = serde_json::from_slice(dump).expect("dump parses");
+
+        assert_eq!(parsed.boxes.len(), 2);
+        assert_eq!(parsed.boxes[0].tag, "col");
+        assert_eq!(parsed.boxes[1].h, 16.0);
     }
 
     #[test]
