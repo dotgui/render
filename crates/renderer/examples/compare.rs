@@ -137,12 +137,12 @@ enum Failure {
 
 fn compare(root: &Path, input: &Path) -> Result<Report, Failure> {
     let ours = render_native(input).map_err(Failure::Skipped)?;
-    let theirs = render_kit(root, input)?;
+    let KitRender { png, substituted } = render_kit(root, input)?;
 
     let ours = Bitmap::decode(&ours).map_err(Failure::Skipped)?;
-    let theirs = Bitmap::decode(&theirs).map_err(Failure::Skipped)?;
+    let theirs = Bitmap::decode(&png).map_err(Failure::Skipped)?;
 
-    Ok(Report::new(input.to_path_buf(), theirs, ours))
+    Ok(Report::new(input.to_path_buf(), theirs, ours, substituted))
 }
 
 fn render_native(input: &Path) -> Result<Vec<u8>, String> {
@@ -166,7 +166,16 @@ fn render_native(input: &Path) -> Result<Vec<u8>, String> {
     paint_scene_to_png_bytes(&scene, Some(&cache), Some(&fonts)).map_err(|err| err.to_string())
 }
 
-fn render_kit(root: &Path, input: &Path) -> Result<Vec<u8>, Failure> {
+/// kit's rendering of a document, and which of its fonts kit had to fake.
+struct KitRender {
+    png: Vec<u8>,
+    /// Declared families this browser had no real font for. When this is not
+    /// empty the two renderers drew different typefaces, so their geometry is
+    /// not comparable and the numbers below are about fonts, not layout.
+    substituted: Vec<String>,
+}
+
+fn render_kit(root: &Path, input: &Path) -> Result<KitRender, Failure> {
     let output = env::temp_dir().join("dotgui-compare-kit.png");
     let _ = fs::remove_file(&output);
 
@@ -199,7 +208,23 @@ fn render_kit(root: &Path, input: &Path) -> Result<Vec<u8>, Failure> {
         return Err(Failure::Skipped(message));
     }
 
-    fs::read(&output).map_err(|err| Failure::Skipped(format!("kit wrote no image: {err}")))
+    let png =
+        fs::read(&output).map_err(|err| Failure::Skipped(format!("kit wrote no image: {err}")))?;
+
+    Ok(KitRender {
+        png,
+        substituted: substituted_fonts(&result.stdout),
+    })
+}
+
+/// Reads the bridge's one line of JSON. A parse failure means no warning
+/// rather than no comparison — the images are the point.
+fn substituted_fonts(stdout: &[u8]) -> Vec<String> {
+    serde_json::from_slice::<serde_json::Value>(stdout)
+        .ok()
+        .and_then(|value| value.get("unresolvedFonts").cloned())
+        .and_then(|fonts| serde_json::from_value::<Vec<String>>(fonts).ok())
+        .unwrap_or_default()
 }
 
 // ─── bitmaps ─────────────────────────────────────────────────────────────────
@@ -426,10 +451,11 @@ struct Report {
     /// line up. Includes glyph rasterisation, so it never reaches zero on text.
     residual: f64,
     too_large: bool,
+    substituted_fonts: Vec<String>,
 }
 
 impl Report {
-    fn new(path: PathBuf, kit: Bitmap, ours: Bitmap) -> Self {
+    fn new(path: PathBuf, kit: Bitmap, ours: Bitmap, substituted_fonts: Vec<String>) -> Self {
         let dimensions = ((kit.width, kit.height), (ours.width, ours.height));
 
         if kit.height as usize > MAX_DIFFABLE_ROWS || ours.height as usize > MAX_DIFFABLE_ROWS {
@@ -440,6 +466,7 @@ impl Report {
                 drifts: Vec::new(),
                 residual: 0.0,
                 too_large: true,
+                substituted_fonts,
             };
         }
 
@@ -473,11 +500,24 @@ impl Report {
                 differing as f64 / total as f64
             },
             too_large: false,
+            substituted_fonts,
         }
     }
 
     fn width_differs(&self) -> bool {
         self.kit.0 != self.ours.0
+    }
+
+    /// Whether kit drew a different typeface than this renderer did.
+    ///
+    /// Such a document cannot be compared on geometry at all: a substituted
+    /// face has its own advance widths, so a string wraps at a different point
+    /// and every box that hugs it is a different size. Ranking one of these
+    /// alongside real divergences sends people hunting a layout bug that is
+    /// really a missing font — `harbor-report-post-ios` sat at the top of this
+    /// list for exactly that reason.
+    fn fonts_substituted(&self) -> bool {
+        !self.substituted_fonts.is_empty()
     }
 
     fn height_delta(&self) -> i64 {
@@ -500,6 +540,9 @@ impl Report {
     }
 
     fn headline(&self) -> String {
+        if self.fonts_substituted() {
+            return format!("kit substituted {}", self.substituted_fonts.join(", "));
+        }
         if self.too_large {
             return "too tall to diff".to_owned();
         }
@@ -525,8 +568,9 @@ fn print_report(root: &Path, reports: &mut [Report]) {
     // Width disagreement is the loudest signal, then the number of places the
     // layout stepped out of alignment, then whatever is left in the pixels.
     reports.sort_by(|a, b| {
-        b.width_differs()
-            .cmp(&a.width_differs())
+        a.fonts_substituted()
+            .cmp(&b.fonts_substituted())
+            .then(b.width_differs().cmp(&a.width_differs()))
             .then(b.height_delta().abs().cmp(&a.height_delta().abs()))
             .then(b.drift_magnitude().cmp(&a.drift_magnitude()))
             .then(
@@ -549,7 +593,15 @@ fn print_report(root: &Path, reports: &mut [Report]) {
     for report in reports.iter() {
         println!(
             "{:<44} {:>11} {:>11} {:>7} {:>6} {:>7.1}%",
-            short(root, &report.path),
+            format!(
+                "{}{}",
+                short(root, &report.path),
+                if report.fonts_substituted() {
+                    "  [font]"
+                } else {
+                    ""
+                }
+            ),
             format!("{}x{}", report.kit.0, report.kit.1),
             format!("{}x{}", report.ours.0, report.ours.1),
             report.drifts.len(),
@@ -562,7 +614,10 @@ fn print_report(root: &Path, reports: &mut [Report]) {
     println!("where the geometry diverges");
     println!("{}", "-".repeat(92));
     let mut any = false;
-    for report in reports.iter().filter(|report| !report.agrees()) {
+    for report in reports
+        .iter()
+        .filter(|report| !report.agrees() && !report.fonts_substituted())
+    {
         any = true;
         println!("{}", short(root, &report.path));
         if report.width_differs() {
@@ -590,9 +645,32 @@ fn print_report(root: &Path, reports: &mut [Report]) {
         println!("    none — every document aligned row for row");
     }
 
-    let agreeing = reports.iter().filter(|report| report.agrees()).count();
+    let incomparable: Vec<&Report> = reports
+        .iter()
+        .filter(|report| report.fonts_substituted())
+        .collect();
+    if !incomparable.is_empty() {
+        println!();
+        println!("not comparable — kit had no copy of the declared font and substituted one,");
+        println!("so the two renderers drew different typefaces. Their numbers are about");
+        println!("fonts, not layout, and they are excluded from the ranking above.");
+        println!("{}", "-".repeat(92));
+        for report in &incomparable {
+            println!(
+                "{}  ({})",
+                short(root, &report.path),
+                report.substituted_fonts.join(", ")
+            );
+        }
+    }
+
+    let comparable = reports.len() - incomparable.len();
+    let agreeing = reports
+        .iter()
+        .filter(|report| report.agrees() && !report.fonts_substituted())
+        .count();
     println!();
-    println!("{agreeing}/{} documents align row for row", reports.len());
+    println!("{agreeing}/{comparable} comparable documents align row for row");
 }
 
 #[cfg(test)]
@@ -686,6 +764,24 @@ mod tests {
             .map(|drift| (drift.to - drift.from).abs())
             .sum();
         assert_eq!(magnitude, 16, "eight rows out and eight back");
+    }
+
+    #[test]
+    fn substituted_fonts_are_read_from_the_bridge() {
+        assert_eq!(
+            substituted_fonts(br#"{"unresolvedFonts":["SF Pro Display","SF Mono"]}"#),
+            vec!["SF Pro Display".to_owned(), "SF Mono".to_owned()],
+        );
+        assert!(substituted_fonts(br#"{"unresolvedFonts":[]}"#).is_empty());
+    }
+
+    #[test]
+    fn a_bridge_that_says_nothing_useful_still_compares() {
+        // The images are the point; losing the font warning must not lose the
+        // comparison with it.
+        assert!(substituted_fonts(b"").is_empty());
+        assert!(substituted_fonts(b"not json at all").is_empty());
+        assert!(substituted_fonts(br#"{"unresolvedFonts":"a string"}"#).is_empty());
     }
 
     #[test]

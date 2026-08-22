@@ -808,6 +808,20 @@ not by itself interesting; an offset that holds for the rest of the page is.
 Pixel difference over the rows that did line up is reported as a secondary
 number. It never reaches zero on text, and is not meant to.
 
+Documents whose fonts kit could not load are marked `[font]` and kept out of
+the ranking. A substituted face has its own advance widths, so a string wraps
+somewhere else and every box that hugs it is a different size — the numbers are
+then about the font, not the layout. `harbor-report-post-ios` sat at the top of
+the list at -21px until this was added: it declares `SF Pro Display`, which
+headless Chromium does not have, so kit drew the whole document in `system-ui`
+while this renderer used the real face.
+
+Availability is measured rather than asked. `document.fonts.check()` reports
+true whenever the stack has any usable fallback, and it called `SF Pro Display`
+present on a machine that rendered every glyph in something else. The probe
+instead requests a family with no fallback and compares it against a name that
+cannot exist: equal widths mean both landed on the same substitute.
+
 Like the goldens, this is a local tool and not a build gate. It shells out to a
 separate repository, needs a browser, and most examples fetch their icons over
 the network.
