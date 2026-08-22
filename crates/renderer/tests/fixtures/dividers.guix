@@ -1,0 +1,29 @@
+<gui version="0.2" name="Dividers">
+  <col w="460" h="300" fill="#FFFFFF" p="20" gap="0">
+    <text value="A rule takes up room" font-size="16" font-weight="700" line-height="24" fill="#111111" />
+
+    <!-- Default thickness: one pixel, and the row below starts one lower. -->
+    <line w="fill" fill="#D0D0D6" />
+    <text value="Default thickness" font-size="14" line-height="28" fill="#333333" />
+    <line w="fill" fill="#D0D0D6" />
+    <text value="Another row" font-size="14" line-height="28" fill="#333333" />
+
+    <!-- Declared thickness sizes the box, not just the stroke. -->
+    <line w="fill" thickness="4" fill="#8E4EC6" />
+    <text value="Four pixels thick" font-size="14" line-height="28" fill="#333333" />
+
+    <!-- Declared height alongside thickness: unresolved. We keep the height,
+         kit overwrites it with the thickness. Here so the disagreement is
+         visible in a document rather than only in an argument. -->
+    <line w="fill" h="10" thickness="2" fill="#12A594" />
+    <text value="Height beats thickness" font-size="14" line-height="28" fill="#333333" />
+
+    <!-- In a row, a rule keeps its thickness instead of stretching to the
+         tallest sibling. -->
+    <row w="fill" h="60" gap="12" align="middle-left">
+      <rect w="60" h="40" radius="6" fill="#F5A524" />
+      <line w="120" fill="#E5484D" />
+      <rect w="60" h="40" radius="6" fill="#0D99FF" />
+    </row>
+  </col>
+</gui>

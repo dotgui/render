@@ -255,10 +255,7 @@ fn style_for_node(node: &GuiNode, metadata: &GuiMetadata, parent_layout: ParentL
     let mut style = Style {
         display: display_for(node, metadata),
         flex_direction: flex_direction_for(node),
-        size: Size {
-            width: dimension_attr(node, metadata, "w"),
-            height: dimension_attr(node, metadata, "h"),
-        },
+        size: size_for(node, metadata),
         min_size: Size {
             width: constraint_attr(node, metadata, "min-width", "min-w"),
             height: constraint_attr(node, metadata, "min-height", "min-h"),
@@ -406,6 +403,35 @@ fn constraint_attr(
     } else {
         dimension_attr(node, metadata, alias)
     }
+}
+
+/// The declared box, with `<line>`'s implied thickness filled in.
+///
+/// The spec calls `<line>` "sugar for a thin frame used as a visual divider",
+/// with `thickness="1"` by default — so a horizontal divider is a box one pixel
+/// tall, and the row below it starts a pixel lower.
+///
+/// Leaving the height to hug made it zero, and painting covered for that by
+/// drawing the rule anyway (see `paint_height`). The divider therefore looked
+/// right while occupying no space, so every sibling after one sat a pixel high
+/// and its container came up a pixel short. Comparing against kit is what
+/// surfaced it: three dividers in `novaton-downloads-storage-android` put the
+/// whole document three pixels out.
+fn size_for(node: &GuiNode, metadata: &GuiMetadata) -> Size<Dimension> {
+    let mut size = Size {
+        width: dimension_attr(node, metadata, "w"),
+        height: dimension_attr(node, metadata, "h"),
+    };
+
+    if node.tag == "line" && !node.attributes.contains_key("h") {
+        size.height = length(
+            number_attr(node, metadata, "thickness")
+                .filter(|thickness| *thickness > 0.0)
+                .unwrap_or(1.0),
+        );
+    }
+
+    size
 }
 
 fn dimension_attr(node: &GuiNode, metadata: &GuiMetadata, name: &str) -> Dimension {
@@ -946,6 +972,84 @@ mod tests {
             segmented.children[0].rect.width,
             plain.children[0].rect.width
         );
+    }
+
+    #[test]
+    fn a_divider_occupies_its_thickness() {
+        // `<line>` is sugar for a thin frame, so it is a box one pixel tall by
+        // default rather than a zero-height marker that painting draws over.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="100">
+                <line w="100" />
+                <line w="100" thickness="4" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.height, 1.0, "default thickness");
+        assert_eq!(layout.children[1].rect.height, 4.0, "declared thickness");
+    }
+
+    #[test]
+    fn a_divider_pushes_what_follows_it_down() {
+        // The bug this guards: the divider painted correctly while taking up
+        // no room, so everything after it sat a pixel high and the container
+        // came up short. Painting alone could not see that.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="100">
+                <rect w="100" h="10" />
+                <line w="100" />
+                <rect w="100" h="10" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[2].rect.y, 11.0, "10px box, then a 1px rule");
+        assert_eq!(layout.rect.height, 21.0, "the column counts the rule too");
+    }
+
+    #[test]
+    fn a_declared_height_currently_wins_over_thickness() {
+        // Characterisation, not a ruling. kit sets the height from `thickness`
+        // unconditionally and lets a declared `h` be overwritten; the spec
+        // lists both `h` and `thickness` on `<line>` without saying which
+        // gives way. Filed as a format question rather than guessed at here —
+        // this test exists so the answer arrives deliberately.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="100">
+                <line w="100" h="6" thickness="2" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.height, 6.0);
+    }
+
+    #[test]
+    fn a_divider_in_a_row_does_not_stretch_to_the_tallest_sibling() {
+        // Cross-axis stretch used to make a zero-height divider as tall as the
+        // row, which is a filled block rather than a rule.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <row w="200">
+                <rect w="40" h="40" />
+                <line w="40" />
+              </row>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[1].rect.height, 1.0);
     }
 
     #[test]
