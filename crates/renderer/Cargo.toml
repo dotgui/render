@@ -27,3 +27,11 @@ zip.workspace = true
 image.workspace = true
 
 [dev-dependencies]
+
+# `compare` carries the row-diff that decides what counts as a real layout
+# divergence and what is two rasterisers disagreeing about a glyph. That rule
+# is worth a test, and tests in an example only run when it is declared.
+[[example]]
+name = "compare"
+path = "examples/compare.rs"
+test = true

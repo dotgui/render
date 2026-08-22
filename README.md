@@ -183,6 +183,17 @@ Inventory tags and attributes across examples:
 cargo run -q -p dotgui-renderer --example inventory examples
 ```
 
+Compare this renderer against the kit HTML renderer:
+
+```bash
+cargo run -q -p dotgui-renderer --example compare                    # whole corpus
+cargo run -q -p dotgui-renderer --example compare examples/foo.gui   # one document
+```
+
+Needs [bun](https://bun.sh), a Chromium-based browser, and a `dotgui/kit`
+checkout beside this one (or `DOTGUI_KIT` pointing at it) with its render
+bundle built. See [Comparing Against Kit](#comparing-against-kit).
+
 ## Appearance
 
 `<appearance>` carries a node's complete paint: ordered stacks of `<fill>`,
@@ -740,6 +751,7 @@ Three layers, deliberately split by what each one can promise:
 | Pixel tests | what painting actually puts on the canvas, asserted per pixel | yes |
 | Layout snapshots | the box tree of every example and fixture — position and size of every node | yes |
 | Golden images | full-page appearance | no, by design |
+| Kit comparison | where the two renderers disagree, ranked | no, by design |
 
 ### Fixtures
 
@@ -769,6 +781,40 @@ which is worth having and not worth a red build.
 
 So a green build means: nothing moved, and painting still behaves. It does not
 mean anyone looked. Run the goldens by hand when changing anything visual.
+
+### Comparing Against Kit
+
+`--example compare` renders every example and fixture twice — once here, once
+through the kit HTML renderer in a headless Chromium — and ranks the documents
+by how far the two disagree.
+
+kit is the behavioural reference, but it is **not** the arbiter. It has
+repeatedly disagreed with the spec, and either side can be the wrong one. The
+output is a worklist, not a bug list: every entry still has to be adjudicated
+against `spec/spec.json` by hand. The first run made that concrete — the
+loudest result was `compositing.guix` at 103x62 against our 460x240, which is
+kit failing to parse a bare `isolation` attribute, and the largest pixel
+difference was a backdrop-blur panel where our value matched the source-over
+arithmetic to a rounding step and kit's did not.
+
+What it ranks on is **geometry**, not pixels. Two rasterisers never agree on
+glyph pixels, so a raw pixel diff is drowned by antialiasing on every row of
+text. Instead each row is reduced to a coarse signature, the two sequences are
+diffed the way `diff` diffs lines, and what gets reported is the points where
+the vertical alignment steps and *stays* stepped — a box with a different
+height, with everything below it displaced. A row the diff cannot pair up is
+not by itself interesting; an offset that holds for the rest of the page is.
+
+Pixel difference over the rows that did line up is reported as a secondary
+number. It never reaches zero on text, and is not meant to.
+
+Like the goldens, this is a local tool and not a build gate. It shells out to a
+separate repository, needs a browser, and most examples fetch their icons over
+the network.
+
+```bash
+cargo run -q -p dotgui-renderer --example compare
+```
 
 ## Backlog
 
