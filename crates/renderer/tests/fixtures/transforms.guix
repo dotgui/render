@@ -1,0 +1,26 @@
+<gui version="0.2" name="Transforms">
+  <col w="620" h="200" fill="#F7F7F8" p="24" gap="16">
+    <row w="fill" h="110" gap="20">
+      <stack w="100" h="100">
+        <rect abs x="10" y="35" w="80" h="30" fill="#0D99FF" radius="6" />
+      </stack>
+      <stack w="100" h="100">
+        <rect abs x="10" y="35" w="80" h="30" fill="#0D99FF" radius="6" rotation="30" />
+      </stack>
+      <stack w="100" h="100">
+        <rect abs x="10" y="35" w="80" h="30" fill="#12A594" radius="6" skew-x="25" />
+      </stack>
+      <stack w="100" h="100">
+        <rect abs x="25" y="35" w="50" h="30" fill="#E5484D" radius="6" scale-x="1.8" scale-y="1.4" />
+      </stack>
+      <stack w="100" h="100">
+        <rect abs x="10" y="10" w="80" h="80" fill="#F5A524" radius="6" rotation="25" transform-origin="top-left" />
+      </stack>
+    </row>
+    <row w="fill" gap="20">
+      <rect w="80" aspect-ratio="16/9" fill="#8E4EC6" radius="6" />
+      <rect h="40" aspect-ratio="2" fill="#71717A" radius="6" />
+      <rect w="60" h="40" fill="#18181B" radius="6" flip="h" scale-x="1.5" />
+    </row>
+  </col>
+</gui>

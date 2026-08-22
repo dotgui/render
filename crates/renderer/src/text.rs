@@ -138,7 +138,7 @@ pub(crate) fn wrap_runs(
             };
 
             let piece_width = measure(piece.text, chunk.style);
-            let space_width = if current.is_empty() || !separated {
+            let mut space_width = if current.is_empty() || !separated {
                 0.0
             } else {
                 measure(" ", chunk.style)
@@ -163,30 +163,26 @@ pub(crate) fn wrap_runs(
                 // of a line in HTML. A piece broken off mid-word never had one.
                 lines.push(std::mem::take(&mut current));
                 current_width = 0.0;
+                space_width = 0.0;
+            }
 
-                // `break-word` only splits a word once it has a line to itself
-                // and still does not fit, which is what separates it from
-                // `break-all` splitting every word on sight.
-                if options.word_break == WordBreak::BreakWord {
-                    if let Some(line_width) = line_width {
-                        if piece_width > line_width {
-                            split_across_lines(
-                                &mut lines,
-                                &mut current,
-                                &mut current_width,
-                                piece.text,
-                                chunk.style,
-                                line_width,
-                                measure,
-                            );
-                            pending_space = false;
-                            continue;
-                        }
-                    }
-                }
+            // `break-word` splits a word that will not fit on a line of its
+            // own — whether it reached one by overflowing off the line before,
+            // or by being the first thing on this one.
+            let must_split = options.word_break == WordBreak::BreakWord
+                && current.is_empty()
+                && line_width.is_some_and(|line_width| piece_width > line_width);
 
-                push_piece(&mut current, piece.text, chunk.style);
-                current_width = piece_width;
+            if must_split {
+                split_across_lines(
+                    &mut lines,
+                    &mut current,
+                    &mut current_width,
+                    piece.text,
+                    chunk.style,
+                    line_width.unwrap_or(f32::MAX),
+                    measure,
+                );
             } else {
                 if space_width > 0.0 {
                     push_piece(&mut current, " ", chunk.style);
@@ -546,6 +542,22 @@ mod tests {
             wrapped_with("hi enormouslylong", 6.0, options),
             vec!["hi", "enormo", "uslylo", "ng"],
             "the short word is left whole and the long one is split"
+        );
+    }
+
+    #[test]
+    fn break_word_splits_a_long_word_that_is_alone_on_the_line() {
+        // The first thing on a line never "overflows" off it — it is already
+        // there. A fixture caught this: a paragraph that is one long word got
+        // no break at all.
+        let options = WrapOptions {
+            word_break: WordBreak::BreakWord,
+            ..WrapOptions::default()
+        };
+
+        assert_eq!(
+            wrapped_with("enormouslylongword", 6.0, options),
+            vec!["enormo", "uslylo", "ngword"]
         );
     }
 

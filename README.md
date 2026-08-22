@@ -737,11 +737,28 @@ Three layers, deliberately split by what each one can promise:
 | Layer | Covers | Runs in CI |
 |---|---|---|
 | Unit tests | line breaking, font selection, grid translation, premultiplied alpha, per-segment colour | yes |
-| Layout snapshots | the box tree of every example — position and size of every node | yes |
+| Pixel tests | what painting actually puts on the canvas, asserted per pixel | yes |
+| Layout snapshots | the box tree of every example and fixture — position and size of every node | yes |
 | Golden images | full-page appearance | no, by design |
 
+### Fixtures
+
+The 27 example packages are real documents, and they exercise about half the
+format. `crates/renderer/tests/fixtures` holds hand-written `.guix` documents
+for the rest — gradients, masks, transforms, compositing, group opacity,
+components, blur, and the text controls — so every feature has a page that
+uses it.
+
+They are not decoration. A feature with no document using it is a feature
+nobody has looked at: writing the text-breaking fixture is what turned up that
+`word-break="break-word"` never split a word that was alone on its line, which
+the unit tests had missed by always putting another word in front of it.
+
+Fixtures are picked up automatically by the layout snapshots, and the
+paint-heavy ones have goldens.
+
 The golden images are a local tool. They cannot be made reliable on a build
-machine: two of the examples declare `source="system"` fonts, whose bytes
+machine: two of the inputs declare `source="system"` fonts, whose bytes
 differ per host and cannot be redistributed, and the other two resolve Google
 fonts and remote icons over the network, which is rate limited. Both failure
 modes have happened. Making them hermetic would mean vendoring third-party

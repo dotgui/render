@@ -1,0 +1,12 @@
+<gui version="0.2" name="Borders and outlines">
+  <col w="480" h="200" fill="#F7F7F8" p="24" gap="20">
+    <row w="fill" gap="20">
+      <rect w="90" h="90" radius="26" fill="#1C1C1E" corner-smoothing="0" />
+      <rect w="90" h="90" radius="26" fill="#1C1C1E" corner-smoothing="1" />
+      <rect w="90" h="90" radius="26" fill="#0D99FF" outline="3 #0D99FF80" outline-offset="5" />
+      <ellipse w="90" h="90" fill="#FFFFFF" outline="2 #C8402D" outline-offset="4" />
+      <rect w="90" h="90" radius="12" fill="#FFFFFF" border="1 4 8 12 #8E4EC6" />
+    </row>
+    <line w="fill" fill="#D4D4D8" thickness="3" />
+  </col>
+</gui>
