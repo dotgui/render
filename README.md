@@ -483,10 +483,16 @@ The effect stack (RFC-0027) is drawn in document order:
 | `inner-shadow` | the same shape inverted and clipped to the node, drawn over the fill |
 | `background-blur` | blurs whatever is already painted behind the node |
 | `glass` | background blur plus a `saturation` percentage |
-| `layer-blur` | not implemented; reported rather than dropped silently |
+| `layer-blur` | blurs the node and everything in it, leaving the backdrop alone |
 
 `radius` is a blur radius as in CSS, which is twice the Gaussian sigma, and
 `opacity` multiplies into the colour's alpha.
+
+`layer-blur` and `background-blur` are opposites worth keeping straight: one
+softens the node and its children and leaves what is behind them sharp, the
+other softens the backdrop and leaves the node sharp. A layer blur is applied
+to the node's own layer, so it spreads past the node's box the way a blurred
+thing should.
 
 Blur is three successive box blurs, the approximation the SVG filter spec
 prescribes and browsers use.
@@ -785,7 +791,6 @@ mean anyone looked. Run the goldens by hand when changing anything visual.
 - Add `border-image`; the spec types it as a string but does not define the
   value grammar, so it needs pinning down against kit first.
 - Improve antialiasing quality for text and vector shapes.
-- Add layer blur.
 - Add PDF export once the scene model is stable.
 
 ### WASM And API

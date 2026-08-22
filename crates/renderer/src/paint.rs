@@ -113,6 +113,17 @@ fn paint_node(
     // a node that both isolates and blurs its backdrop is a known gap.
     paint_node_direct(&mut layer, node, font, asset_cache, fonts);
 
+    // `layer-blur` blurs the finished subtree, which is what makes it the
+    // opposite of `background-blur`: one softens the node, the other softens
+    // what the node sits on. Several stack, in document order.
+    for effect in &node.effects {
+        if effect.kind == "layer-blur" {
+            // The radius is CSS's, which is twice the Gaussian sigma, as it is
+            // for shadows and backdrop blurs.
+            blur::blur(&mut layer, effect.radius / 2.0);
+        }
+    }
+
     if let Some(filter) = node.filter.as_deref() {
         apply_filter(&mut layer, filter);
     }
@@ -205,6 +216,10 @@ fn needs_layer(node: &SceneNode) -> bool {
     // compound, and leaves a container's children untouched entirely.
     node.opacity < 1.0
         || node.isolation
+        || node
+            .effects
+            .iter()
+            .any(|effect| effect.kind == "layer-blur")
         || node.transform.is_some()
         || node.filter.is_some()
         || node.clip_path.is_some()
@@ -622,11 +637,8 @@ fn paint_backdrop_effects(pixmap: &mut Pixmap, node: &SceneNode) {
                     Some(&mask),
                 );
             }
-            "layer-blur" => {
-                eprintln!(
-                    "warning: effect type 'layer-blur' is not supported yet and was not drawn"
-                );
-            }
+            // `layer-blur` blurs the node itself rather than what is behind
+            // it, so it belongs on the node's own layer, not here.
             _ => {}
         }
     }
@@ -3833,6 +3845,115 @@ mod tests {
             faded > solid + 20,
             "a faded group casts a fainter shadow: {faded} vs {solid}"
         );
+    }
+
+    #[test]
+    fn layer_blur_softens_the_nodes_own_edge() {
+        // A hard black square on white: blurred, its edge stops being a step
+        // and the pixels either side of it move toward each other.
+        let page = |effect: &str| {
+            render(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="60" h="60" fill="#ffffff">
+                    <rect abs x="15" y="15" w="30" h="30" fill="#000000">
+                      <appearance>{effect}</appearance>
+                    </rect>
+                  </frame>
+                </gui>
+                "##
+            ))
+        };
+
+        let sharp = page("");
+        let blurred = page(r#"<effect type="layer-blur" radius="8" />"#);
+
+        // Just inside the edge: solid before, lifted after.
+        assert_eq!(sharp.get_pixel(30, 16).0[0], 0);
+        assert!(
+            blurred.get_pixel(30, 16).0[0] > 30,
+            "the inside of the edge lightens"
+        );
+
+        // Just outside it: untouched before, darkened after.
+        assert_eq!(sharp.get_pixel(30, 12).0[0], 255);
+        assert!(
+            blurred.get_pixel(30, 12).0[0] < 225,
+            "and ink spreads past the edge"
+        );
+    }
+
+    #[test]
+    fn layer_blur_blurs_the_subtree_not_the_backdrop() {
+        // The distinction that separates it from `background-blur`: what sits
+        // behind the node is left alone.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="80" h="40" fill="#ffffff">
+                <rect abs x="0" y="0" w="30" h="40" fill="#ff0000" />
+                <frame abs x="40" y="10" w="30" h="20" fill="#000000">
+                  <appearance>
+                    <effect type="layer-blur" radius="6" />
+                  </appearance>
+                </frame>
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            painted.get_pixel(10, 20).0[0..3],
+            [255, 0, 0],
+            "the sibling behind is not blurred"
+        );
+        assert!(
+            painted.get_pixel(55, 8).0[0] < 250,
+            "but the blurred node spreads past its own box"
+        );
+    }
+
+    #[test]
+    fn layer_blur_reaches_a_nodes_children() {
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="60" h="60" fill="#ffffff">
+                <frame abs x="0" y="0" w="60" h="60">
+                  <appearance>
+                    <effect type="layer-blur" radius="8" />
+                  </appearance>
+                  <rect abs x="15" y="15" w="30" h="30" fill="#000000" />
+                </frame>
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert!(
+            painted.get_pixel(30, 12).0[0] < 225,
+            "the child is blurred with its parent"
+        );
+    }
+
+    #[test]
+    fn an_invisible_layer_blur_does_nothing() {
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="60" h="60" fill="#ffffff">
+                <rect abs x="15" y="15" w="30" h="30" fill="#000000">
+                  <appearance>
+                    <effect type="layer-blur" radius="8" visible="false" />
+                  </appearance>
+                </rect>
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(painted.get_pixel(30, 16).0[0], 0, "the edge stays hard");
+        assert_eq!(painted.get_pixel(30, 12).0[0], 255);
     }
 
     #[test]
