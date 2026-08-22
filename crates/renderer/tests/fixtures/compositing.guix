@@ -1,0 +1,33 @@
+<gui version="0.2" name="Compositing">
+  <styles>
+    <fill-style name="card" value="#FFFFFF" />
+    <effect-style name="raised">
+      <effect type="drop-shadow" x="0" y="2" radius="6" color="#0000001F" />
+      <effect type="drop-shadow" x="0" y="10" radius="24" spread="-6" color="#00000033" />
+    </effect-style>
+  </styles>
+  <col w="460" h="240" fill="#F7F7F8" p="20" gap="16">
+    <row w="fill" gap="16">
+      <stack w="120" h="80">
+        <rect abs x="0" y="0" w="80" h="60" fill="#E5484D" />
+        <rect abs x="30" y="20" w="80" h="60" fill="#0D99FF" blend="multiply" />
+      </stack>
+      <stack w="120" h="80">
+        <rect abs x="0" y="0" w="80" h="60" fill="#E5484D" />
+        <rect abs x="30" y="20" w="80" h="60" fill="#0D99FF" blend="screen" />
+      </stack>
+      <stack w="120" h="80">
+        <rect abs x="0" y="0" w="110" h="70" fill="#12A594" z-index="1" />
+        <rect abs x="20" y="15" w="110" h="70" fill="#F5A524" />
+      </stack>
+    </row>
+    <row w="fill" gap="16">
+      <col w="120" h="70" radius="10" fill-style="card" effect-style="raised" />
+      <col w="120" h="70" radius="10" fill="#0D99FF" filter="grayscale(1)" />
+      <col w="120" h="70" radius="10" fill="#0D99FF" filter="brightness(1.4) saturate(0.4)" />
+      <frame w="120" h="70" isolation>
+        <rect abs x="0" y="0" w="120" h="70" fill="#8E4EC6" blend="multiply" />
+      </frame>
+    </row>
+  </col>
+</gui>

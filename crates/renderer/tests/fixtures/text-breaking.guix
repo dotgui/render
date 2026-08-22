@@ -1,0 +1,24 @@
+<gui version="0.2" name="Text breaking">
+  <col w="480" h="330" fill="#FFFFFF" p="20" gap="14">
+    <row w="fill" gap="20">
+      <col w="130" gap="6">
+        <text w="fill" value="Pneumonoultramicroscopicsilicovolcanoconiosis" font-size="12" line-height="16" fill="#71717A" />
+      </col>
+      <col w="130" gap="6">
+        <text w="fill" value="Pneumonoultramicroscopicsilicovolcanoconiosis" font-size="12" line-height="16" fill="#71717A" word-break="break-all" />
+      </col>
+      <col w="130" gap="6">
+        <text w="fill" value="Pneumonoultramicroscopicsilicovolcanoconiosis" font-size="12" line-height="16" fill="#71717A" word-break="break-word" />
+      </col>
+    </row>
+    <col w="fill" gap="4">
+      <text w="200" value="wraps by default across its box" font-size="12" line-height="16" fill="#18181B" />
+      <text w="200" value="white-space nowrap keeps one line" font-size="12" line-height="16" fill="#18181B" white-space="nowrap" />
+      <text w="200" value="text-wrap nowrap does the same" font-size="12" line-height="16" fill="#18181B" text-wrap="nowrap" />
+      <text w="200" value="Order AR-4827/B ships" font-size="12" line-height="16" fill="#71717A" word-break="keep-all" />
+    </col>
+    <text w="fill" value="An indented first line, then the rest of the paragraph runs back to the margin as usual." paragraph-indent="28" paragraph-spacing="8" font-size="13" line-height="18" fill="#55443C" />
+    <text w="fill" value="wide word spacing here" word-spacing="10" font-size="13" fill="#18181B" />
+    <text w="fill" value="tracked out letters" letter-spacing="3" font-size="13" fill="#18181B" />
+  </col>
+</gui>

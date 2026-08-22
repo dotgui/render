@@ -1,0 +1,13 @@
+<gui version="0.2" name="Overflow">
+  <row w="440" h="160" fill="#F7F7F8" p="20" gap="16">
+    <frame w="120" h="120" fill="#FFFFFF" radius="10" clip>
+      <rect abs x="60" y="60" w="120" h="120" fill="#E5484D" />
+    </frame>
+    <frame w="120" h="120" fill="#FFFFFF" radius="10" overflow-x="hidden">
+      <rect abs x="60" y="60" w="120" h="120" fill="#12A594" />
+    </frame>
+    <frame w="120" h="120" fill="#FFFFFF" radius="10" clip overflow-y="visible">
+      <rect abs x="60" y="60" w="120" h="120" fill="#0D99FF" />
+    </frame>
+  </row>
+</gui>

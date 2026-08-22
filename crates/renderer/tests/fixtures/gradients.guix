@@ -1,0 +1,19 @@
+<gui version="0.2" name="Gradients">
+  <col w="520" h="290" fill="#FFFFFF" p="20" gap="16">
+    <row w="fill" gap="16">
+      <rect w="100" h="100" radius="10" fill="linear-gradient(180deg, #5BD98A 0%, #34383E 100%)" />
+      <rect w="100" h="100" radius="10" fill="linear-gradient(90deg, #5BD98A 0%, #34383E 50%, #E06BD9 100%)" />
+      <rect w="100" h="100" radius="10" fill="linear-gradient(to bottom right, #FF6B6B 0%, #4ECDC4 100%)" />
+      <ellipse w="100" h="100" fill="radial-gradient(circle at 35% 30%, #FFFFFF 0%, #0D99FF 100%)" />
+    </row>
+    <row w="fill" gap="16">
+      <rect w="100" h="100" radius="50" fill="conic-gradient(from 0deg at 50% 50%, #E5484D 0%, #F5A524 25%, #12A594 50%, #0D99FF 75%, #E5484D 100%)" />
+      <rect w="100" h="100" radius="10" fill="linear-gradient(180deg, #2A0F0500 0%, #2A0F05E6 100%)" />
+      <rect w="216" h="100" radius="10">
+        <appearance>
+          <fill type="linear-gradient" value="linear-gradient(135deg, #8E4EC6 0%, #E06BD9 40%, #F5A524 100%)" />
+        </appearance>
+      </rect>
+    </row>
+  </col>
+</gui>

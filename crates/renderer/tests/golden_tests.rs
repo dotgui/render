@@ -41,7 +41,18 @@ const MAX_DIFFERING_FRACTION: f64 = 0.001;
 fn run_golden_test(gui_filename: &str, golden_name: &str) {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root_dir = manifest_dir.parent().unwrap().parent().unwrap();
-    let gui_path = root_dir.join("examples").join(gui_filename);
+    // Example packages and the hand-written fixtures are both valid inputs:
+    // the fixtures are the only full-page reference for features no example
+    // uses, which is most of what has been added recently.
+    let example_path = root_dir.join("examples").join(gui_filename);
+    let gui_path = if example_path.exists() {
+        example_path
+    } else {
+        manifest_dir
+            .join("tests")
+            .join("fixtures")
+            .join(gui_filename)
+    };
 
     let bytes = fs::read(&gui_path).unwrap_or_else(|err| {
         panic!(
@@ -199,3 +210,11 @@ golden_test!(golden_checkout, "anvil-ash-checkout.gui", "checkout");
 golden_test!(golden_arcade, "arcade-return-item-android.gui", "arcade");
 golden_test!(golden_harbor, "harbor-report-post-ios.gui", "harbor");
 golden_test!(golden_grain, "grain-photo-adjust.gui", "grain");
+
+// Fixtures: a full-page reference for the features no example package uses.
+golden_test!(golden_gradients, "gradients.guix", "gradients");
+golden_test!(golden_compositing, "compositing.guix", "compositing");
+golden_test!(golden_masks, "masks-clipping.guix", "masks-clipping");
+golden_test!(golden_opacity, "opacity-groups.guix", "opacity-groups");
+golden_test!(golden_transforms, "transforms.guix", "transforms");
+golden_test!(golden_layer_blur, "layer-blur.guix", "layer-blur");
