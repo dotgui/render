@@ -634,11 +634,16 @@ fn paint_backdrop_effects(pixmap: &mut Pixmap, node: &SceneNode) {
                 // `radius` is sigma here for the same reason as a layer blur:
                 // kit emits `backdrop-filter: blur(<radius>px)`, and a
                 // filter's radius is the standard deviation.
+                //
+                // The saturation goes with it. kit emits
+                // `blur(<radius>px) saturate(<saturation>%)` for a plain
+                // `background-blur` as much as for `glass`, defaulting to
+                // 180% — the lift that makes frosted glass read as glass
+                // rather than as fog. Applying it only to `glass` left every
+                // backdrop-blurred panel flat.
                 let mut backdrop = pixmap.clone();
                 blur::blur(&mut backdrop, effect.radius);
-                if effect.kind == "glass" {
-                    saturate(&mut backdrop, effect.saturation / 100.0);
-                }
+                saturate(&mut backdrop, effect.saturation / 100.0);
 
                 pixmap.draw_pixmap(
                     0,
@@ -4693,6 +4698,46 @@ mod tests {
         assert!(
             darkness(&wide) > darkness(&tight),
             "a positive spread should cast more shadow"
+        );
+    }
+
+    #[test]
+    fn a_background_blur_saturates_its_backdrop_like_glass_does() {
+        // kit emits `blur(<radius>px) saturate(<saturation>%)` for a plain
+        // `background-blur` as much as for `glass`, defaulting to 180%. This
+        // renderer applied the lift only to `glass`, so every frosted panel
+        // came out flat — a third of `effects-blur.guix` differed from kit
+        // for this one reason, and the existing blur tests all passed anyway
+        // because they only ask whether the backdrop softened.
+        let panel = |saturation: &str| {
+            let painted = render(&format!(
+                r##"
+                <gui version="0.2">
+                  <col w="80" h="60" fill="#1f4e79">
+                    <rect w="80" h="60" fill="#ffffff59">
+                      <appearance>
+                        <effect type="background-blur" radius="8" {saturation} />
+                      </appearance>
+                    </rect>
+                  </col>
+                </gui>
+                "##
+            ));
+            painted.get_pixel(40, 30).0
+        };
+
+        let default = panel("");
+        let flat = panel(r#"saturation="100""#);
+
+        // Saturation pushes a colour away from its own luma, so the blue
+        // backdrop gets bluer and loses red. `saturate(100%)` is the identity.
+        assert!(
+            default[2] > flat[2] + 10,
+            "the default lifts blue: {default:?} against {flat:?}"
+        );
+        assert!(
+            default[0] < flat[0] - 10,
+            "and drops red: {default:?} against {flat:?}"
         );
     }
 
