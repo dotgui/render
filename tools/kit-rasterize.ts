@@ -43,30 +43,39 @@ const CHROMIUM = [
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const KIT = process.env.DOTGUI_KIT ?? path.resolve(HERE, '..', '..', 'kit')
 
-if (!existsSync(path.join(KIT, 'src', 'rasterize', 'index.ts'))) {
+if (!existsSync(path.join(KIT, 'src', 'package', 'index.ts'))) {
   console.error(`no kit checkout at ${KIT}`)
   console.error('set DOTGUI_KIT to a dotgui/kit checkout, or clone it beside this one')
   process.exit(3)
 }
 
-const { rasterize } = await import(path.join(KIT, 'src', 'rasterize', 'index.ts'))
 const { unpack } = await import(path.join(KIT, 'src', 'package', 'index.ts'))
 
 /**
- * kit's box geometry for a document, as a flat pre-order list.
+ * Renders a document through kit and hands the page to `read`.
  *
- * `rasterize()` owns and closes its own page, so the DOM it built cannot be
- * inspected afterwards. This renders the document again in a page of our own
- * — through kit's exported `render()`, so the geometry is kit's and only the
- * surrounding scaffold is ours — and reads every element's box.
+ * `rasterize()` from kit would do the screenshot, but it waits 400ms of
+ * network idle with a 5s cap and takes no option to change that. That is not
+ * enough for a document pulling a large remote image: `relay-dispatch` fetches
+ * a 1760px map, kit screenshotted the empty box, and the comparison reported a
+ * 19.5% pixel difference that was entirely the harness's own impatience. With
+ * a longer wait every request completes and nothing fails.
  *
- * Only reached for `--boxes`, which is a diagnostic for one document at a
- * time. A whole-corpus run never pays for this second render.
+ * So the page is ours, and the rendering is still kit's — this calls kit's
+ * exported `render()`, and the scaffold around it is a div. Both the
+ * screenshot and the box dump come through here, so they cannot drift apart.
  */
-async function dumpBoxes(pkg: { xml: string; assets: Record<string, Uint8Array> }) {
+const NETWORK_IDLE_MS = 1500
+const NETWORK_TIMEOUT_MS = 30_000
+
+async function inKitPage<T>(
+  pkg: { xml: string; assets: Record<string, Uint8Array> },
+  read: (page: any) => Promise<T>,
+): Promise<T> {
   const exe = process.env.PUPPETEER_EXECUTABLE_PATH ?? CHROMIUM.find((p) => existsSync(p))
   if (!exe) {
     console.error('no Chromium-based browser found')
+    console.error('install a Chromium/Chrome browser, or set PUPPETEER_EXECUTABLE_PATH')
     process.exit(3)
   }
   const bundle = path.join(KIT, 'dist', 'render.js')
@@ -80,7 +89,7 @@ async function dumpBoxes(pkg: { xml: string; assets: Record<string, Uint8Array> 
     assetMap[name] = `data:${mimeFor(name)};base64,${Buffer.from(data).toString('base64')}`
   }
 
-  const tmp = mkdtempSync(path.join(os.tmpdir(), 'dotgui-boxes-'))
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'dotgui-kit-page-'))
   const harness = path.join(tmp, 'harness.html')
   writeFileSync(
     harness,
@@ -102,14 +111,45 @@ async function dumpBoxes(pkg: { xml: string; assets: Record<string, Uint8Array> 
   })
   try {
     const page = await browser.newPage()
+    // Anything that does not arrive is worth saying out loud: a missing image
+    // reads as a rendering difference otherwise.
+    const failures: string[] = []
+    page.on('requestfailed', (request: any) =>
+      failures.push(`${request.failure()?.errorText} ${request.url().slice(0, 100)}`))
+    page.on('response', (response: any) => {
+      if (response.status() >= 400) failures.push(`HTTP ${response.status()} ${response.url().slice(0, 100)}`)
+    })
+
     await page.setViewport({ width: 1600, height: 2400, deviceScaleFactor: 1 })
     await page.goto(pathToFileURL(harness).href, { waitUntil: 'load' })
     await page.waitForFunction('window.__ready === true', { timeout: 5000 })
     await page.evaluate((xml: string, assets: Record<string, string>) =>
       (window as any).__render(xml, assets), pkg.xml, assetMap)
-    await page.waitForNetworkIdle({ idleTime: 400, timeout: 5000 }).catch(() => {})
+    await page
+      .waitForNetworkIdle({ idleTime: NETWORK_IDLE_MS, timeout: NETWORK_TIMEOUT_MS })
+      .catch(() => failures.push(`network still busy after ${NETWORK_TIMEOUT_MS}ms`))
 
-    return await page.evaluate(() => {
+    // An <img> that never decoded would be drawn as empty space.
+    const undecoded: string[] = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('img'))
+        .filter((img) => !(img as HTMLImageElement).complete || (img as HTMLImageElement).naturalWidth === 0)
+        .map((img) => (img as HTMLImageElement).src.slice(0, 100)))
+
+    for (const note of [...failures, ...undecoded.map((src) => `never decoded ${src}`)]) {
+      console.error(`kit could not load: ${note}`)
+    }
+
+    return await read(page)
+  } finally {
+    await browser.close().catch(() => {})
+    rmSync(tmp, { recursive: true, force: true })
+  }
+}
+
+/** kit's box geometry for a document, as a flat pre-order list. */
+async function dumpBoxes(pkg: { xml: string; assets: Record<string, Uint8Array> }) {
+  return inKitPage(pkg, (page) =>
+    page.evaluate(() => {
       const root = document.querySelector('#root > *') as HTMLElement
       if (!root) return { boxes: [] }
       const base = root.getBoundingClientRect()
@@ -132,11 +172,21 @@ async function dumpBoxes(pkg: { xml: string; assets: Record<string, Uint8Array> 
       }
       walk(root, 0)
       return { boxes }
-    })
-  } finally {
-    await browser.close().catch(() => {})
-    rmSync(tmp, { recursive: true, force: true })
-  }
+    }))
+}
+
+/** kit's rendering of a document, as PNG bytes. */
+async function screenshot(pkg: { xml: string; assets: Record<string, Uint8Array> }): Promise<Uint8Array> {
+  return inKitPage(pkg, async (page) => {
+    const target = (await page.$('#root > *')) ?? (await page.$('#root'))
+    if (!target) {
+      console.error('kit rendered nothing')
+      process.exit(3)
+    }
+    // scale 1 so the result is in the same coordinate space as the native
+    // render; comparing at deviceScaleFactor 2 would only add a resample step.
+    return (await target.screenshot({ type: 'png', omitBackground: true })) as Uint8Array
+  })
 }
 
 /** The canonical string every font probe measures, and the size it uses. */
@@ -291,20 +341,8 @@ if (wantBoxes) {
   process.exit(0)
 }
 
-// scale 1 so the result is in the same coordinate space as the native render;
-// comparing at deviceScaleFactor 2 would only add a resample step.
-const result = await rasterize(pkg, { format: 'png', scale: 1 })
-
-// Which of the document's declared families this browser cannot actually
-// resolve. A document whose fonts kit had to substitute is not comparable:
-// the two renderers are measuring different typefaces, so every wrapped line
-// and every box that hugs one is legitimately a different size.
-//
-// `document.fonts.check()` is no use here — it answers true whenever the
-// stack has any usable fallback, which is always. Measuring is what settles
-// it: request the family with no fallback, and compare against a name that
-// certainly does not exist. Identical widths mean the family resolved to the
-// same substitute, i.e. it is not installed.
+// Which declared families kit could actually reach, and what its text
+// measures in them. The caller compares that against its own measurement.
 const declared = [...pkg.xml.matchAll(/<font\b[^>]*>/g)]
   .map((tag) => ({
     family: /\bfamily="([^"]+)"/.exec(tag[0])?.[1] ?? '',
@@ -315,17 +353,7 @@ const declared = [...pkg.xml.matchAll(/<font\b[^>]*>/g)]
 const unique = [...new Map(declared.map((font) => [font.family, font])).values()]
 const readings = unique.length ? await probeFonts(unique) : {}
 
-if (!result.image) {
-  console.error(`kit could not rasterize ${input}: ${result.reason}`)
-  if (result.reason === 'no-browser') {
-    console.error('install a Chromium-based browser, or set PUPPETEER_EXECUTABLE_PATH')
-  } else if (result.reason === 'no-renderer') {
-    console.error(`build the kit render bundle: (cd ${KIT} && bun run build:render)`)
-  }
-  process.exit(3)
-}
-
-writeFileSync(output, result.image)
+writeFileSync(output!, await screenshot(pkg))
 
 // The comparison harness reads this and compares the widths against its own.
 console.log(JSON.stringify({ fonts: readings, probe: { text: PROBE_TEXT, size: PROBE_SIZE } }))
