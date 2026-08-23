@@ -52,36 +52,56 @@ if (!existsSync(path.join(KIT, 'src', 'rasterize', 'index.ts'))) {
 const { rasterize } = await import(path.join(KIT, 'src', 'rasterize', 'index.ts'))
 const { unpack } = await import(path.join(KIT, 'src', 'package', 'index.ts'))
 
+/** The canonical string every font probe measures, and the size it uses. */
+const PROBE_TEXT = 'Handgloves 12345 WAVE'
+const PROBE_SIZE = 32
+
 /**
- * Families this browser has no real font for.
+ * What kit's text actually measures, per declared family.
  *
- * Measured, not asked. `document.fonts.check()` answers true whenever the
- * stack has any usable fallback, which is always — it reported "SF Pro
- * Display" as present on a machine that rendered every glyph in system-ui.
- * So each family is requested with no fallback and compared against a name
- * that cannot exist: equal widths mean both landed on the same substitute.
+ * The question that matters is not whether kit resolved the family *by name*
+ * — a fallback can land on the same physical typeface, and on macOS
+ * `system-ui` lands on SF Pro, so an `SF Pro Display` document renders in SF
+ * Pro either way. Concluding "different name, different face" is what wrongly
+ * wrote off five comparable documents (see #73).
  *
- * Google families are webfonts, not installed ones, so the probe page pulls
- * the same stylesheet kit injects before measuring. Without that they measure
- * as missing even though kit renders them correctly.
+ * So this reports the width kit gets for a fixed string in the full stack it
+ * would apply to an element. The caller compares that against its own
+ * measurement of the same string: close widths mean the two renderers are
+ * drawing metrically the same face, whatever it ended up being called.
  *
- * Results cache across invocations — the harness runs this script once per
- * document, and which fonts a machine has does not change between them.
+ * `resolvedByName` is still reported, because knowing kit had to fall back is
+ * worth saying — it just is not grounds for discarding the comparison.
  */
 const FONT_CACHE = path.join(os.tmpdir(), 'dotgui-kit-font-probe.json')
 
-/** Bump when the probe changes, so a cache written by older logic is dropped.
- *  An earlier version measured webfonts without requesting them and cached
- *  every Google family as missing; the wrong answers outlived the bug. */
-const FONT_PROBE_VERSION = 2
+/** Bump when the probe changes, so a cache written by older logic is dropped. */
+const FONT_PROBE_VERSION = 3
 
 interface DeclaredFont {
   family: string
   source: string
+  category: string
 }
 
-async function probeFonts(fonts: DeclaredFont[]): Promise<string[]> {
-  let cache: Record<string, boolean> = {}
+interface FontReading {
+  resolvedByName: boolean
+  width: number
+}
+
+/** kit's own `fontStack`, mirrored: `"Family", <generic fallback>`. */
+function fallbackFor(font: DeclaredFont): string {
+  if (font.source === 'system')
+    return 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+  if (font.category === 'serif') return 'serif'
+  if (font.category === 'monospace' || /mono|code|console/i.test(font.family))
+    return 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+  if (font.category === 'handwriting') return 'cursive'
+  return 'sans-serif'
+}
+
+async function probeFonts(fonts: DeclaredFont[]): Promise<Record<string, FontReading>> {
+  let cache: Record<string, FontReading> = {}
   try {
     const stored = JSON.parse(readFileSync(FONT_CACHE, 'utf8'))
     if (stored.version === FONT_PROBE_VERSION) cache = stored.families
@@ -93,7 +113,7 @@ async function probeFonts(fonts: DeclaredFont[]): Promise<string[]> {
   if (unknown.length) {
     const exe = process.env.PUPPETEER_EXECUTABLE_PATH ?? CHROMIUM.find((p) => existsSync(p))
     // No browser means rasterizing already failed; nothing to add.
-    if (!exe) return []
+    if (!exe) return cache
 
     const puppeteer = (await import(Bun.resolveSync('puppeteer-core', KIT))).default
     const browser = await puppeteer.launch({
@@ -104,46 +124,56 @@ async function probeFonts(fonts: DeclaredFont[]): Promise<string[]> {
     try {
       const page = await browser.newPage()
       await page.goto('about:blank')
-      const found: Record<string, boolean> = await page.evaluate(async (list: DeclaredFont[]) => {
-        // Mirror kit: a Google family arrives as a stylesheet, not an install.
-        const links = list
-          .filter((font) => font.source === 'google')
-          .map((font) => {
-            const link = document.createElement('link')
-            link.rel = 'stylesheet'
-            link.href =
-              `https://fonts.googleapis.com/css2?family=${font.family.replace(/ /g, '+')}&display=swap`
-            document.head.appendChild(link)
-            return link
-          })
-        await Promise.all(
-          links.map(
-            (link) =>
-              new Promise((done) => {
-                link.onload = done
-                link.onerror = done
-                setTimeout(done, 5000)
-              }),
-          ),
-        )
+      const found: Record<string, FontReading> = await page.evaluate(
+        async (list: (DeclaredFont & { stack: string })[], text: string, size: number) => {
+          // Google families are webfonts, not installs, so pull the same
+          // stylesheet kit injects before measuring anything.
+          const links = list
+            .filter((font) => font.source === 'google')
+            .map((font) => {
+              const link = document.createElement('link')
+              link.rel = 'stylesheet'
+              link.href =
+                `https://fonts.googleapis.com/css2?family=${font.family.replace(/ /g, '+')}&display=swap`
+              document.head.appendChild(link)
+              return link
+            })
+          await Promise.all(
+            links.map(
+              (link) =>
+                new Promise((done) => {
+                  link.onload = done
+                  link.onerror = done
+                  setTimeout(done, 5000)
+                }),
+            ),
+          )
 
-        const context = document.createElement('canvas').getContext('2d')!
-        const width = (family: string) => {
-          context.font = `32px ${JSON.stringify(family)}`
-          return context.measureText('Handgloves 12345 WAVE').width
-        }
-        const absent = width('NoSuchFamily-zzq9')
+          const context = document.createElement('canvas').getContext('2d')!
+          const width = (family: string) => {
+            context.font = `${size}px ${family}`
+            return context.measureText(text).width
+          }
+          const absent = width(JSON.stringify('NoSuchFamily-zzq9'))
 
-        const out: Record<string, boolean> = {}
-        for (const font of list) {
-          // A face declared in a stylesheet is only fetched once something
-          // asks for it. Assigning it to a canvas does not count, so the
-          // request has to be explicit or every webfont measures as missing.
-          await (document as any).fonts.load(`32px ${JSON.stringify(font.family)}`).catch(() => {})
-          out[font.family] = width(font.family) !== absent
-        }
-        return out
-      }, unknown)
+          const out: Record<string, FontReading> = {}
+          for (const font of list) {
+            // A face in a stylesheet is only fetched once something asks for
+            // it; assigning it to a canvas does not count.
+            await (document as any).fonts
+              .load(`${size}px ${JSON.stringify(font.family)}`)
+              .catch(() => {})
+            out[font.family] = {
+              resolvedByName: width(JSON.stringify(font.family)) !== absent,
+              width: +width(font.stack).toFixed(3),
+            }
+          }
+          return out
+        },
+        unknown.map((font) => ({ ...font, stack: `${JSON.stringify(font.family)}, ${fallbackFor(font)}` })),
+        PROBE_TEXT,
+        PROBE_SIZE,
+      )
       Object.assign(cache, found)
       writeFileSync(
         FONT_CACHE,
@@ -154,94 +184,7 @@ async function probeFonts(fonts: DeclaredFont[]): Promise<string[]> {
     }
   }
 
-  return fonts.filter((font) => cache[font.family] === false).map((font) => font.family)
-}
-
-/**
- * kit's box geometry for a document, as a flat pre-order list.
- *
- * `rasterize()` owns and closes its own page, so the DOM it built cannot be
- * inspected afterwards. This renders the document again in a page of our own
- * — through kit's exported `render()`, so the geometry is kit's and only the
- * surrounding scaffold is ours — and reads every element's box.
- *
- * Only reached for `--boxes`, which is a diagnostic for one document at a
- * time. A whole-corpus run never pays for this second render.
- */
-async function dumpBoxes(pkg: { xml: string; assets: Record<string, Uint8Array> }) {
-  const exe = process.env.PUPPETEER_EXECUTABLE_PATH ?? CHROMIUM.find((p) => existsSync(p))
-  if (!exe) {
-    console.error('no Chromium-based browser found')
-    process.exit(3)
-  }
-  const bundle = path.join(KIT, 'dist', 'render.js')
-  if (!existsSync(bundle)) {
-    console.error(`build the kit render bundle: (cd ${KIT} && bun run build:render)`)
-    process.exit(3)
-  }
-
-  const assetMap: Record<string, string> = {}
-  for (const [name, data] of Object.entries(pkg.assets)) {
-    assetMap[name] = `data:${mimeFor(name)};base64,${Buffer.from(data).toString('base64')}`
-  }
-
-  const tmp = mkdtempSync(path.join(os.tmpdir(), 'dotgui-boxes-'))
-  const harness = path.join(tmp, 'harness.html')
-  writeFileSync(
-    harness,
-    `<!doctype html><html><head><meta charset="utf-8">
-<style>html,body{margin:0;padding:0;background:transparent}#root{display:inline-block}</style>
-</head><body><div id="root"></div><script type="module">
-  import { render } from ${JSON.stringify(pathToFileURL(bundle).href)}
-  window.__render = (xml, assets) => { render(xml, document.getElementById('root'), assets) }
-  window.__ready = true
-</script></body></html>`,
-  )
-
-  const puppeteer = (await import(Bun.resolveSync('puppeteer-core', KIT))).default
-  const browser = await puppeteer.launch({
-    executablePath: exe,
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--font-render-hinting=none',
-           '--allow-file-access-from-files'],
-  })
-  try {
-    const page = await browser.newPage()
-    await page.setViewport({ width: 1600, height: 2400, deviceScaleFactor: 1 })
-    await page.goto(pathToFileURL(harness).href, { waitUntil: 'load' })
-    await page.waitForFunction('window.__ready === true', { timeout: 5000 })
-    await page.evaluate((xml: string, assets: Record<string, string>) =>
-      (window as any).__render(xml, assets), pkg.xml, assetMap)
-    await page.waitForNetworkIdle({ idleTime: 400, timeout: 5000 }).catch(() => {})
-
-    return await page.evaluate(() => {
-      const root = document.querySelector('#root > *') as HTMLElement
-      if (!root) return { boxes: [] }
-      const base = root.getBoundingClientRect()
-      const boxes: unknown[] = []
-      const walk = (el: Element, depth: number) => {
-        const r = el.getBoundingClientRect()
-        // kit wraps a `<gui-img>` around a plain `<img>` of identical bounds;
-        // it has no counterpart in this renderer's tree.
-        if (el.tagName.toLowerCase() !== 'img') {
-          boxes.push({
-            tag: el.tagName.toLowerCase().replace(/^gui-/, ''),
-            depth,
-            x: +(r.left - base.left).toFixed(3),
-            y: +(r.top - base.top).toFixed(3),
-            w: +r.width.toFixed(3),
-            h: +r.height.toFixed(3),
-          })
-        }
-        for (const child of Array.from(el.children)) walk(child, depth + 1)
-      }
-      walk(root, 0)
-      return { boxes }
-    })
-  } finally {
-    await browser.close().catch(() => {})
-    rmSync(tmp, { recursive: true, force: true })
-  }
+  return Object.fromEntries(fonts.filter((f) => cache[f.family]).map((f) => [f.family, cache[f.family]]))
 }
 
 const argv = process.argv.slice(2)
@@ -279,10 +222,11 @@ const declared = [...pkg.xml.matchAll(/<font\b[^>]*>/g)]
   .map((tag) => ({
     family: /\bfamily="([^"]+)"/.exec(tag[0])?.[1] ?? '',
     source: /\bsource="([^"]+)"/.exec(tag[0])?.[1] ?? '',
+    category: /\bcategory="([^"]+)"/.exec(tag[0])?.[1] ?? '',
   }))
   .filter((font) => font.family)
 const unique = [...new Map(declared.map((font) => [font.family, font])).values()]
-const unresolved = unique.length ? await probeFonts(unique) : []
+const readings = unique.length ? await probeFonts(unique) : {}
 
 if (!result.image) {
   console.error(`kit could not rasterize ${input}: ${result.reason}`)
@@ -296,8 +240,11 @@ if (!result.image) {
 
 writeFileSync(output, result.image)
 
-// The comparison harness reads this; a human reading stderr sees the warning.
-console.log(JSON.stringify({ unresolvedFonts: unresolved }))
-if (unresolved.length) {
-  console.error(`kit could not resolve: ${unresolved.join(', ')} — it substituted a fallback`)
+// The comparison harness reads this and compares the widths against its own.
+console.log(JSON.stringify({ fonts: readings, probe: { text: PROBE_TEXT, size: PROBE_SIZE } }))
+const byFallback = Object.entries(readings).filter(([, r]) => !r.resolvedByName)
+if (byFallback.length) {
+  console.error(
+    `kit reached these by fallback rather than by name: ${byFallback.map(([f]) => f).join(', ')}`,
+  )
 }
