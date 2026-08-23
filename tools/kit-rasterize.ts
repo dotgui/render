@@ -154,13 +154,18 @@ async function dumpBoxes(pkg: { xml: string; assets: Record<string, Uint8Array> 
       if (!root) return { boxes: [] }
       const base = root.getBoundingClientRect()
       const boxes: unknown[] = []
-      const walk = (el: Element, depth: number) => {
+      const walk = (el: Element, depth: number, isRoot: boolean) => {
         const r = el.getBoundingClientRect()
-        // kit wraps a `<gui-img>` around a plain `<img>` of identical bounds;
-        // it has no counterpart in this renderer's tree.
-        if (el.tagName.toLowerCase() !== 'img') {
+        // Only kit's own `gui-*` elements are document nodes. Everything else
+        // inside them is scaffolding it paints with — the `<img>` inside a
+        // `<gui-img>`, the `<div>` it lays a gradient fill into — and has no
+        // counterpart in this renderer's tree. The root is kept whatever it
+        // is, because when kit fails to parse it is a bare `<div>`, and
+        // reporting one box against our seventeen is the finding.
+        const tag = el.tagName.toLowerCase()
+        if (isRoot || tag.startsWith('gui-')) {
           boxes.push({
-            tag: el.tagName.toLowerCase().replace(/^gui-/, ''),
+            tag: tag.replace(/^gui-/, ''),
             depth,
             x: +(r.left - base.left).toFixed(3),
             y: +(r.top - base.top).toFixed(3),
@@ -168,9 +173,9 @@ async function dumpBoxes(pkg: { xml: string; assets: Record<string, Uint8Array> 
             h: +r.height.toFixed(3),
           })
         }
-        for (const child of Array.from(el.children)) walk(child, depth + 1)
+        for (const child of Array.from(el.children)) walk(child, depth + 1, false)
       }
-      walk(root, 0)
+      walk(root, 0, true)
       return { boxes }
     }))
 }
