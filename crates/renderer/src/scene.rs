@@ -30,8 +30,6 @@ pub struct SceneNode {
     pub radius: Option<f32>,
     /// Squircle factor for the node's corners, 0 (a circular arc) to 1.
     pub corner_smoothing: f32,
-    /// A `<line>`'s stroke thickness. `None` everywhere else.
-    pub thickness: Option<f32>,
     /// How the node composites against what is already painted behind it,
     /// as in CSS `mix-blend-mode`. `None` is the normal mode.
     pub blend: Option<String>,
@@ -305,13 +303,6 @@ fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata, ordinal: usize) 
             .map(|value| resolve_token(value, metadata))
             .and_then(|value| parse_number(&value)),
         corner_smoothing: corner_smoothing_for(layout, metadata),
-        thickness: (layout.tag == "line")
-            .then(|| {
-                attr(layout, "thickness")
-                    .map(|value| resolve_token(value, metadata))
-                    .and_then(|value| parse_number(&value))
-            })
-            .flatten(),
         blend: attr(layout, "blend")
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty() && value != "normal"),

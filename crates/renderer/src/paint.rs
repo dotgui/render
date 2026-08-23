@@ -928,15 +928,16 @@ fn paint_image_fill(
     );
 }
 
+/// A node's painted height.
+///
+/// This used to give a `<line>` its `thickness` when layout had left it at
+/// zero, which meant a divider drew correctly while occupying no space —
+/// every sibling after one sat a pixel high and nothing failed. Layout now
+/// sizes the rule itself, so painting reads the box like every other node.
+/// A rule turned vertical made keeping the cover-up actively wrong: it has no
+/// height of its own to fall back to.
 fn paint_height(node: &SceneNode) -> f32 {
-    // A `<line>` is a divider: it has no height of its own, so `thickness`
-    // gives it one. The spec's default is 1px, which is what it drew before
-    // the attribute was read.
-    if node.tag == "line" && node.bounds.height <= 0.0 {
-        node.thickness.filter(|it| *it > 0.0).unwrap_or(1.0)
-    } else {
-        node.bounds.height
-    }
+    node.bounds.height
 }
 
 fn paint_content(
