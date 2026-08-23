@@ -38,6 +38,7 @@ pub use scene::{
     SceneNode, TextSegment, Transform2D,
 };
 pub use taffy_layout::{compute_taffy_layout, compute_taffy_layout_with_text, TaffyLayoutError};
+pub use text_style::{DecorationLine, DecorationStyle, TextDecoration};
 
 #[cfg(test)]
 mod examples_tests {

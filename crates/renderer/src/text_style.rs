@@ -6,6 +6,7 @@
 //! attribute lookups.
 
 use crate::{GuiMetadata, GuiNode, LayoutBox};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// A node that can carry text: either a document node or a laid-out box.
@@ -54,6 +55,47 @@ impl TextSource for LayoutBox {
     }
 }
 
+/// Which rule a `<text>` draws through its glyphs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DecorationLine {
+    Underline,
+    Strikethrough,
+}
+
+/// How that rule is stroked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DecorationStyle {
+    #[default]
+    Solid,
+    Dashed,
+    Dotted,
+    Wavy,
+    Double,
+}
+
+/// A `<text>`'s decoration, resolved.
+///
+/// Neither this renderer nor kit drew one before: `decoration` is in the
+/// spec's table of properties implemented by neither. So the reference for
+/// what these should look like is CSS, which is where the spec's own value
+/// names come from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TextDecoration {
+    pub line: DecorationLine,
+    pub style: DecorationStyle,
+    /// `decoration-color`; the text's own colour when unset.
+    pub color: Option<String>,
+    /// `decoration-thickness` in px; derived from the font when unset.
+    pub thickness: Option<f32>,
+    /// `text-underline-offset` in px below the baseline. Underline only —
+    /// a strikethrough is positioned from the font's x-height instead.
+    pub offset: Option<f32>,
+    /// `text-decoration-skip-ink`: break the rule where a glyph crosses it.
+    pub skip_ink: bool,
+}
+
 /// The font properties a run of text is drawn with, after tokens, `text-style`
 /// lookups, and inheritance from the parent `<text>` have been applied.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +116,8 @@ pub(crate) struct TextStyle {
     pub word_spacing: f32,
     /// Pixels the run's baseline moves up, from `baseline-shift`.
     pub baseline_shift: f32,
+    /// The rule drawn through this run, from `decoration` and its controls.
+    pub decoration: Option<TextDecoration>,
 }
 
 /// One styled run of a `<text>` node.
@@ -112,7 +156,45 @@ pub(crate) fn resolve_text_style<S: TextSource>(node: &S, metadata: &GuiMetadata
         font_smoothing: style_value(node, metadata, "font-smoothing"),
         word_spacing: style_number(node, metadata, "word-spacing").unwrap_or(0.0),
         baseline_shift: style_number(node, metadata, "baseline-shift").unwrap_or(0.0),
+        decoration: resolve_decoration(node, metadata),
     }
+}
+
+/// Reads `decoration` and the attributes that shape it.
+///
+/// Everything else is inert without `decoration` itself: a `decoration-color`
+/// with no line to colour describes nothing, which is why they resolve
+/// together rather than as six independent properties.
+fn resolve_decoration<S: TextSource>(node: &S, metadata: &GuiMetadata) -> Option<TextDecoration> {
+    let line = match style_value(node, metadata, "decoration")?.trim() {
+        "underline" => DecorationLine::Underline,
+        "strikethrough" => DecorationLine::Strikethrough,
+        // `none` is how a run opts out of a decoration it would inherit.
+        _ => return None,
+    };
+
+    Some(TextDecoration {
+        line,
+        style: match style_value(node, metadata, "decoration-style")
+            .as_deref()
+            .map(str::trim)
+        {
+            Some("dashed") => DecorationStyle::Dashed,
+            Some("dotted") => DecorationStyle::Dotted,
+            Some("wavy") => DecorationStyle::Wavy,
+            Some("double") => DecorationStyle::Double,
+            _ => DecorationStyle::Solid,
+        },
+        color: style_value(node, metadata, "decoration-color"),
+        thickness: style_number(node, metadata, "decoration-thickness"),
+        offset: style_number(node, metadata, "text-underline-offset"),
+        // CSS defaults this to `auto`, which skips. A document that wants a
+        // rule straight through its descenders has to say so.
+        skip_ink: style_value(node, metadata, "text-decoration-skip-ink")
+            .as_deref()
+            .map(str::trim)
+            != Some("false"),
+    })
 }
 
 /// Splits a `<text>` node into the runs it should be drawn as.
@@ -213,6 +295,12 @@ fn inherit_style<S: TextSource>(node: &S, metadata: &GuiMetadata, parent: &TextS
         // A shift is a property of the run that declares it, not something a
         // nested run should inherit and double.
         baseline_shift: style_number(node, metadata, "baseline-shift").unwrap_or(0.0),
+        // A rule runs under the whole `<text>`, segments included, unless a
+        // segment names its own `decoration` — including `none` to opt out.
+        decoration: match node.attributes().get("decoration") {
+            Some(_) => resolve_decoration(node, metadata),
+            None => parent.decoration.clone(),
+        },
     }
 }
 
