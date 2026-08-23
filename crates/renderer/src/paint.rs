@@ -1839,7 +1839,12 @@ fn paint_text_placeholder(pixmap: &mut Pixmap, node: &SceneNode) {
         .fill_color()
         .and_then(|fill| parse_color(fill, draw_opacity(node)))
         .unwrap_or_else(|| Color::from_rgba8(20, 20, 20, 180));
-    let h = (node.bounds.height * 0.42).clamp(2.0, node.bounds.height);
+    // 42% of the box, never thinner than 2px and never taller than the box
+    // itself. Written as max-then-min rather than `clamp`, which panics when
+    // its bounds cross — and they do cross, for any text box under 2px tall.
+    let h = (node.bounds.height * 0.42)
+        .max(2.0)
+        .min(node.bounds.height.max(0.0));
     let y = node.bounds.y + (node.bounds.height - h) / 2.0;
     fill_rounded_rect(
         pixmap,
@@ -3696,6 +3701,29 @@ mod tests {
             </gui>
             "##
         ))
+    }
+
+    #[test]
+    fn a_text_box_thinner_than_its_placeholder_does_not_panic() {
+        // The placeholder bar is 42% of the box but at least 2px, which used
+        // to be written as a `clamp` — and `clamp` panics when its bounds
+        // cross, which they do for any text box under 2px tall. Three lines of
+        // valid markup brought the whole renderer down.
+        //
+        // Declaring no `fill` is what selects the placeholder path: without a
+        // resolved colour there are no glyphs to draw.
+        for height in ["0", "1", "1.5", "2", "8"] {
+            let painted = render(&format!(
+                r##"
+                <gui version="0.2">
+                  <col w="60" h="20" fill="#ffffff">
+                    <text value="squashed" h="{height}" font-size="12" />
+                  </col>
+                </gui>
+                "##
+            ));
+            assert_eq!(painted.width(), 60, "h={height} renders at all");
+        }
     }
 
     #[test]
