@@ -1,0 +1,50 @@
+<gui version="0.2" name="Min and max constraints">
+  <!-- The spec spellings, which no example package uses: the corpus has two
+       uses of the short aliases and none of these. Written in the spec names
+       so the document is comparable against kit, which reads only those. -->
+  <fonts><font family="Roboto" source="google" weights="400" styles="normal" /></fonts>
+  <col w="520" fill="#FFFFFF" p="20" gap="12">
+
+    <!-- A minimum grows a box its content would not fill. -->
+    <col w="fill" min-height="60" fill="#EAF3FF" p="8">
+      <text value="min-height 60, one short line" font-family="Roboto" font-size="13" line-height="18" fill="#123" />
+    </col>
+
+    <!-- A maximum clamps a box its content would overflow. -->
+    <col w="fill" max-height="46" fill="#FFF1E8" p="8" overflow="hidden">
+      <text value="max-height 46" font-family="Roboto" font-size="13" line-height="18" fill="#123" />
+      <text value="this second line is past the maximum" font-family="Roboto" font-size="13" line-height="18" fill="#123" />
+      <text value="and so is this third one" font-family="Roboto" font-size="13" line-height="18" fill="#123" />
+    </col>
+
+    <row w="fill" gap="12">
+      <!-- A minimum wider than the content. -->
+      <col min-width="150" fill="#E9F7EF" p="8">
+        <text value="min-width 150" font-family="Roboto" font-size="13" line-height="18" fill="#123" />
+      </col>
+
+      <!-- A maximum narrower than the text, which has to wrap inside it. -->
+      <col max-width="140" fill="#F6ECFF" p="8">
+        <text value="max-width 140 forces this sentence to wrap" font-family="Roboto" font-size="13"
+              line-height="18" fill="#123" />
+      </col>
+    </row>
+
+    <!-- Percentages resolve against the parent, not the viewport. -->
+    <row w="400" h="60" gap="12" fill="#F4F4F6" p="8">
+      <col min-width="25%" fill="#DDE3FF" />
+      <col max-width="30%" w="fill" fill="#FFE0E3" />
+    </row>
+
+    <!-- A minimum on a flex child competes with `fill`: the row is narrower
+         than the two minimums together, so they cannot both be honoured. -->
+    <row w="260" h="40" gap="8">
+      <col w="fill" min-width="160" fill="#DDE3FF" />
+      <col w="fill" min-width="160" fill="#FFE0E3" />
+    </row>
+
+    <!-- A maximum smaller than a minimum: the spec says nothing, CSS resolves
+         it by letting the minimum win. -->
+    <col w="fill" min-height="50" max-height="20" fill="#E8F8F5" />
+  </col>
+</gui>
