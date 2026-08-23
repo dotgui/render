@@ -423,6 +423,15 @@ fn diff_boxes(root: &Path, input: &Path) -> Result<(), String> {
 }
 
 fn flatten(node: &LayoutBox, depth: usize, out: &mut Vec<Box2D>) {
+    // `<segment>` and `<appearance>` ride in the box tree without geometry, so
+    // the scene builder can reach them — see `read_children`. They are not
+    // boxes and kit has no counterpart for them, so including them made the
+    // two trees different shapes and the diff refused to pair anything at all.
+    // Any document with an `<appearance>` block hit this.
+    if node.tag == "segment" || node.tag == "appearance" {
+        return;
+    }
+
     out.push(Box2D {
         tag: node.tag.clone(),
         depth,
@@ -1094,6 +1103,31 @@ mod tests {
             .map(|item| (item.tag.as_str(), item.depth))
             .collect();
         assert_eq!(seen, vec![("col", 0), ("row", 1), ("text", 2), ("rect", 1)]);
+    }
+
+    #[test]
+    fn flattening_leaves_out_what_is_not_a_box() {
+        // `<segment>` and `<appearance>` ride in the layout tree with no
+        // geometry so the scene builder can reach them. kit has no counterpart
+        // for either, so counting them made the two trees different shapes and
+        // the diff refused to pair anything — on every document carrying an
+        // `<appearance>` block, which is most of the paint-heavy ones.
+        let mut root = leaf("rect", 100.0);
+        let mut appearance = leaf("appearance", 0.0);
+        appearance.children.push(leaf("fill", 0.0));
+        root.children.push(appearance);
+        root.children.push(leaf("segment", 0.0));
+        root.children.push(leaf("text", 20.0));
+
+        let mut flat = Vec::new();
+        flatten(&root, 0, &mut flat);
+
+        let seen: Vec<&str> = flat.iter().map(|item| item.tag.as_str()).collect();
+        assert_eq!(
+            seen,
+            vec!["rect", "text"],
+            "the paint description is not a box, and neither is its contents"
+        );
     }
 
     #[test]
