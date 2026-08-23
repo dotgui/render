@@ -296,7 +296,16 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     ),
     (
         "line",
-        &["w", "h", "x", "y", "fill", "fill-style", "thickness"],
+        &[
+            "w",
+            "h",
+            "x",
+            "y",
+            "fill",
+            "fill-style",
+            "thickness",
+            "direction",
+        ],
     ),
     // `<appearance>` holds child elements rather than attributes. All three
     // stacks are read; gradient and image fills are carried into the scene but
@@ -367,6 +376,7 @@ mod tests {
             ("img", "image-rendering"),
             ("text", "white-space"),
             ("line", "thickness"),
+            ("line", "direction"),
             ("text", "list"),
             ("text", "vertical-align"),
             ("text", "decoration"),

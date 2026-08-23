@@ -48,7 +48,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 
 | Property | Implemented on | Missing on |
 |---|---|---|
-| `direction` | `<stack>` | `<text>`, `<line>` |
+| `direction` | `<stack>`, `<line>` | `<text>` |
 
 ## Implemented
 

@@ -1,5 +1,5 @@
 <gui version="0.2" name="Dividers">
-  <col w="460" h="300" fill="#FFFFFF" p="20" gap="0">
+  <col w="460" fill="#FFFFFF" p="20" gap="0">
     <text value="A rule takes up room" font-size="16" font-weight="700" line-height="24" fill="#111111" />
 
     <!-- Default thickness: one pixel, and the row below starts one lower. -->
@@ -18,12 +18,23 @@
     <line w="fill" h="10" thickness="2" fill="#12A594" />
     <text value="Height beats thickness" font-size="14" line-height="28" fill="#333333" />
 
-    <!-- In a row, a rule keeps its thickness instead of stretching to the
-         tallest sibling. -->
-    <row w="fill" h="60" gap="12" align="middle-left">
+    <!-- In a row, a horizontal rule keeps its thickness instead of stretching
+         to the tallest sibling. -->
+    <row w="fill" h="46" gap="12" align="middle-left">
       <rect w="60" h="40" radius="6" fill="#F5A524" />
       <line w="120" fill="#E5484D" />
       <rect w="60" h="40" radius="6" fill="#0D99FF" />
+    </row>
+
+    <!-- The same rule turned ninety degrees: thin across, and as long as the
+         row is tall. kit sets out to do this too but renders it zero-height,
+         so this is one of the few places the two deliberately differ. -->
+    <row w="fill" h="56" gap="12">
+      <rect w="60" h="56" radius="6" fill="#F5A524" />
+      <line direction="vertical" fill="#E5484D" />
+      <rect w="60" h="56" radius="6" fill="#0D99FF" />
+      <line direction="vertical" thickness="4" fill="#12A594" />
+      <rect w="60" h="56" radius="6" fill="#8E4EC6" />
     </row>
   </col>
 </gui>

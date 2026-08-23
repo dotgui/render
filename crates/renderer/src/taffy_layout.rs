@@ -256,6 +256,11 @@ fn style_for_node(node: &GuiNode, metadata: &GuiMetadata, parent_layout: ParentL
         display: display_for(node, metadata),
         flex_direction: flex_direction_for(node),
         size: size_for(node, metadata),
+        // kit stretches every rule on its cross axis, which is what gives a
+        // horizontal divider the full width of its column and a vertical one
+        // the full height of its row. Without it a rule in a container that
+        // sets `align` hugs to nothing.
+        align_self: (node.tag == "line").then_some(AlignItems::STRETCH),
         min_size: Size {
             width: constraint_attr(node, metadata, "min-width", "min-w"),
             height: constraint_attr(node, metadata, "min-height", "min-h"),
@@ -408,30 +413,48 @@ fn constraint_attr(
 /// The declared box, with `<line>`'s implied thickness filled in.
 ///
 /// The spec calls `<line>` "sugar for a thin frame used as a visual divider",
-/// with `thickness="1"` by default — so a horizontal divider is a box one pixel
-/// tall, and the row below it starts a pixel lower.
+/// with `thickness="1"` by default — so a horizontal divider is a box one
+/// pixel tall, and the row below it starts a pixel lower. A vertical one is
+/// the same rule turned ninety degrees: thickness becomes its width, and its
+/// length comes from the container.
 ///
-/// Leaving the height to hug made it zero, and painting covered for that by
-/// drawing the rule anyway (see `paint_height`). The divider therefore looked
-/// right while occupying no space, so every sibling after one sat a pixel high
-/// and its container came up a pixel short. Comparing against kit is what
-/// surfaced it: three dividers in `novaton-downloads-storage-android` put the
-/// whole document three pixels out.
+/// Leaving that to hug made it zero, and painting covered for it by drawing
+/// the rule anyway. The divider therefore looked right while occupying no
+/// space, so every sibling after one sat a pixel high and its container came
+/// up a pixel short.
 fn size_for(node: &GuiNode, metadata: &GuiMetadata) -> Size<Dimension> {
     let mut size = Size {
         width: dimension_attr(node, metadata, "w"),
         height: dimension_attr(node, metadata, "h"),
     };
 
-    if node.tag == "line" && !node.attributes.contains_key("h") {
-        size.height = length(
+    if node.tag == "line" {
+        let thickness = length(
             number_attr(node, metadata, "thickness")
                 .filter(|thickness| *thickness > 0.0)
                 .unwrap_or(1.0),
         );
+        // Whichever axis the rule is thin on takes the thickness; the other is
+        // left to the container, which stretches it (see `style_for_node`).
+        let (axis, declared) = if is_vertical_line(node, metadata) {
+            (&mut size.width, "w")
+        } else {
+            (&mut size.height, "h")
+        };
+        if !node.attributes.contains_key(declared) {
+            *axis = thickness;
+        }
     }
 
     size
+}
+
+/// Whether a `<line>` runs down rather than across.
+fn is_vertical_line(node: &GuiNode, metadata: &GuiMetadata) -> bool {
+    node.attributes
+        .get("direction")
+        .map(|value| resolve_token(value, metadata))
+        .is_some_and(|value| value.trim() == "vertical")
 }
 
 fn dimension_attr(node: &GuiNode, metadata: &GuiMetadata, name: &str) -> Dimension {
@@ -995,6 +1018,87 @@ mod tests {
 
         assert_eq!(layout.children[0].rect.height, 1.0, "default thickness");
         assert_eq!(layout.children[1].rect.height, 4.0, "declared thickness");
+    }
+
+    #[test]
+    fn a_vertical_divider_takes_its_thickness_across_and_its_length_from_the_row() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <row w="200" h="60">
+                <rect w="40" h="40" />
+                <line direction="vertical" />
+                <line direction="vertical" thickness="4" />
+              </row>
+            </gui>
+            "#,
+        );
+
+        // Thin across, full height down — the horizontal rule turned ninety
+        // degrees, with the row supplying the length.
+        assert_eq!(layout.children[1].rect.width, 1.0, "default thickness");
+        assert_eq!(layout.children[1].rect.height, 60.0, "stretches to the row");
+        assert_eq!(layout.children[2].rect.width, 4.0, "declared thickness");
+        assert_eq!(layout.children[2].rect.height, 60.0);
+    }
+
+    #[test]
+    fn a_vertical_dividers_declared_width_wins_over_thickness() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <row w="200" h="60">
+                <line direction="vertical" w="7" thickness="2" />
+              </row>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.width, 7.0);
+    }
+
+    #[test]
+    fn direction_does_not_change_a_horizontal_divider() {
+        // `horizontal` is the default, so saying it must be a no-op.
+        let sized = |direction: &str| {
+            layout_of(&format!(
+                r#"
+                <gui version="0.2">
+                  <col w="100">
+                    <line {direction} thickness="3" />
+                  </col>
+                </gui>
+                "#
+            ))
+            .children[0]
+                .rect
+        };
+
+        let implied = sized("");
+        let declared = sized(r#"direction="horizontal""#);
+
+        assert_eq!(implied.height, 3.0);
+        assert_eq!(declared.height, implied.height);
+        assert_eq!(declared.width, implied.width);
+    }
+
+    #[test]
+    fn a_divider_stretches_even_when_its_container_aligns_its_children() {
+        // `align` replaces the container's default stretch, which would leave
+        // a rule hugging to nothing. kit sets `align-self: stretch` on every
+        // rule for this reason.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="100" align="top-center">
+                <line thickness="2" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.width, 100.0);
+        assert_eq!(layout.children[0].rect.height, 2.0);
     }
 
     #[test]
