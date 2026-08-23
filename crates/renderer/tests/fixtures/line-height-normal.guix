@@ -1,0 +1,45 @@
+<gui version="0.2" name="Default line height">
+  <!-- Every example package declares a line-height on every <text>, directly
+       or through a <text-style>, so none of them exercise the default at all.
+       This document does: the sizes below name no line-height, so each line
+       box is whatever the face itself asks for. -->
+  <fonts>
+    <font family="Roboto" source="google" weights="400" styles="normal" />
+    <font family="Inter" source="google" weights="400" styles="normal" />
+  </fonts>
+  <col w="520" fill="#FFFFFF" p="20" gap="18">
+    <col w="fill" gap="0">
+      <text value="Roboto 12, no line-height" font-family="Roboto" font-size="12" fill="#111111" />
+      <text value="Roboto 12, no line-height" font-family="Roboto" font-size="12" fill="#111111" />
+      <text value="Roboto 12, no line-height" font-family="Roboto" font-size="12" fill="#111111" />
+    </col>
+
+    <col w="fill" gap="0">
+      <text value="Roboto 16, no line-height" font-family="Roboto" font-size="16" fill="#111111" />
+      <text value="Roboto 16, no line-height" font-family="Roboto" font-size="16" fill="#111111" />
+      <text value="Roboto 16, no line-height" font-family="Roboto" font-size="16" fill="#111111" />
+    </col>
+
+    <!-- A different face asks for different spacing at the same size, which a
+         fixed multiple of the font size cannot express. -->
+    <col w="fill" gap="0">
+      <text value="Inter 16, no line-height" font-family="Inter" font-size="16" fill="#111111" />
+      <text value="Inter 16, no line-height" font-family="Inter" font-size="16" fill="#111111" />
+      <text value="Inter 16, no line-height" font-family="Inter" font-size="16" fill="#111111" />
+    </col>
+
+    <!-- A declared line-height still wins outright. -->
+    <col w="fill" gap="0">
+      <text value="Roboto 16, line-height 30" font-family="Roboto" font-size="16"
+            line-height="30" fill="#333333" />
+      <text value="Roboto 16, line-height 30" font-family="Roboto" font-size="16"
+            line-height="30" fill="#333333" />
+    </col>
+
+    <!-- A resized segment does not inherit its parent's line box. -->
+    <text font-family="Roboto" font-size="14" fill="#111111">
+      <segment value="small then " />
+      <segment value="much larger" font-size="28" />
+    </text>
+  </col>
+</gui>

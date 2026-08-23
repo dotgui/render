@@ -3,8 +3,10 @@ use crate::{
     clip_path::{self, ClipBox},
     filter::apply_filter,
     fonts::FontAxes,
-    gradient, text, AssetCache, Border, BorderWidths, DecorationLine, DecorationStyle, Effect,
-    Fill, FontFace, FontStore, ImageMask, PaintContent, Scene, SceneNode, TextDecoration,
+    gradient,
+    layout::APPROX_LINE_HEIGHT_RATIO,
+    text, AssetCache, Border, BorderWidths, DecorationLine, DecorationStyle, Effect, Fill,
+    FontFace, FontStore, ImageMask, PaintContent, Scene, SceneNode, TextDecoration, TextMeasurer,
     TextSegment, Transform2D,
 };
 use fontdue::{Font, FontSettings};
@@ -1071,7 +1073,17 @@ impl<'a> RunStyle<'a> {
                 .or(node.fill_color())
                 .and_then(|fill| parse_color(fill, draw_opacity(node))),
             font_size: segment.font_size,
-            line_height: segment.line_height,
+            // `normal` becomes the face's own metric here, through the same
+            // trait layout used, so the two agree on the line box.
+            line_height: segment.line_height.unwrap_or_else(|| match fonts {
+                Some(fonts) => fonts.normal_line_height(
+                    segment.font_family.as_deref(),
+                    segment.font_weight.as_deref(),
+                    segment.font_style.as_deref(),
+                    segment.font_size,
+                ),
+                None => segment.font_size * APPROX_LINE_HEIGHT_RATIO,
+            }),
             letter_spacing: segment.letter_spacing,
             axes: FontAxes::from_style(
                 segment.font_stretch.as_deref(),

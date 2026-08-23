@@ -223,3 +223,8 @@ golden_test!(
     "text-decorations.guix",
     "text-decorations"
 );
+golden_test!(
+    golden_line_height_normal,
+    "line-height-normal.guix",
+    "line-height-normal"
+);
