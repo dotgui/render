@@ -1,0 +1,41 @@
+<gui version="0.2" name="Text decorations">
+  <!-- Roboto is declared because skip-ink needs glyph outlines, which only a
+       resolved face provides; the other lines use the default font. -->
+  <fonts><font family="Roboto" source="google" weights="400 700" styles="normal" /></fonts>
+  <col w="520" h="420" fill="#FFFFFF" p="24" gap="14">
+    <text value="Underline, plain" font-size="18" fill="#111111" decoration="underline" />
+    <text value="Strikethrough, plain" font-size="18" fill="#111111" decoration="strikethrough" />
+
+    <!-- decoration-color is independent of the text colour. -->
+    <text value="Underline in another colour" font-size="18" fill="#111111"
+          decoration="underline" decoration-color="#E5484D" />
+
+    <!-- The five stroke styles. -->
+    <text value="Dashed rule" font-size="18" fill="#111111"
+          decoration="underline" decoration-style="dashed" decoration-color="#0D99FF" />
+    <text value="Dotted rule" font-size="18" fill="#111111"
+          decoration="underline" decoration-style="dotted" decoration-color="#12A594" />
+    <text value="Wavy rule, as a spellcheck squiggle" font-size="18" fill="#111111"
+          decoration="underline" decoration-style="wavy" decoration-color="#E5484D" />
+    <text value="Double rule" font-size="18" fill="#111111"
+          decoration="underline" decoration-style="double" decoration-color="#8E4EC6" />
+
+    <!-- Thickness and offset are declared in px. -->
+    <text value="Thick and dropped away from the text" font-size="18" fill="#111111"
+          decoration="underline" decoration-thickness="3" text-underline-offset="6"
+          decoration-color="#F5A524" />
+
+    <!-- skip-ink defaults on: descenders should break the rule. -->
+    <text value="jumpy pages qualify goodly" font-family="Roboto" font-size="20" fill="#111111"
+          decoration="underline" decoration-color="#0D99FF" />
+    <text value="jumpy pages qualify goodly" font-family="Roboto" font-size="20" fill="#111111"
+          decoration="underline" decoration-color="#0D99FF" text-decoration-skip-ink="false" />
+
+    <!-- A rule runs under segments too, and a segment can opt out. -->
+    <text font-size="18" fill="#111111" decoration="underline">
+      <segment value="underlined across " />
+      <segment value="segments" font-weight="700" />
+      <segment value=" except this" decoration="none" />
+    </text>
+  </col>
+</gui>

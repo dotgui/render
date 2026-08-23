@@ -235,6 +235,12 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
             "paragraph-indent",
             "paragraph-spacing",
             "baseline-shift",
+            "decoration",
+            "decoration-color",
+            "decoration-style",
+            "decoration-thickness",
+            "text-underline-offset",
+            "text-decoration-skip-ink",
             "vertical-align",
             "leading-trim",
             "list",
@@ -363,6 +369,10 @@ mod tests {
             ("line", "thickness"),
             ("text", "list"),
             ("text", "vertical-align"),
+            ("text", "decoration"),
+            ("text", "decoration-style"),
+            ("text", "text-underline-offset"),
+            ("text", "text-decoration-skip-ink"),
         ] {
             assert!(
                 is_supported(tag, attribute, true),
@@ -373,7 +383,6 @@ mod tests {
         // And that known gaps stay declared as gaps.
         for (tag, attribute) in [
             ("frame", "border-image"),
-            ("text", "decoration"),
             ("rect", "fill-rule"),
             ("row", "wrap"),
         ] {

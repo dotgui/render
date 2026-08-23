@@ -218,3 +218,8 @@ golden_test!(golden_masks, "masks-clipping.guix", "masks-clipping");
 golden_test!(golden_opacity, "opacity-groups.guix", "opacity-groups");
 golden_test!(golden_transforms, "transforms.guix", "transforms");
 golden_test!(golden_layer_blur, "layer-blur.guix", "layer-blur");
+golden_test!(
+    golden_text_decorations,
+    "text-decorations.guix",
+    "text-decorations"
+);

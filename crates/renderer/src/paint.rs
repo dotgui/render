@@ -3,15 +3,16 @@ use crate::{
     clip_path::{self, ClipBox},
     filter::apply_filter,
     fonts::FontAxes,
-    gradient, text, AssetCache, Border, BorderWidths, Effect, Fill, FontFace, FontStore, ImageMask,
-    PaintContent, Scene, SceneNode, TextSegment, Transform2D,
+    gradient, text, AssetCache, Border, BorderWidths, DecorationLine, DecorationStyle, Effect,
+    Fill, FontFace, FontStore, ImageMask, PaintContent, Scene, SceneNode, TextDecoration,
+    TextSegment, Transform2D,
 };
 use fontdue::{Font, FontSettings};
 use std::{fs, path::Path};
 use thiserror::Error;
 use tiny_skia::{
-    BlendMode, Color, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, PixmapRef, Rect, Stroke,
-    Transform,
+    BlendMode, Color, FillRule, LineCap, Paint, PathBuilder, Pixmap, PixmapPaint, PixmapRef, Rect,
+    Stroke, StrokeDash, Transform,
 };
 use ttf_parser::OutlineBuilder;
 
@@ -1040,6 +1041,8 @@ struct RunStyle<'a> {
     word_spacing: f32,
     /// Pixels this run rides above the line's shared baseline.
     baseline_shift: f32,
+    /// The rule drawn through this run, if any.
+    decoration: Option<TextDecoration>,
 }
 
 impl<'a> RunStyle<'a> {
@@ -1081,6 +1084,140 @@ impl<'a> RunStyle<'a> {
             anti_alias: segment.font_smoothing.as_deref() != Some("none"),
             word_spacing: segment.word_spacing,
             baseline_shift: segment.baseline_shift,
+            decoration: segment.decoration.clone(),
+        }
+    }
+
+    /// Where the rule sits, and how thick, before the document's overrides.
+    ///
+    /// Both come from the face when it declares them: an underline that
+    /// ignores the font sits at the wrong depth for anything but the size it
+    /// was tuned for, and clears descenders differently in every family.
+    fn decoration_metrics(&self, line: DecorationLine) -> (f32, f32) {
+        match (self.face, line) {
+            (Some(face), DecorationLine::Underline) => face.underline_metrics(self.font_size),
+            (Some(face), DecorationLine::Strikethrough) => face.strikeout_metrics(self.font_size),
+            // No face means no metrics; these are the same proportions
+            // `FontFace` falls back to.
+            (None, DecorationLine::Underline) => (self.font_size * 0.1, self.font_size / 14.0),
+            (None, DecorationLine::Strikethrough) => {
+                (self.font_size * 0.72 * 0.5, self.font_size / 14.0)
+            }
+        }
+    }
+
+    fn draw_decoration(
+        &self,
+        pixmap: &mut Pixmap,
+        text: &str,
+        from_x: f32,
+        to_x: f32,
+        baseline: f32,
+    ) {
+        let Some(decoration) = &self.decoration else {
+            return;
+        };
+        let Some(color) = decoration
+            .color
+            .as_deref()
+            .and_then(|value| parse_color(value, 1.0))
+            .or(self.color)
+        else {
+            return;
+        };
+        if to_x <= from_x {
+            return;
+        }
+
+        let (offset, natural_thickness) = self.decoration_metrics(decoration.line);
+        let thickness = decoration.thickness.unwrap_or(natural_thickness).max(0.5);
+        // `text-underline-offset` moves an underline only; a strikethrough is
+        // placed from the font's own strikeout position.
+        let y = match decoration.line {
+            DecorationLine::Underline => baseline + decoration.offset.unwrap_or(offset),
+            DecorationLine::Strikethrough => baseline - offset,
+        };
+
+        let gaps = if decoration.skip_ink && decoration.line == DecorationLine::Underline {
+            self.ink_crossings(text, from_x, baseline, y, thickness)
+        } else {
+            Vec::new()
+        };
+
+        for (start, end) in spans_outside(from_x, to_x, &gaps) {
+            self.stroke_decoration(
+                pixmap,
+                decoration,
+                Rule {
+                    from_x: start,
+                    to_x: end,
+                    y,
+                    thickness,
+                    color,
+                },
+            );
+        }
+    }
+
+    fn stroke_decoration(&self, pixmap: &mut Pixmap, decoration: &TextDecoration, rule: Rule) {
+        let Rule {
+            from_x,
+            to_x,
+            y,
+            thickness,
+            color,
+        } = rule;
+        let mut paint = Paint {
+            anti_alias: self.anti_alias,
+            ..Default::default()
+        };
+        paint.set_color(color);
+
+        // A solid rule is a filled rectangle rather than a stroked line: at
+        // one physical pixel a stroke straddles the row and comes out grey.
+        if decoration.style == DecorationStyle::Solid {
+            fill_rule_rect(pixmap, &paint, from_x, y, to_x - from_x, thickness);
+            return;
+        }
+        if decoration.style == DecorationStyle::Double {
+            // CSS draws two rules of the declared thickness, one gap apart.
+            let gap = thickness.max(1.0);
+            fill_rule_rect(pixmap, &paint, from_x, y, to_x - from_x, thickness);
+            fill_rule_rect(
+                pixmap,
+                &paint,
+                from_x,
+                y + thickness + gap,
+                to_x - from_x,
+                thickness,
+            );
+            return;
+        }
+
+        let mut stroke = Stroke {
+            width: thickness,
+            line_cap: LineCap::Butt,
+            ..Default::default()
+        };
+        let path = match decoration.style {
+            DecorationStyle::Wavy => wavy_path(from_x, to_x, y, thickness),
+            _ => {
+                stroke.dash = match decoration.style {
+                    // Dots are round, and spaced by their own diameter.
+                    DecorationStyle::Dotted => {
+                        stroke.line_cap = LineCap::Round;
+                        StrokeDash::new(vec![0.01, thickness * 2.0], 0.0)
+                    }
+                    _ => StrokeDash::new(vec![thickness * 3.0, thickness * 2.0], 0.0),
+                };
+                let mut builder = PathBuilder::new();
+                builder.move_to(from_x, y + thickness / 2.0);
+                builder.line_to(to_x, y + thickness / 2.0);
+                builder.finish()
+            }
+        };
+        if let Some(path) = path {
+            pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
         }
     }
 
@@ -1333,12 +1470,12 @@ fn paint_text(
             let style = &styles[run.style];
             // A shifted run rides above the line's shared baseline without
             // moving anything else on it.
-            styles[run.style].draw(
-                pixmap,
-                &run.text,
-                &mut cursor_x,
-                baseline - style.baseline_shift,
-            );
+            let run_baseline = baseline - style.baseline_shift;
+            let run_start = cursor_x;
+            styles[run.style].draw(pixmap, &run.text, &mut cursor_x, run_baseline);
+            // Drawn after the glyphs, so a rule that overlaps them sits on
+            // top the way an underline does in every other engine.
+            style.draw_decoration(pixmap, &run.text, run_start, cursor_x, run_baseline);
         }
 
         line_top += line_height - trim;
@@ -1358,6 +1495,196 @@ fn load_default_font() -> Option<Font> {
         let bytes = fs::read(path).ok()?;
         Font::from_bytes(bytes, FontSettings::default()).ok()
     })
+}
+
+/// One span of a decoration: where it runs, how thick, and in what colour.
+///
+/// `skip-ink` turns a single decoration into several of these, so the geometry
+/// travels together rather than as five parallel arguments.
+#[derive(Clone, Copy)]
+struct Rule {
+    from_x: f32,
+    to_x: f32,
+    y: f32,
+    thickness: f32,
+    color: Color,
+}
+
+/// Fills the rule's rectangle, clipped to the pixmap.
+fn fill_rule_rect(pixmap: &mut Pixmap, paint: &Paint<'_>, x: f32, y: f32, width: f32, height: f32) {
+    if let Some(rect) = Rect::from_xywh(x, y, width, height.max(0.5)) {
+        pixmap.fill_rect(rect, paint, Transform::identity(), None);
+    }
+}
+
+/// A sine wave along the rule, for `decoration-style="wavy"`.
+///
+/// The amplitude and period follow the thickness so the wave keeps its shape
+/// as the text grows, rather than flattening out at larger sizes.
+fn wavy_path(from_x: f32, to_x: f32, y: f32, thickness: f32) -> Option<tiny_skia::Path> {
+    let amplitude = thickness * 1.5;
+    let period = thickness * 6.0;
+    let middle = y + thickness / 2.0;
+
+    let mut builder = PathBuilder::new();
+    builder.move_to(from_x, middle);
+    // Quarter-period steps, which is dense enough that the line reads as a
+    // curve without building a path per pixel.
+    let step = (period / 4.0).max(0.5);
+    let mut x = from_x;
+    while x < to_x {
+        let next = (x + step).min(to_x);
+        let phase = (next - from_x) / period * std::f32::consts::TAU;
+        builder.line_to(next, middle + phase.sin() * amplitude);
+        x = next;
+    }
+    builder.finish()
+}
+
+/// The spans of `from_x..to_x` left over once `gaps` are removed.
+///
+/// Gaps arrive in ascending order and may overlap; the rule is drawn in
+/// whatever is left, which is what `skip-ink` amounts to.
+fn spans_outside(from_x: f32, to_x: f32, gaps: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    let mut spans = Vec::new();
+    let mut cursor = from_x;
+    for &(start, end) in gaps {
+        if start > cursor {
+            spans.push((cursor, start.min(to_x)));
+        }
+        cursor = cursor.max(end);
+        if cursor >= to_x {
+            return spans;
+        }
+    }
+    if cursor < to_x {
+        spans.push((cursor, to_x));
+    }
+    spans
+}
+
+/// Collects the horizontal ranges where glyphs cross the underline.
+///
+/// This is the part `skip-ink` needs that kit could not do: it wants the
+/// glyph's shape, not its box. A `y` that dips into a descender has to break
+/// the rule; the same `y` under an `x` must not.
+///
+/// The outline is walked and every segment that spans the rule's band
+/// contributes the x range it crosses, widened slightly so the rule clears the
+/// stroke rather than touching it.
+impl RunStyle<'_> {
+    /// Takes the baseline and the rule's own row, both in pixmap coordinates,
+    /// and converts to the baseline-relative frame itself.
+    ///
+    /// It does the subtraction rather than trusting the caller because getting
+    /// that one step wrong is silent: the band never meets the outline, no
+    /// crossing is ever found, and `skip-ink` simply does nothing.
+    fn ink_crossings(
+        &self,
+        text: &str,
+        from_x: f32,
+        baseline: f32,
+        rule_y: f32,
+        thickness: f32,
+    ) -> Vec<(f32, f32)> {
+        let below_baseline = rule_y - baseline;
+        let Some(face) = self.face else {
+            return Vec::new();
+        };
+        let Some(ttf_face) = face.variable_face(self.axes) else {
+            return Vec::new();
+        };
+
+        let scale = self.font_size / ttf_face.units_per_em() as f32;
+        let top = below_baseline - thickness * 0.5;
+        let bottom = below_baseline + thickness * 1.5;
+        let clearance = thickness.max(1.0);
+
+        let mut gaps: Vec<(f32, f32)> = Vec::new();
+        let mut cursor = from_x;
+        for ch in text.chars() {
+            if let Some(glyph) = ttf_face.glyph_index(ch) {
+                let mut probe = InkProbe::new(cursor, scale, top, bottom);
+                ttf_face.outline_glyph(glyph, &mut probe);
+                if let Some((start, end)) = probe.crossing {
+                    gaps.push((start - clearance, end + clearance));
+                }
+                cursor += ttf_face
+                    .glyph_hor_advance(glyph)
+                    .map(|advance| advance as f32 * scale)
+                    .unwrap_or_else(|| face.fallback().metrics(ch, self.font_size).advance_width)
+                    + self.letter_spacing
+                    + self.space_advance(ch);
+            } else {
+                cursor += face.fallback().metrics(ch, self.font_size).advance_width
+                    + self.letter_spacing
+                    + self.space_advance(ch);
+            }
+        }
+
+        gaps.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        gaps
+    }
+}
+
+/// Finds where one glyph's outline enters the underline's band.
+///
+/// Outline coordinates are in font units with y running up, so the band is
+/// converted per point rather than the other way round. Curve control points
+/// are treated as on-curve: a control point outside the band cannot pull the
+/// curve far enough in to matter at underline thickness, and this keeps the
+/// probe to one pass with no flattening.
+struct InkProbe {
+    origin_x: f32,
+    scale: f32,
+    top: f32,
+    bottom: f32,
+    crossing: Option<(f32, f32)>,
+}
+
+impl InkProbe {
+    fn new(origin_x: f32, scale: f32, top: f32, bottom: f32) -> Self {
+        Self {
+            origin_x,
+            scale,
+            top,
+            bottom,
+            crossing: None,
+        }
+    }
+
+    /// `y` here is a baseline-relative distance downward, matching `top` and
+    /// `bottom`, which are measured from the same baseline.
+    fn visit(&mut self, x: f32, y: f32) {
+        let px = self.origin_x + x * self.scale;
+        let py = -y * self.scale;
+        if py < self.top || py > self.bottom {
+            return;
+        }
+        self.crossing = Some(match self.crossing {
+            None => (px, px),
+            Some((start, end)) => (start.min(px), end.max(px)),
+        });
+    }
+}
+
+impl OutlineBuilder for InkProbe {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.visit(x, y);
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.visit(x, y);
+    }
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        self.visit(x1, y1);
+        self.visit(x, y);
+    }
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        self.visit(x1, y1);
+        self.visit(x2, y2);
+        self.visit(x, y);
+    }
+    fn close(&mut self) {}
 }
 
 fn fontdue_baseline_offset(font: &Font, font_size: f32, line_height: f32) -> f32 {
@@ -3330,6 +3657,158 @@ mod tests {
             hard < smoothed / 4,
             "smoothing off should all but remove them: {hard} vs {smoothed}"
         );
+    }
+
+    /// Rows holding a pixel of `color`, anywhere across the width.
+    fn coloured_rows(img: &image::RgbaImage, color: [u8; 3], height: u32) -> Vec<u32> {
+        (0..height)
+            .filter(|y| {
+                (0..img.width()).any(|x| {
+                    let px = img.get_pixel(x, *y).0;
+                    px[0].abs_diff(color[0]) < 40
+                        && px[1].abs_diff(color[1]) < 40
+                        && px[2].abs_diff(color[2]) < 40
+                })
+            })
+            .collect()
+    }
+
+    fn decorated(attrs: &str) -> image::RgbaImage {
+        render(&format!(
+            r##"
+            <gui version="0.2">
+              <col w="200" h="60" fill="#ffffff" p="8">
+                <text value="Handgloves" font-size="20" fill="#000000" {attrs} />
+              </col>
+            </gui>
+            "##
+        ))
+    }
+
+    #[test]
+    fn a_decoration_is_only_drawn_when_one_is_asked_for() {
+        // Guards against the rule appearing on every `<text>` in the corpus.
+        assert!(
+            coloured_rows(&decorated(""), [229, 72, 77], 60).is_empty(),
+            "no decoration attribute, so nothing coloured is drawn"
+        );
+    }
+
+    #[test]
+    fn an_underline_sits_below_the_text_and_a_strikethrough_through_it() {
+        let red = [229, 72, 77];
+        let under = coloured_rows(
+            &decorated(r##"decoration="underline" decoration-color="#E5484D""##),
+            red,
+            60,
+        );
+        let through = coloured_rows(
+            &decorated(r##"decoration="strikethrough" decoration-color="#E5484D""##),
+            red,
+            60,
+        );
+
+        assert!(!under.is_empty(), "underline draws");
+        assert!(!through.is_empty(), "strikethrough draws");
+        assert!(
+            through[0] < under[0],
+            "a strikethrough crosses the glyphs, an underline sits under them: \
+             strikethrough at {through:?}, underline at {under:?}"
+        );
+    }
+
+    #[test]
+    fn thickness_and_offset_are_read_in_pixels() {
+        let red = [229, 72, 77];
+        let rows = |attrs: &str| coloured_rows(&decorated(attrs), red, 60);
+
+        let thin =
+            rows(r##"decoration="underline" decoration-color="#E5484D" decoration-thickness="2""##);
+        let thick =
+            rows(r##"decoration="underline" decoration-color="#E5484D" decoration-thickness="6""##);
+        let near = rows(
+            r##"decoration="underline" decoration-color="#E5484D" text-underline-offset="1""##,
+        );
+        let far = rows(
+            r##"decoration="underline" decoration-color="#E5484D" text-underline-offset="10""##,
+        );
+
+        // Compared against each other rather than against exact counts: the
+        // rule lands on a fractional row, so its outermost pixel is partly
+        // covered and whether it reads as coloured is an antialiasing detail.
+        assert!(
+            thick.len() >= thin.len() + 3,
+            "a 6px rule covers more rows than a 2px one: {thin:?} vs {thick:?}"
+        );
+        assert!(
+            far[0] >= near[0] + 8,
+            "offset 10 sits about nine pixels below offset 1: {near:?} vs {far:?}"
+        );
+    }
+
+    #[test]
+    fn a_double_rule_is_two_rules() {
+        let rows = coloured_rows(
+            &decorated(
+                r##"decoration="underline" decoration-color="#E5484D" decoration-style="double""##,
+            ),
+            [229, 72, 77],
+            60,
+        );
+        // Two bands with a gap, rather than one thicker band.
+        let gaps = rows.windows(2).filter(|pair| pair[1] - pair[0] > 1).count();
+        assert_eq!(gaps, 1, "expected two separated rules, rows {rows:?}");
+    }
+
+    #[test]
+    fn a_decoration_falls_back_to_the_texts_own_colour() {
+        // No `decoration-color`, so the rule is drawn in the text's own fill.
+        // Counted rather than located: the point is that a rule appeared, in
+        // a colour the plain render does not have more of.
+        let ink = |img: &image::RgbaImage| {
+            (0..img.height())
+                .flat_map(|y| (0..img.width()).map(move |x| (x, y)))
+                .filter(|(x, y)| img.get_pixel(*x, *y).0[0] < 128)
+                .count()
+        };
+
+        let plain = ink(&decorated(""));
+        let underlined = ink(&decorated(r##"decoration="underline""##));
+
+        assert!(
+            underlined > plain,
+            "the rule adds black pixels: {plain} plain, {underlined} underlined"
+        );
+    }
+
+    #[test]
+    fn spans_outside_removes_the_gaps() {
+        assert_eq!(spans_outside(0.0, 10.0, &[]), vec![(0.0, 10.0)]);
+        assert_eq!(
+            spans_outside(0.0, 10.0, &[(3.0, 5.0)]),
+            vec![(0.0, 3.0), (5.0, 10.0)]
+        );
+        // Overlapping gaps merge rather than producing a backwards span.
+        assert_eq!(
+            spans_outside(0.0, 10.0, &[(2.0, 6.0), (4.0, 8.0)]),
+            vec![(0.0, 2.0), (8.0, 10.0)]
+        );
+        // A gap covering everything leaves nothing to draw.
+        assert!(spans_outside(0.0, 10.0, &[(0.0, 12.0)]).is_empty());
+    }
+
+    #[test]
+    fn the_ink_probe_only_notices_points_inside_the_rule() {
+        // Outline y runs up from the baseline, the band runs down, so a
+        // descender at y=-40 lands 40 units below. Getting this backwards is
+        // what made skip-ink silently do nothing.
+        let mut probe = InkProbe::new(0.0, 1.0, 30.0, 50.0);
+        probe.visit(5.0, -40.0);
+        assert_eq!(probe.crossing, Some((5.0, 5.0)), "descender crosses");
+
+        let mut probe = InkProbe::new(0.0, 1.0, 30.0, 50.0);
+        probe.visit(5.0, 40.0);
+        assert_eq!(probe.crossing, None, "an ascender is nowhere near it");
     }
 
     #[test]

@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **91** |
+| Implemented | **97** |
 | Partial | **1** |
-| Not implemented | **28** |
+| Not implemented | **22** |
 | Total | **120** |
 
 ## Not implemented
@@ -27,10 +27,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `col-gap` | `<grid>` |
 | `constraint-h` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `constraint-v` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `decoration` | `<text>` |
-| `decoration-color` | `<text>` |
-| `decoration-style` | `<text>` |
-| `decoration-thickness` | `<text>` |
 | `fill-rule` | `<rect>`, `<ellipse>` |
 | `font-feature` | `<text>` |
 | `font-postscript` | `<text>` |
@@ -40,10 +36,8 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `reverse-z` | `<stack>`, `<row>`, `<col>` |
 | `row-gap` | `<grid>` |
 | `text-case` | `<text>` |
-| `text-decoration-skip-ink` | `<text>` |
 | `text-rendering` | `<text>` |
 | `text-resize` | `<text>` |
-| `text-underline-offset` | `<text>` |
 | `visible` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `wrap` | `<stack>`, `<row>`, `<col>` |
 | `writing-mode` | `<text>` |
@@ -73,6 +67,10 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `clip-path` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `columns` | `<grid>` |
 | `corner-smoothing` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>` |
+| `decoration` | `<text>` |
+| `decoration-color` | `<text>` |
+| `decoration-style` | `<text>` |
+| `decoration-thickness` | `<text>` |
 | `effect-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<rect>`, `<ellipse>` |
 | `fill` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
 | `fill-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
@@ -137,7 +135,9 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `skew-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `skew-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `src` | `<img>` |
+| `text-decoration-skip-ink` | `<text>` |
 | `text-style` | `<text>` |
+| `text-underline-offset` | `<text>` |
 | `text-wrap` | `<text>` |
 | `thickness` | `<line>` |
 | `transform-origin` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |

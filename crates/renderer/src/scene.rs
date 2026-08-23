@@ -1,5 +1,5 @@
 use crate::{
-    text_style::{resolve_text_runs, resolve_token},
+    text_style::{resolve_text_runs, resolve_token, TextDecoration},
     GuiDocument, GuiMetadata, LayoutBox, LayoutRect,
 };
 use serde::{Deserialize, Serialize};
@@ -233,6 +233,8 @@ pub struct TextSegment {
     pub word_spacing: f32,
     /// Pixels this run's baseline moves up, from `baseline-shift`.
     pub baseline_shift: f32,
+    /// The rule drawn through this run, if any.
+    pub decoration: Option<TextDecoration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -844,6 +846,7 @@ fn content_for(layout: &LayoutBox, metadata: &GuiMetadata, ordinal: usize) -> Pa
                     font_smoothing: run.style.font_smoothing,
                     word_spacing: run.style.word_spacing,
                     baseline_shift: run.style.baseline_shift,
+                    decoration: run.style.decoration,
                 })
                 .collect();
 
@@ -1036,6 +1039,7 @@ mod tests {
                     font_optical_sizing: None,
                     font_smoothing: None,
                     word_spacing: 0.0,
+                    decoration: None,
                     baseline_shift: 0.0,
                 }],
                 max_lines: None,
@@ -1100,6 +1104,7 @@ mod tests {
                     font_optical_sizing: None,
                     font_smoothing: None,
                     word_spacing: 0.0,
+                    decoration: None,
                     baseline_shift: 0.0,
                 }],
                 max_lines: None,
@@ -1152,6 +1157,7 @@ mod tests {
                     font_optical_sizing: None,
                     font_smoothing: None,
                     word_spacing: 0.0,
+                    decoration: None,
                     baseline_shift: 0.0,
                 }],
                 max_lines: Some(1),

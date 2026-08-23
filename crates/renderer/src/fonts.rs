@@ -138,6 +138,50 @@ impl FontFace {
             .unwrap_or(font_size * crate::layout::CAP_HEIGHT_RATIO)
     }
 
+    /// Where an underline sits and how thick it is, at this size.
+    ///
+    /// Returned as (distance below the baseline, thickness). A face declares
+    /// both in its `post` table; the fallbacks are the proportions CSS engines
+    /// use when it does not, which is roughly a tenth of the size down and a
+    /// fourteenth thick.
+    pub fn underline_metrics(&self, font_size: f32) -> (f32, f32) {
+        Face::parse(&self.bytes, self.collection_index)
+            .ok()
+            .and_then(|face| {
+                let units = face.units_per_em() as f32;
+                face.underline_metrics().map(|metrics| {
+                    // `position` is measured up from the baseline, so an
+                    // underline's is negative; the caller wants a distance
+                    // down.
+                    (
+                        -(metrics.position as f32) / units * font_size,
+                        (metrics.thickness as f32) / units * font_size,
+                    )
+                })
+            })
+            .unwrap_or((font_size * 0.1, font_size / 14.0))
+    }
+
+    /// Where a strikethrough sits and how thick it is, at this size.
+    ///
+    /// Returned as (distance above the baseline, thickness). Faces declare
+    /// this in `OS/2`; without it the rule goes half way up the cap height,
+    /// which is about where it reads as crossing the middle of the text.
+    pub fn strikeout_metrics(&self, font_size: f32) -> (f32, f32) {
+        Face::parse(&self.bytes, self.collection_index)
+            .ok()
+            .and_then(|face| {
+                let units = face.units_per_em() as f32;
+                face.strikeout_metrics().map(|metrics| {
+                    (
+                        (metrics.position as f32) / units * font_size,
+                        (metrics.thickness as f32) / units * font_size,
+                    )
+                })
+            })
+            .unwrap_or((self.cap_height(font_size) * 0.5, font_size / 14.0))
+    }
+
     /// How far the line box's top edge sits above the cap height.
     ///
     /// `leading-trim` removes exactly this, which puts the top of a capital on
