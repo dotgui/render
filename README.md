@@ -369,12 +369,16 @@ inherited: a nested run would otherwise double its parent's shift.
 already drives `wght`. CSS's keywords are exact percentages — `condensed` is
 75%, `expanded` is 125% — so a keyword and its percentage are the same request.
 
-`font-optical-sizing="auto"` drives the `opsz` axis from the font size;
-`"none"` leaves it alone. **Absent is not `auto` here.** CSS defaults it to
-`auto`, so a browser — and therefore kit — optically sizes every face that has
-the axis. Matching that changes the metrics of existing documents and reflows
-their text, so it is a deliberate fidelity change rather than a side effect of
-reading a new attribute, and is tracked separately.
+`font-optical-sizing` drives the `opsz` axis from the font size. It defaults
+to `auto`, as in CSS, so a face carrying the axis is optically sized unless a
+document says `"none"`.
+
+Only variable faces with the axis are affected, which is narrower than it
+sounds: every Google family in the corpus resolves to a static instance with no
+axes at all, so this reaches the `SF Pro` system fonts and nothing else. It is
+still worth having right — turning it on is what closed `harbor`'s 17px
+disagreement with kit, since a browser has been optically sizing that text all
+along.
 
 `font-smoothing="none"` draws glyphs without antialiasing. `antialiased` and
 `subpixel-antialiased` are both the grayscale antialiasing already used;
