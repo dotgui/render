@@ -138,6 +138,34 @@ impl FontFace {
             .unwrap_or(font_size * crate::layout::CAP_HEIGHT_RATIO)
     }
 
+    /// The line height the face itself asks for, at this size.
+    ///
+    /// This is CSS `line-height: normal`. The CSS specification deliberately
+    /// leaves the exact value to the user agent — it asks only that the font's
+    /// own metrics decide — so there is no arithmetic that is *correct* here,
+    /// only the one the reference renderer uses. kit renders in a browser, so
+    /// this reproduces Blink's: the ascent and the descent are each rounded to
+    /// whole pixels before being added, which is why a browser's line boxes
+    /// come out at integer heights.
+    ///
+    /// The rounding is not incidental. Measured against kit over three faces
+    /// at four sizes, adding first and rounding after matches 9 of 12; so does
+    /// rounding up. Rounding the parts separately matches all 12.
+    ///
+    /// A fixed multiple, which is what this renderer used before, cannot track
+    /// any of it: 1.2 is 0.2px per line out on Roboto and 1.8px per line out
+    /// on Geist, in opposite directions.
+    pub fn normal_line_height(&self, font_size: f32) -> Option<f32> {
+        let face = Face::parse(&self.bytes, self.collection_index).ok()?;
+        Some(normal_line_height_from_metrics(
+            face.ascender(),
+            face.descender(),
+            face.line_gap(),
+            face.units_per_em() as f32,
+            font_size,
+        ))
+    }
+
     /// Where an underline sits and how thick it is, at this size.
     ///
     /// Returned as (distance below the baseline, thickness). A face declares
@@ -382,6 +410,21 @@ impl FontStore {
 }
 
 impl TextMeasurer for FontStore {
+    /// The declared face's own metric, or the estimate when it did not
+    /// resolve — the same number `ApproxTextMeasurer` would have given, so a
+    /// missing font degrades to the old behaviour rather than to zero.
+    fn normal_line_height(
+        &self,
+        font_family: Option<&str>,
+        font_weight: Option<&str>,
+        font_style: Option<&str>,
+        font_size: f32,
+    ) -> f32 {
+        self.get(font_family, font_weight, font_style)
+            .and_then(|face| face.normal_line_height(font_size))
+            .unwrap_or(font_size * crate::layout::APPROX_LINE_HEIGHT_RATIO)
+    }
+
     fn text_width(
         &self,
         value: &str,
@@ -837,8 +880,85 @@ fn choose_system_face<'a>(
     })
 }
 
+/// `line-height: normal` from a face's vertical metrics.
+///
+/// Split out from [`FontFace::normal_line_height`] so the arithmetic can be
+/// tested without a font file. That matters more than usual here: the layout
+/// snapshots measure through `ApproxTextMeasurer` and never see this, and the
+/// goldens that would are a local tool, so without this the rule would ship
+/// with nothing checking it on a build machine.
+///
+/// Each part is rounded before being summed. See [`FontFace::normal_line_height`].
+pub(crate) fn normal_line_height_from_metrics(
+    ascender: i16,
+    descender: i16,
+    line_gap: i16,
+    units_per_em: f32,
+    font_size: f32,
+) -> f32 {
+    let scale = |value: i16| (value as f32 / units_per_em * font_size).round();
+    scale(ascender) - scale(descender) + scale(line_gap)
+}
+
 #[cfg(test)]
 mod tests {
+    /// `normal` reproduces the reference renderer, measured rather than assumed.
+    ///
+    /// Every row is a line height read out of kit in a headless Chromium: a
+    /// block of ten lines at `line-height: normal`, divided by ten. CSS leaves
+    /// the exact value to the user agent, so this table *is* the
+    /// specification for this renderer — there is nothing else to check
+    /// against.
+    ///
+    /// Adding the metrics and rounding once matches nine of these twelve, and
+    /// so does rounding up; rounding each part first matches all twelve.
+    #[test]
+    fn normal_line_height_matches_the_reference_renderer() {
+        // family, (ascender, descender, line_gap, units_per_em)
+        let faces = [
+            ("Roboto", (1900_i16, -500_i16, 0_i16, 2048.0_f32)),
+            ("Inter", (1984, -494, 0, 2048.0)),
+            ("Geist", (1005, -295, 0, 1000.0)),
+        ];
+        // family, size, line height kit produced
+        let measured = [
+            ("Roboto", 12.0, 14.0),
+            ("Roboto", 16.0, 19.0),
+            ("Roboto", 20.0, 24.0),
+            ("Roboto", 32.0, 38.0),
+            ("Inter", 12.0, 15.0),
+            ("Inter", 16.0, 20.0),
+            ("Inter", 20.0, 24.0),
+            ("Inter", 32.0, 39.0),
+            ("Geist", 12.0, 16.0),
+            ("Geist", 16.0, 21.0),
+            ("Geist", 20.0, 26.0),
+            ("Geist", 32.0, 41.0),
+        ];
+
+        for (family, size, want) in measured {
+            let (ascender, descender, line_gap, units) = faces
+                .iter()
+                .find(|(name, _)| *name == family)
+                .expect("a face for every measured row")
+                .1;
+            let got =
+                super::normal_line_height_from_metrics(ascender, descender, line_gap, units, size);
+            assert_eq!(got, want, "{family} at {size}px");
+        }
+    }
+
+    /// The old behaviour, and why it could not be kept.
+    #[test]
+    fn a_fixed_ratio_cannot_track_the_face() {
+        let roboto = super::normal_line_height_from_metrics(1900, -500, 0, 2048.0, 16.0);
+        let geist = super::normal_line_height_from_metrics(1005, -295, 0, 1000.0, 16.0);
+
+        // 1.2 * 16 = 19.2 sits between them, wrong in both directions.
+        assert_eq!(roboto, 19.0);
+        assert_eq!(geist, 21.0);
+    }
+
     use super::*;
 
     #[test]

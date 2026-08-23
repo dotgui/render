@@ -104,7 +104,10 @@ pub(crate) struct TextStyle {
     pub font_weight: Option<String>,
     pub font_style: Option<String>,
     pub font_size: f32,
-    pub line_height: f32,
+    /// `line-height` as declared. `None` is CSS `normal`: the face's own
+    /// metric, which only a [`TextMeasurer`](crate::TextMeasurer) can supply,
+    /// so it stays unresolved until layout or painting asks.
+    pub line_height: Option<f32>,
     pub letter_spacing: f32,
     pub color: Option<String>,
     /// `font-stretch`, as a CSS keyword or a percentage.
@@ -120,6 +123,25 @@ pub(crate) struct TextStyle {
     pub decoration: Option<TextDecoration>,
 }
 
+impl TextStyle {
+    /// The line height to lay this run out at.
+    ///
+    /// A declared `line-height` wins; otherwise the measurer supplies the
+    /// face's own. Layout and painting both come through here so they cannot
+    /// resolve `normal` to two different numbers and size a box to a height
+    /// they then draw at another.
+    pub(crate) fn resolved_line_height(&self, measurer: &dyn crate::TextMeasurer) -> f32 {
+        self.line_height.unwrap_or_else(|| {
+            measurer.normal_line_height(
+                self.font_family.as_deref(),
+                self.font_weight.as_deref(),
+                self.font_style.as_deref(),
+                self.font_size,
+            )
+        })
+    }
+}
+
 /// One styled run of a `<text>` node.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TextRunStyle {
@@ -128,9 +150,6 @@ pub(crate) struct TextRunStyle {
 }
 
 const DEFAULT_FONT_SIZE: f32 = 16.0;
-
-/// Line height when none is declared, as a multiple of the font size.
-const DEFAULT_LINE_HEIGHT_RATIO: f32 = 1.2;
 
 /// Resolves the style of a `<text>` node itself.
 pub(crate) fn resolve_text_style<S: TextSource>(node: &S, metadata: &GuiMetadata) -> TextStyle {
@@ -143,8 +162,7 @@ pub(crate) fn resolve_text_style<S: TextSource>(node: &S, metadata: &GuiMetadata
         font_weight: style_value(node, metadata, "font-weight"),
         font_style: style_value(node, metadata, "font-style"),
         font_size,
-        line_height: style_number(node, metadata, "line-height")
-            .unwrap_or(font_size * DEFAULT_LINE_HEIGHT_RATIO),
+        line_height: style_number(node, metadata, "line-height"),
         letter_spacing: style_number(node, metadata, "letter-spacing").unwrap_or(0.0),
         color: node
             .attributes()
@@ -261,13 +279,14 @@ fn inherit_style<S: TextSource>(node: &S, metadata: &GuiMetadata, parent: &TextS
         .unwrap_or(parent.font_size);
 
     // A segment that changes size but not line height gets a line height
-    // derived from its own size, so a larger run is not clipped.
+    // derived from its own size, so a larger run is not clipped. `None` means
+    // the face decides, which already scales with the size.
     let inherited_line_height = if font_size == parent.font_size {
         parent.line_height
     } else {
-        font_size * DEFAULT_LINE_HEIGHT_RATIO
+        None
     };
-    let line_height = style_number(node, metadata, "line-height").unwrap_or(inherited_line_height);
+    let line_height = style_number(node, metadata, "line-height").or(inherited_line_height);
 
     TextStyle {
         font_family: style_value(node, metadata, "font-family")
@@ -467,8 +486,20 @@ mod tests {
         );
 
         let runs = resolve_text_runs(&node, &metadata);
-        assert_eq!(runs[0].style.line_height, 12.0);
-        assert_eq!(runs[1].style.line_height, 36.0);
+
+        // The declared 12 belongs to the run that declared it. The resized
+        // segment does not inherit it — it falls back to `normal`, which
+        // scales with its own size instead of being clipped by its parent's.
+        assert_eq!(runs[0].style.line_height, Some(12.0));
+        assert_eq!(runs[1].style.line_height, None);
+
+        let measurer = crate::ApproxTextMeasurer;
+        assert_eq!(runs[0].style.resolved_line_height(&measurer), 12.0);
+        assert_eq!(
+            runs[1].style.resolved_line_height(&measurer),
+            36.0,
+            "the 30px segment reserves room for 30px of text"
+        );
     }
 
     #[test]

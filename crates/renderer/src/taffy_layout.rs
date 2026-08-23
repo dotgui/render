@@ -679,9 +679,13 @@ fn measure_text(
         .iter()
         .map(|line| {
             line.iter()
-                .map(|run| context.runs[run.style].style.line_height)
+                .map(|run| {
+                    context.runs[run.style]
+                        .style
+                        .resolved_line_height(text_measurer)
+                })
                 .fold(0.0_f32, f32::max)
-                .max(context.runs[0].style.line_height)
+                .max(context.runs[0].style.resolved_line_height(text_measurer))
         })
         .sum();
 
@@ -694,7 +698,7 @@ fn measure_text(
             style.font_weight.as_deref(),
             style.font_style.as_deref(),
             style.font_size,
-            style.line_height,
+            style.resolved_line_height(text_measurer),
         )
     } else {
         0.0

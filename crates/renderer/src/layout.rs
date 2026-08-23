@@ -51,6 +51,19 @@ pub trait TextMeasurer {
     /// This is one number rather than the ascender and cap height separately,
     /// so layout and painting cannot combine the same parts differently and
     /// size a box to an edge they then draw to somewhere else.
+    /// The line height to use when a `<text>` declares none.
+    ///
+    /// On the trait for the same reason as [`Self::leading_trim`]: layout and
+    /// painting must reach the same number, and the only way to guarantee
+    /// that is to make them call the same one.
+    fn normal_line_height(
+        &self,
+        font_family: Option<&str>,
+        font_weight: Option<&str>,
+        font_style: Option<&str>,
+        font_size: f32,
+    ) -> f32;
+
     fn leading_trim(
         &self,
         font_family: Option<&str>,
@@ -61,6 +74,9 @@ pub trait TextMeasurer {
     ) -> f32;
 }
 
+/// Stand-in line height for [`ApproxTextMeasurer`], which has no font to ask.
+pub(crate) const APPROX_LINE_HEIGHT_RATIO: f32 = 1.2;
+
 /// Estimates width as a fixed fraction of the font size per character.
 ///
 /// Good enough for structural tests; it will not match painted output.
@@ -68,6 +84,21 @@ pub trait TextMeasurer {
 pub struct ApproxTextMeasurer;
 
 impl TextMeasurer for ApproxTextMeasurer {
+    /// No fonts here, so the old fixed multiple stands in for the metric.
+    ///
+    /// This is what keeps the layout snapshots font-independent: they measure
+    /// through this type, so they record the same geometry on every host and
+    /// do not move when a face's real metrics differ from the estimate.
+    fn normal_line_height(
+        &self,
+        _font_family: Option<&str>,
+        _font_weight: Option<&str>,
+        _font_style: Option<&str>,
+        font_size: f32,
+    ) -> f32 {
+        font_size * APPROX_LINE_HEIGHT_RATIO
+    }
+
     fn text_width(
         &self,
         value: &str,
