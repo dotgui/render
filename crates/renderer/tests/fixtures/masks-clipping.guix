@@ -1,12 +1,19 @@
 <gui version="0.2" name="Masks and clipping">
   <row w="480" h="160" fill="#F7F7F8" p="20" gap="16">
+    <!-- A masked group: the ellipse is the shape, the rects are what shows
+         through it. -->
     <group w="100" h="100">
       <ellipse abs x="0" y="0" w="100" h="100" mask="true" />
       <rect abs x="0" y="0" w="100" h="100" fill="#E5484D" />
       <rect abs x="0" y="50" w="100" h="50" fill="#12A594" />
     </group>
-    <rect w="100" h="100" fill="#0D99FF" clip-path="inset(10px round 20px)" />
-    <rect w="100" h="100" fill="#F5A524" clip-path="polygon(50% 0%, 100% 100%, 0% 100%)" />
-    <rect w="100" h="100" fill="#8E4EC6" clip-path="circle(45% at 50% 50%)" />
+
+    <!-- `clip-path` is spec'd on the containers — <frame>, <stack>, <row>,
+         <col>, <grid> — and not on <rect>/<ellipse>. This renderer honours it
+         on a shape too, since a <rect> is sugar for a childless <frame>, but
+         kit does not, so the fixture exercises the spec'd surface. -->
+    <col w="100" h="100" fill="#0D99FF" clip-path="inset(10px round 20px)" />
+    <col w="100" h="100" fill="#F5A524" clip-path="polygon(50% 0%, 100% 100%, 0% 100%)" />
+    <frame w="100" h="100" fill="#8E4EC6" clip-path="circle(45% at 50% 50%)" />
   </row>
 </gui>
