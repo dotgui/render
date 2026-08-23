@@ -121,9 +121,15 @@ fn paint_node(
     // what the node sits on. Several stack, in document order.
     for effect in &node.effects {
         if effect.kind == "layer-blur" {
-            // The radius is CSS's, which is twice the Gaussian sigma, as it is
-            // for shadows and backdrop blurs.
-            blur::blur(&mut layer, effect.radius / 2.0);
+            // `radius` is the Gaussian sigma, not twice it.
+            //
+            // CSS uses the word "radius" for two different quantities. A
+            // `box-shadow`'s blur radius really is twice sigma, and shadows
+            // below halve it for that reason. `filter: blur(r)` does not —
+            // there `r` *is* the standard deviation. kit renders a layer blur
+            // as `filter: blur(<radius>px)`, so halving it here made every
+            // layer blur half as strong as the reference.
+            blur::blur(&mut layer, effect.radius);
         }
     }
 
@@ -625,8 +631,11 @@ fn paint_backdrop_effects(pixmap: &mut Pixmap, node: &SceneNode) {
 
                 // Blur a copy of the backdrop, then let it back through the
                 // node's own outline — the same thing `backdrop-filter` does.
+                // `radius` is sigma here for the same reason as a layer blur:
+                // kit emits `backdrop-filter: blur(<radius>px)`, and a
+                // filter's radius is the standard deviation.
                 let mut backdrop = pixmap.clone();
-                blur::blur(&mut backdrop, effect.radius / 2.0);
+                blur::blur(&mut backdrop, effect.radius);
                 if effect.kind == "glass" {
                     saturate(&mut backdrop, effect.saturation / 100.0);
                 }
@@ -4400,6 +4409,50 @@ mod tests {
         assert!(
             blurred.get_pixel(30, 12).0[0] < 225,
             "and ink spreads past the edge"
+        );
+    }
+
+    #[test]
+    fn a_filters_radius_is_sigma_and_a_shadows_is_twice_it() {
+        // CSS uses "radius" for two different quantities, and this renderer
+        // has to keep them apart. A `box-shadow`'s blur radius is twice the
+        // Gaussian sigma; `filter: blur(r)` and `backdrop-filter: blur(r)`
+        // take `r` *as* the sigma. kit renders `layer-blur` as the latter.
+        //
+        // Halving the filter radius, which is what this used to do, made every
+        // layer blur half as strong as the reference and nothing noticed —
+        // the existing blur tests all pass either way, because they only ask
+        // whether the edge softened at all.
+        let reach = |effect: &str| {
+            let page = render(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="200" h="120" fill="#ffffff">
+                    <rect abs x="80" y="40" w="40" h="40" fill="#000000">
+                      <appearance>{effect}</appearance>
+                    </rect>
+                  </frame>
+                </gui>
+                "##
+            ));
+            // How far ink carries past the box's right edge at x=120.
+            (120..200)
+                .take_while(|x| page.get_pixel(*x, 60).0[0] <= 250)
+                .count()
+        };
+
+        let filtered = reach(r##"<effect type="layer-blur" radius="8" />"##);
+        let shadowed =
+            reach(r##"<effect type="drop-shadow" x="0" y="0" radius="16" color="#000000" />"##);
+        let halved = reach(r##"<effect type="layer-blur" radius="4" />"##);
+
+        assert_eq!(
+            filtered, shadowed,
+            "a filter of radius 8 and a shadow of radius 16 are the same blur"
+        );
+        assert!(
+            filtered > halved + 4,
+            "and radius 8 is plainly not radius 4: {filtered} against {halved}"
         );
     }
 
