@@ -1,25 +1,28 @@
 <gui version="0.2" name="Lists and vertical metrics">
+  <!-- Declared so the text is comparable against kit: without it each
+       renderer measures its own default face. -->
+  <fonts><font family="Roboto" source="google" weights="400 500 600 700" styles="normal" /></fonts>
   <col w="460" h="300" fill="#FFFFFF" p="20" gap="14">
     <col w="fill" gap="4">
-      <text value="Steps" font-size="18" font-weight="700" fill="#111111" />
-      <text value="Wedge the clay" list="decimal" font-size="14" fill="#333333" />
-      <text value="Centre it on the wheel" list="decimal" font-size="14" fill="#333333" />
-      <text value="Open the floor" list="decimal" list-level="1" font-size="14" fill="#333333" />
-      <text value="Pull the walls" list="disc" font-size="14" fill="#333333" />
-      <text value="Trim when leather-hard" list="disc" list-marker="-" font-size="14" fill="#333333" />
+      <text font-family="Roboto" value="Steps" font-size="18" font-weight="700" fill="#111111" />
+      <text font-family="Roboto" value="Wedge the clay" list="decimal" font-size="14" fill="#333333" />
+      <text font-family="Roboto" value="Centre it on the wheel" list="decimal" font-size="14" fill="#333333" />
+      <text font-family="Roboto" value="Open the floor" list="decimal" list-level="1" font-size="14" fill="#333333" />
+      <text font-family="Roboto" value="Pull the walls" list="disc" font-size="14" fill="#333333" />
+      <text font-family="Roboto" value="Trim when leather-hard" list="disc" list-marker="-" font-size="14" fill="#333333" />
     </col>
     <row w="fill" gap="16">
       <col w="140" h="60" radius="6" fill="#F1F1F3">
-        <text w="fill" h="60" value="bottom" vertical-align="bottom" font-size="14" fill="#333333" />
+        <text font-family="Roboto" w="fill" h="60" value="bottom" vertical-align="bottom" font-size="14" fill="#333333" />
       </col>
       <col w="140" h="60" radius="6" fill="#F1F1F3">
-        <text w="fill" h="60" value="centre" vertical-align="center" font-size="14" fill="#333333" />
+        <text font-family="Roboto" w="fill" h="60" value="centre" vertical-align="center" font-size="14" fill="#333333" />
       </col>
       <col w="140" h="60" radius="6" fill="#F1F1F3">
-        <text w="fill" h="60" value="trimmed" leading-trim="cap-height" font-size="14" line-height="30" fill="#333333" />
+        <text font-family="Roboto" w="fill" h="60" value="trimmed" leading-trim="cap-height" font-size="14" line-height="30" fill="#333333" />
       </col>
     </row>
-    <text w="fill" value="" font-size="14" fill="#333333">
+    <text font-family="Roboto" w="fill" value="" font-size="14" fill="#333333">
       <segment value="Superscript" />
       <segment value=" 2" baseline-shift="6" font-size="10" />
     </text>
