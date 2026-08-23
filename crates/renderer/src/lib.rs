@@ -24,7 +24,7 @@ mod text;
 mod text_style;
 
 pub use assets::{AssetCache, AssetError, ResolvedAsset};
-pub use fonts::{FontError, FontFace, FontStore};
+pub use fonts::{FontAxes, FontError, FontFace, FontStore};
 pub use layout::{ApproxTextMeasurer, LayoutBox, LayoutRect, TextMeasurer};
 pub use model::{FontInfo, GuiDocument, GuiMetadata, GuiNode};
 pub use package::{read_gui_package, read_gui_package_xml, GuiPackage, PackageError};

@@ -34,9 +34,10 @@
 
 use dotgui_renderer::{
     build_scene, compute_taffy_layout_with_text, paint_scene_to_png_bytes, parse_gui_xml,
-    read_gui_package, AssetCache, FontStore, GuiDocument, LayoutBox,
+    read_gui_package, AssetCache, FontAxes, FontStore, GuiDocument, LayoutBox, TextMeasurer,
 };
 use std::{
+    collections::BTreeMap,
     env, fmt, fs,
     path::{Path, PathBuf},
     process::{self, Command},
@@ -151,13 +152,18 @@ enum Failure {
 // ─── rendering both sides ────────────────────────────────────────────────────
 
 fn compare(root: &Path, input: &Path) -> Result<Report, Failure> {
-    let ours = render_native(input).map_err(Failure::Skipped)?;
-    let KitRender { png, substituted } = render_kit(root, input)?;
+    let native = layout_native(input).map_err(Failure::Skipped)?;
+    let kit = render_kit(root, input)?;
 
+    let scene = build_scene(&native.document, &native.layout);
+    let ours = paint_scene_to_png_bytes(&scene, Some(&native.cache), Some(&native.fonts))
+        .map_err(|err| Failure::Skipped(err.to_string()))?;
+
+    let fonts = compare_fonts(&native, &kit);
     let ours = Bitmap::decode(&ours).map_err(Failure::Skipped)?;
-    let theirs = Bitmap::decode(&png).map_err(Failure::Skipped)?;
+    let theirs = Bitmap::decode(&kit.png).map_err(Failure::Skipped)?;
 
-    Ok(Report::new(input.to_path_buf(), theirs, ours, substituted))
+    Ok(Report::new(input.to_path_buf(), theirs, ours, fonts))
 }
 
 /// A document laid out exactly as `render_png` does, with real font metrics.
@@ -193,20 +199,31 @@ fn layout_native(input: &Path) -> Result<NativeLayout, String> {
     })
 }
 
-fn render_native(input: &Path) -> Result<Vec<u8>, String> {
-    let native = layout_native(input)?;
-    let scene = build_scene(&native.document, &native.layout);
-    paint_scene_to_png_bytes(&scene, Some(&native.cache), Some(&native.fonts))
-        .map_err(|err| err.to_string())
-}
-
-/// kit's rendering of a document, and which of its fonts kit had to fake.
+/// kit's rendering of a document, and what its text actually measured.
 struct KitRender {
     png: Vec<u8>,
-    /// Declared families this browser had no real font for. When this is not
-    /// empty the two renderers drew different typefaces, so their geometry is
-    /// not comparable and the numbers below are about fonts, not layout.
-    substituted: Vec<String>,
+    /// Per declared family, the width kit got for the probe string.
+    fonts: BTreeMap<String, KitFont>,
+    probe: FontProbe,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct FontProbe {
+    text: String,
+    size: f32,
+}
+
+#[derive(serde::Deserialize)]
+struct KitFont {
+    /// Whether kit matched the family by name, as opposed to falling back.
+    ///
+    /// Reported because it is worth knowing, and deliberately *not* used to
+    /// decide comparability: on macOS `system-ui` lands on SF Pro, so an
+    /// `SF Pro Display` document renders in SF Pro either way. Judging by name
+    /// wrote off five documents that agree with kit to the pixel.
+    #[serde(rename = "resolvedByName")]
+    resolved_by_name: bool,
+    width: f32,
 }
 
 fn render_kit(root: &Path, input: &Path) -> Result<KitRender, Failure> {
@@ -245,20 +262,90 @@ fn render_kit(root: &Path, input: &Path) -> Result<KitRender, Failure> {
     let png =
         fs::read(&output).map_err(|err| Failure::Skipped(format!("kit wrote no image: {err}")))?;
 
+    #[derive(serde::Deserialize, Default)]
+    struct Dump {
+        #[serde(default)]
+        fonts: BTreeMap<String, KitFont>,
+        #[serde(default)]
+        probe: FontProbe,
+    }
+
+    // A parse failure means no font notes rather than no comparison — the
+    // images are the point.
+    let dump: Dump = serde_json::from_slice(&result.stdout).unwrap_or_default();
+
     Ok(KitRender {
         png,
-        substituted: substituted_fonts(&result.stdout),
+        fonts: dump.fonts,
+        probe: dump.probe,
     })
 }
 
-/// Reads the bridge's one line of JSON. A parse failure means no warning
-/// rather than no comparison — the images are the point.
-fn substituted_fonts(stdout: &[u8]) -> Vec<String> {
-    serde_json::from_slice::<serde_json::Value>(stdout)
-        .ok()
-        .and_then(|value| value.get("unresolvedFonts").cloned())
-        .and_then(|fonts| serde_json::from_value::<Vec<String>>(fonts).ok())
-        .unwrap_or_default()
+/// How far apart two renderers' text may measure and still be called the same
+/// face.
+///
+/// Chosen from the corpus rather than picked: families both renderers resolve
+/// by name land between 0.00% and 3.13%, and the one genuinely substituted
+/// face — `SF Mono`, which kit falls back to a proportional stack for — is
+/// 14.96% out. Nothing sits in between.
+const SAME_FACE_TOLERANCE: f32 = 0.05;
+
+/// What each declared family measured on both sides.
+struct FontReading {
+    family: String,
+    resolved_by_name: bool,
+    difference: f32,
+}
+
+impl FontReading {
+    /// Whether kit drew a materially different typeface.
+    fn substituted(&self) -> bool {
+        self.difference.abs() > SAME_FACE_TOLERANCE
+    }
+}
+
+/// Measures the probe string through this renderer and compares with kit's.
+fn compare_fonts(native: &NativeLayout, kit: &KitRender) -> Vec<FontReading> {
+    if kit.probe.text.is_empty() || kit.probe.size <= 0.0 {
+        return Vec::new();
+    }
+    let axes = FontAxes::from_style(None, None, kit.probe.size);
+
+    native
+        .document
+        .metadata
+        .fonts
+        .iter()
+        .filter_map(|(family, info)| {
+            let reading = kit.fonts.get(family)?;
+            // Measured at a weight the document actually declares. Asking for
+            // 400 from a family that only ships 500 and 700 gets the
+            // character-count estimate instead of a face, and comparing kit
+            // against an estimate says nothing — that is what let `SF Mono`,
+            // 15% out, pass for the same typeface.
+            let weight = info
+                .weights
+                .as_deref()
+                .and_then(|weights| weights.split_whitespace().next())
+                .unwrap_or("400");
+            let ours = native.fonts.text_width(
+                &kit.probe.text,
+                Some(family),
+                Some(weight),
+                None,
+                kit.probe.size,
+                axes,
+            );
+            if ours <= 0.0 {
+                return None;
+            }
+            Some(FontReading {
+                family: family.clone(),
+                resolved_by_name: reading.resolved_by_name,
+                difference: (reading.width - ours) / ours,
+            })
+        })
+        .collect()
 }
 
 // ─── box diff ────────────────────────────────────────────────────────────────
@@ -351,7 +438,7 @@ fn flatten(node: &LayoutBox, depth: usize, out: &mut Vec<Box2D>) {
 
 fn print_tag_counts(theirs: &[Box2D], ours: &[Box2D]) {
     let count = |boxes: &[Box2D]| {
-        let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut counts: BTreeMap<String, usize> = Default::default();
         for item in boxes {
             *counts.entry(item.tag.clone()).or_default() += 1;
         }
@@ -612,11 +699,11 @@ struct Report {
     /// line up. Includes glyph rasterisation, so it never reaches zero on text.
     residual: f64,
     too_large: bool,
-    substituted_fonts: Vec<String>,
+    fonts: Vec<FontReading>,
 }
 
 impl Report {
-    fn new(path: PathBuf, kit: Bitmap, ours: Bitmap, substituted_fonts: Vec<String>) -> Self {
+    fn new(path: PathBuf, kit: Bitmap, ours: Bitmap, fonts: Vec<FontReading>) -> Self {
         let dimensions = ((kit.width, kit.height), (ours.width, ours.height));
 
         if kit.height as usize > MAX_DIFFABLE_ROWS || ours.height as usize > MAX_DIFFABLE_ROWS {
@@ -627,7 +714,7 @@ impl Report {
                 drifts: Vec::new(),
                 residual: 0.0,
                 too_large: true,
-                substituted_fonts,
+                fonts,
             };
         }
 
@@ -661,7 +748,7 @@ impl Report {
                 differing as f64 / total as f64
             },
             too_large: false,
-            substituted_fonts,
+            fonts,
         }
     }
 
@@ -669,16 +756,41 @@ impl Report {
         self.kit.0 != self.ours.0
     }
 
-    /// Whether kit drew a different typeface than this renderer did.
+    /// Whether kit drew a materially different typeface than this renderer.
     ///
-    /// Such a document cannot be compared on geometry at all: a substituted
-    /// face has its own advance widths, so a string wraps at a different point
-    /// and every box that hugs it is a different size. Ranking one of these
-    /// alongside real divergences sends people hunting a layout bug that is
-    /// really a missing font — `harbor-report-post-ios` sat at the top of this
-    /// list for exactly that reason.
+    /// Decided by measuring both, not by whether kit matched the family name.
+    /// A fallback can land on the same physical face — on macOS `system-ui`
+    /// lands on SF Pro — and judging by name excluded five documents that
+    /// agree with kit to the pixel.
     fn fonts_substituted(&self) -> bool {
-        !self.substituted_fonts.is_empty()
+        self.fonts.iter().any(FontReading::substituted)
+    }
+
+    /// Families worth mentioning: a different face, or the same one reached
+    /// by a fallback, or metrics far enough apart to explain some drift.
+    fn font_notes(&self) -> Vec<String> {
+        self.fonts
+            .iter()
+            .filter(|reading| {
+                reading.substituted()
+                    || !reading.resolved_by_name
+                    || reading.difference.abs() > 0.01
+            })
+            .map(|reading| {
+                let how = if reading.substituted() {
+                    "a different face"
+                } else if !reading.resolved_by_name {
+                    "the same face by fallback"
+                } else {
+                    "the same face"
+                };
+                format!(
+                    "{} — {how}, text {:+.1}% against ours",
+                    reading.family,
+                    reading.difference * 100.0
+                )
+            })
+            .collect()
     }
 
     fn height_delta(&self) -> i64 {
@@ -702,7 +814,13 @@ impl Report {
 
     fn headline(&self) -> String {
         if self.fonts_substituted() {
-            return format!("kit substituted {}", self.substituted_fonts.join(", "));
+            let families: Vec<&str> = self
+                .fonts
+                .iter()
+                .filter(|reading| reading.substituted())
+                .map(|reading| reading.family.as_str())
+                .collect();
+            return format!("kit drew a different face for {}", families.join(", "));
         }
         if self.too_large {
             return "too tall to diff".to_owned();
@@ -806,22 +924,38 @@ fn print_report(root: &Path, reports: &mut [Report]) {
         println!("    none — every document aligned row for row");
     }
 
+    let noted: Vec<&Report> = reports
+        .iter()
+        .filter(|report| !report.fonts_substituted() && !report.font_notes().is_empty())
+        .collect();
+    if !noted.is_empty() {
+        println!();
+        println!("fonts worth knowing about, on documents that are still comparable");
+        println!("{}", "-".repeat(92));
+        for report in &noted {
+            println!("{}", short(root, &report.path));
+            for note in report.font_notes() {
+                println!("    {note}");
+            }
+        }
+    }
+
     let incomparable: Vec<&Report> = reports
         .iter()
         .filter(|report| report.fonts_substituted())
         .collect();
     if !incomparable.is_empty() {
         println!();
-        println!("not comparable — kit had no copy of the declared font and substituted one,");
-        println!("so the two renderers drew different typefaces. Their numbers are about");
-        println!("fonts, not layout, and they are excluded from the ranking above.");
+        println!("not comparable — kit drew a materially different typeface, so a string");
+        println!("wraps somewhere else and every box that hugs one is a different size.");
+        println!("Judged by measuring both, not by whether kit matched the family name:");
+        println!("a fallback often lands on the same face, and on macOS it usually does.");
         println!("{}", "-".repeat(92));
         for report in &incomparable {
-            println!(
-                "{}  ({})",
-                short(root, &report.path),
-                report.substituted_fonts.join(", ")
-            );
+            println!("{}", short(root, &report.path));
+            for note in report.font_notes() {
+                println!("    {note}");
+            }
         }
     }
 
@@ -983,22 +1117,85 @@ mod tests {
         assert_eq!(parsed.boxes[1].h, 16.0);
     }
 
-    #[test]
-    fn substituted_fonts_are_read_from_the_bridge() {
-        assert_eq!(
-            substituted_fonts(br#"{"unresolvedFonts":["SF Pro Display","SF Mono"]}"#),
-            vec!["SF Pro Display".to_owned(), "SF Mono".to_owned()],
-        );
-        assert!(substituted_fonts(br#"{"unresolvedFonts":[]}"#).is_empty());
+    fn reading(family: &str, resolved_by_name: bool, difference: f32) -> FontReading {
+        FontReading {
+            family: family.to_owned(),
+            resolved_by_name,
+            difference,
+        }
+    }
+
+    fn with_fonts(fonts: Vec<FontReading>) -> Report {
+        Report {
+            path: PathBuf::from("probe.guix"),
+            kit: (10, 10),
+            ours: (10, 10),
+            drifts: Vec::new(),
+            residual: 0.0,
+            too_large: false,
+            fonts,
+        }
     }
 
     #[test]
-    fn a_bridge_that_says_nothing_useful_still_compares() {
-        // The images are the point; losing the font warning must not lose the
-        // comparison with it.
-        assert!(substituted_fonts(b"").is_empty());
-        assert!(substituted_fonts(b"not json at all").is_empty());
-        assert!(substituted_fonts(br#"{"unresolvedFonts":"a string"}"#).is_empty());
+    fn a_fallback_onto_the_same_face_is_still_comparable() {
+        // The case that wrongly excluded five documents: kit could not match
+        // `SF Pro Display` by name, fell back through `system-ui`, and landed
+        // on the same physical typeface. Measured 0.6% apart.
+        let report = with_fonts(vec![reading("SF Pro Display", false, 0.006)]);
+
+        assert!(
+            !report.fonts_substituted(),
+            "same metrics means same face, whatever kit called it"
+        );
+        assert_eq!(
+            report.font_notes(),
+            vec!["SF Pro Display — the same face by fallback, text +0.6% against ours"],
+            "still worth saying, just not grounds for discarding the document"
+        );
+    }
+
+    #[test]
+    fn a_fallback_onto_a_different_face_is_not() {
+        // `SF Mono` has no fallback that is monospaced, so kit draws it in a
+        // proportional face and the text is 15% narrower.
+        let report = with_fonts(vec![reading("SF Mono", false, -0.15)]);
+
+        assert!(report.fonts_substituted());
+        assert!(report.headline().contains("SF Mono"));
+    }
+
+    #[test]
+    fn matching_by_name_does_not_prove_the_same_metrics() {
+        // Geist resolves by name on both sides and still measures 3.1% apart,
+        // because kit gets a variable webfont and this renderer gets a static
+        // instance. Comparable, but worth a note.
+        let report = with_fonts(vec![reading("Geist", true, -0.031)]);
+
+        assert!(!report.fonts_substituted());
+        assert_eq!(
+            report.font_notes(),
+            vec!["Geist — the same face, text -3.1% against ours"]
+        );
+    }
+
+    #[test]
+    fn a_face_that_measures_the_same_is_not_worth_mentioning() {
+        let report = with_fonts(vec![reading("Georgia", true, 0.0)]);
+
+        assert!(!report.fonts_substituted());
+        assert!(report.font_notes().is_empty());
+    }
+
+    #[test]
+    fn the_bridges_font_reading_is_read_as_declared() {
+        // Guards the shape of the contract with `tools/kit-rasterize.ts`.
+        let parsed: BTreeMap<String, KitFont> =
+            serde_json::from_slice(br#"{"SF Mono":{"resolvedByName":false,"width":353.281}}"#)
+                .expect("reading parses");
+
+        assert_eq!(parsed["SF Mono"].width, 353.281);
+        assert!(!parsed["SF Mono"].resolved_by_name);
     }
 
     #[test]
