@@ -286,6 +286,11 @@ fn style_for_node(node: &GuiNode, metadata: &GuiMetadata, parent_layout: ParentL
         },
         gap: gap_size(node, metadata),
         align_items: align_items_for(node),
+        // Taffy reads `align_items` for a grid's block axis and this for its
+        // inline one, and both default to stretch. A grid child hugs on both,
+        // exactly as a flex child does — kit gives every one of them width
+        // zero until it declares a size or asks to `fill`.
+        justify_items: align_items_for(node),
         justify_content: justify_content_for(node),
         // A declared size is a fixed size, as in a design tool: only `fill`
         // boxes give way when a container runs short of room.
@@ -506,8 +511,21 @@ fn gap_size(node: &GuiNode, metadata: &GuiMetadata) -> Size<LengthPercentage> {
     }
 }
 
+/// How a container lines its children up on its cross axis.
+///
+/// With no `align`, children sit at the start and keep their own size. That is
+/// what the spec asks for — `w`/`h` absent means *hug*, on both axes, and
+/// `"fill"` is how a document asks to fill instead — and it is what kit does:
+/// a `<col w="60">` in a 50px-tall row comes out zero-high there, and only
+/// `h="fill"` fills it.
+///
+/// Taffy defaults to `stretch`, so leaving this unset made absent behave as
+/// `fill` on the cross axis. `<line>` is the one element that still stretches,
+/// and says so with its own `align_self`.
 fn align_items_for(node: &GuiNode) -> Option<AlignItems> {
-    let align = node.attributes.get("align")?;
+    let Some(align) = node.attributes.get("align") else {
+        return Some(AlignItems::START);
+    };
     let cross = if node.tag == "row" {
         align.split('-').next().unwrap_or("top")
     } else {
@@ -1021,6 +1039,69 @@ mod tests {
     }
 
     #[test]
+    fn a_child_keeps_its_own_size_on_the_cross_axis() {
+        // The spec: `w`/`h` absent means hug, on both axes. Taffy defaults to
+        // stretch, which quietly made absent behave as `fill` — a `<col>` in a
+        // row came out as tall as the row rather than as tall as its content.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <row w="200" h="50">
+                <col w="60" />
+                <col w="60" h="fill" />
+              </row>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.height, 0.0, "absent hugs");
+        assert_eq!(
+            layout.children[1].rect.height, 50.0,
+            "`fill` is how you ask"
+        );
+    }
+
+    #[test]
+    fn a_column_does_not_widen_its_children_either() {
+        // The same rule the other way round: cross axis of a `<col>` is width.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="200">
+                <col h="20" />
+                <col h="20" w="fill" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.width, 0.0);
+        assert_eq!(layout.children[1].rect.width, 200.0);
+    }
+
+    #[test]
+    fn a_divider_still_stretches_after_that() {
+        // `<line>` is the exception, and carries its own `align_self`. Without
+        // it, hugging would leave every rule zero-long — which is the bug #58
+        // fixed, reintroduced from the other end.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="120">
+                <line />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(
+            layout.children[0].rect.width, 120.0,
+            "a rule spans its column"
+        );
+        assert_eq!(layout.children[0].rect.height, 1.0);
+    }
+
+    #[test]
     fn a_vertical_divider_takes_its_thickness_across_and_its_length_from_the_row() {
         let layout = layout_of(
             r#"
@@ -1256,13 +1337,18 @@ mod tests {
     fn a_grid_child_spans_the_rows_it_asks_for() {
         // `col-span` has a test through `grid_ranges_are_inclusive`; this is
         // its vertical twin.
+        //
+        // The children say `h="fill"` because a grid child hugs like any
+        // other: a spanning child with no height is zero tall, and its span is
+        // then unobservable. What the span decides is how much room there is
+        // to fill, which is what this measures.
         let layout = layout_of(
             r#"
             <gui version="0.2">
               <grid cols="2" rows="2" w="200" h="200">
-                <rect row-span="2" />
-                <rect />
-                <rect />
+                <rect row-span="2" h="fill" />
+                <rect h="fill" />
+                <rect h="fill" />
               </grid>
             </gui>
             "#,
@@ -1342,6 +1428,8 @@ mod tests {
             "#,
         );
 
+        // `w="fill"` because a grid child hugs otherwise; the span decides
+        // how wide "fill" is, which is the thing under test.
         assert_eq!(layout.children[0].rect.x, 100.0);
         assert_eq!(layout.children[0].rect.width, 200.0);
     }
@@ -1384,7 +1472,7 @@ mod tests {
             r#"
             <gui version="0.2">
               <grid cols="4" w="400" h="50">
-                <rect h="10" gc="2" col-span="2" />
+                <rect h="10" w="fill" gc="2" col-span="2" />
               </grid>
             </gui>
             "#,
