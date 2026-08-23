@@ -46,12 +46,14 @@ pub struct FontAxes {
 impl FontAxes {
     /// The axes a resolved text style asks for.
     ///
-    /// `font-optical-sizing` is honoured when a document asks for it, and only
-    /// then. CSS defaults it to `auto`, so a browser — and therefore kit —
-    /// applies it to every face with an `opsz` axis; matching that here would
-    /// change the metrics of existing documents and reflow their text, which
-    /// is a deliberate fidelity change rather than a side effect of reading a
-    /// new attribute. It is tracked separately.
+    /// `font-optical-sizing` defaults to `auto`, as in CSS: a face with an
+    /// `opsz` axis is driven from the font size unless a document says
+    /// `none`. kit is a browser and has always done this; not doing it was a
+    /// fidelity gap rather than a deliberate difference.
+    ///
+    /// Only variable faces that carry the axis are affected, which on this
+    /// corpus means the `SF Pro` system fonts and nothing else — every Google
+    /// family here resolves to a static instance with no axes at all.
     pub fn from_style(
         font_stretch: Option<&str>,
         font_optical_sizing: Option<&str>,
@@ -59,7 +61,7 @@ impl FontAxes {
     ) -> Self {
         Self {
             width: font_stretch.and_then(font_stretch_percentage),
-            optical_size: (font_optical_sizing == Some("auto")).then_some(font_size),
+            optical_size: (font_optical_sizing != Some("none")).then_some(font_size),
         }
     }
 }
@@ -998,18 +1000,24 @@ mod tests {
     }
 
     #[test]
-    fn optical_sizing_is_driven_by_the_font_size_when_asked_for() {
+    fn optical_sizing_is_driven_by_the_font_size_unless_turned_off() {
         assert_eq!(
             FontAxes::from_style(None, Some("auto"), 28.0).optical_size,
             Some(28.0)
         );
+        // Absent is `auto`, as in CSS. This is the whole of the change that
+        // closed `harbor`'s 17px disagreement with kit: a browser optically
+        // sizes by default, so not doing it left every SF Pro document a
+        // little narrower than the reference.
+        assert_eq!(
+            FontAxes::from_style(None, None, 28.0).optical_size,
+            Some(28.0)
+        );
+        // `none` is the only way out.
         assert_eq!(
             FontAxes::from_style(None, Some("none"), 28.0).optical_size,
             None
         );
-        // Absent, not `auto`: applying it by default would reflow existing
-        // documents, which is tracked as its own change.
-        assert_eq!(FontAxes::from_style(None, None, 28.0).optical_size, None);
     }
 
     #[test]
