@@ -1,11 +1,14 @@
 <gui version="0.2" name="Positioned containers">
+  <!-- Declared so the text is comparable against kit: without it each
+       renderer measures its own default face. -->
+  <fonts><font family="Roboto" source="google" weights="400 500 600 700" styles="normal" /></fonts>
   <col w="440" h="240" fill="#F7F7F8" p="20" gap="16">
     <frame w="400" h="140" radius="14" clip fill="#3F3F46">
       <rect x="0" y="0" w="400" h="140" fill="linear-gradient(135deg, #0D99FF 0%, #8E4EC6 100%)" />
       <rect x="0" y="70" w="400" h="70" fill="linear-gradient(180deg, #00000000 0%, #000000CC 100%)" />
-      <text x="16" y="92" value="Overlaid title" font-size="22" font-weight="700" fill="#FFFFFF" />
+      <text font-family="Roboto" x="16" y="92" value="Overlaid title" font-size="22" font-weight="700" fill="#FFFFFF" />
       <col x="300" y="14" w="86" h="26" radius="13" fill="#FFFFFFCC" p="6">
-        <text value="badge" font-size="11" fill="#18181B" />
+        <text font-family="Roboto" value="badge" font-size="11" fill="#18181B" />
       </col>
     </frame>
     <group w="400" h="40">

@@ -1,4 +1,7 @@
 <gui version="0.2" name="Backdrop blur">
+  <!-- Declared so the text is comparable against kit: without it each
+       renderer measures its own default face. -->
+  <fonts><font family="Roboto" source="google" weights="400 500 600 700" styles="normal" /></fonts>
   <grid unit="8" w="400" h="240" fill="#ffffff">
     <col gc="1/50" gr="1/30" fill="#1f4e79" />
     <row gc="3" gr="4" w="120" h="40" radius="8" fill="#e8b64c" />
@@ -6,7 +9,7 @@
     <row gc="8" gr="14" w="90" h="90" radius="45" fill="#4c9f70" />
 
     <row gc="2/49" gr="18/28" fill="#ffffff59" p="16" align="middle-left">
-      <text value="Frosted panel over the shapes" font-size="15" font-weight="700" fill="#0d1b2a" />
+      <text font-family="Roboto" value="Frosted panel over the shapes" font-size="15" font-weight="700" fill="#0d1b2a" />
       <appearance>
         <effect type="background-blur" radius="20" />
       </appearance>

@@ -1,12 +1,15 @@
 <gui version="0.2" name="Layer blur">
+  <!-- Declared so the text is comparable against kit: without it each
+       renderer measures its own default face. -->
+  <fonts><font family="Roboto" source="google" weights="400 500 600 700" styles="normal" /></fonts>
   <row w="520" h="180" fill="#FFFFFF" p="20" gap="14">
     <stack w="110" h="120">
       <rect abs x="0" y="0" w="110" h="120" fill="linear-gradient(135deg, #F5A524 0%, #E5484D 60%, #8E4EC6 100%)" />
-      <text abs x="10" y="46" value="sharp" font-size="18" font-weight="700" fill="#FFFFFF" />
+      <text font-family="Roboto" abs x="10" y="46" value="sharp" font-size="18" font-weight="700" fill="#FFFFFF" />
     </stack>
     <stack w="110" h="120">
       <rect abs x="0" y="0" w="110" h="120" fill="linear-gradient(135deg, #F5A524 0%, #E5484D 60%, #8E4EC6 100%)" />
-      <text abs x="10" y="46" value="layer" font-size="18" font-weight="700" fill="#FFFFFF">
+      <text font-family="Roboto" abs x="10" y="46" value="layer" font-size="18" font-weight="700" fill="#FFFFFF">
         <appearance><effect type="layer-blur" radius="6" /></appearance>
       </text>
     </stack>
