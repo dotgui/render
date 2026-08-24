@@ -114,6 +114,10 @@ pub(crate) struct TextStyle {
     pub font_stretch: Option<String>,
     /// `font-optical-sizing`: `auto` or `none`.
     pub font_optical_sizing: Option<String>,
+    /// `font-variation`, as the CSS `font-variation-settings` string it is —
+    /// `"wght" 700, "slnt" -10`. Parsed by [`FontAxes`](crate::FontAxes),
+    /// which is where the axis tags mean anything.
+    pub font_variation: Option<String>,
     /// `font-smoothing`: `antialiased`, `subpixel-antialiased` or `none`.
     pub font_smoothing: Option<String>,
     pub word_spacing: f32,
@@ -171,6 +175,7 @@ pub(crate) fn resolve_text_style<S: TextSource>(node: &S, metadata: &GuiMetadata
             .map(|value| resolve_token(value, metadata)),
         font_stretch: style_value(node, metadata, "font-stretch"),
         font_optical_sizing: style_value(node, metadata, "font-optical-sizing"),
+        font_variation: style_value(node, metadata, "font-variation"),
         font_smoothing: style_value(node, metadata, "font-smoothing"),
         word_spacing: style_number(node, metadata, "word-spacing").unwrap_or(0.0),
         baseline_shift: style_number(node, metadata, "baseline-shift").unwrap_or(0.0),
@@ -308,6 +313,8 @@ fn inherit_style<S: TextSource>(node: &S, metadata: &GuiMetadata, parent: &TextS
             .or_else(|| parent.font_stretch.clone()),
         font_optical_sizing: style_value(node, metadata, "font-optical-sizing")
             .or_else(|| parent.font_optical_sizing.clone()),
+        font_variation: style_value(node, metadata, "font-variation")
+            .or_else(|| parent.font_variation.clone()),
         font_smoothing: style_value(node, metadata, "font-smoothing")
             .or_else(|| parent.font_smoothing.clone()),
         word_spacing: style_number(node, metadata, "word-spacing").unwrap_or(parent.word_spacing),

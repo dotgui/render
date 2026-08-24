@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **97** |
+| Implemented | **98** |
 | Partial | **1** |
-| Not implemented | **22** |
+| Not implemented | **21** |
 | Total | **120** |
 
 ## Not implemented
@@ -31,7 +31,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `font-feature` | `<text>` |
 | `font-postscript` | `<text>` |
 | `font-style-name` | `<text>` |
-| `font-variation` | `<text>` |
 | `name` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `reverse-z` | `<stack>`, `<row>`, `<col>` |
 | `row-gap` | `<grid>` |
@@ -83,6 +82,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `font-smoothing` | `<text>` |
 | `font-stretch` | `<text>` |
 | `font-style` | `<text>` |
+| `font-variation` | `<text>` |
 | `font-weight` | `<text>` |
 | `gap` | `<stack>`, `<row>`, `<col>` |
 | `grid-col-gap` | `<stack>` |

@@ -334,7 +334,7 @@ fn compare_fonts(native: &NativeLayout, kit: &KitRender) -> Vec<FontReading> {
                 Some(weight),
                 None,
                 kit.probe.size,
-                axes,
+                &axes,
             );
             if ours <= 0.0 {
                 return None;

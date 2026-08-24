@@ -671,9 +671,10 @@ fn measure_text(
             style.font_weight.as_deref(),
             style.font_style.as_deref(),
             style.font_size,
-            FontAxes::from_style(
+            &FontAxes::from_style_with_variation(
                 style.font_stretch.as_deref(),
                 style.font_optical_sizing.as_deref(),
+                style.font_variation.as_deref(),
                 style.font_size,
             ),
         ) + value.chars().count() as f32 * style.letter_spacing
