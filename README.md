@@ -868,6 +868,31 @@ When the two trees have different shapes the boxes cannot be paired at all.
 That is reported rather than worked around, because it means one renderer
 built nodes the other did not, which is a bigger finding than any size.
 
+#### Where the corpus stands
+
+44 of 47 documents agree with kit on total height, 11 agree row for row, and
+mean pixel agreement is 98.2%. Read the height figure as the real one: two
+rasterisers never agree on glyph pixels, so a couple of percent is the floor
+rather than a gap.
+
+The three documents that disagree on height are adjudicated, not outstanding:
+
+| document | | |
+|---|---|---|
+| `beacon-recovery-code-android` | +6px | the deliberate `min-h` alias, #23 |
+| `dividers.guix` | +8px | `h` vs thickness, asked upstream on dotgui/core#6 |
+| `compositing.guix` | 103x62 vs 460x240 | kit cannot parse a bare `isolation` |
+
+The largest remaining pixel divergence is `gradients.guix` at 4.4%, and it is
+**kit's** bug: an `<appearance>` overlay on a `<rect>` or `<ellipse>` escapes
+the node that declares it and paints over the nearest positioned ancestor, so
+kit draws one wide bar where the document declares three shapes. Reported as
+dotgui/kit#11 with the one-line fix, so it belongs upstream rather than here.
+
+That is the fourth divergence this tool has attributed to the reference rather
+than to us, which is the point of the note in front of this section: kit is the
+reference but not the arbiter.
+
 ## Backlog
 
 ### Preview And Developer Experience
