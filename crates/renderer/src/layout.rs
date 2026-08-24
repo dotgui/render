@@ -42,7 +42,7 @@ pub trait TextMeasurer {
         font_weight: Option<&str>,
         font_style: Option<&str>,
         font_size: f32,
-        axes: FontAxes,
+        axes: &FontAxes,
     ) -> f32;
 
     /// How much `leading-trim` takes off the top of a block: the distance
@@ -106,7 +106,7 @@ impl TextMeasurer for ApproxTextMeasurer {
         _font_weight: Option<&str>,
         _font_style: Option<&str>,
         font_size: f32,
-        _axes: FontAxes,
+        _axes: &FontAxes,
     ) -> f32 {
         value.chars().count() as f32 * font_size * 0.55
     }

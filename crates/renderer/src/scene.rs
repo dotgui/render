@@ -228,6 +228,8 @@ pub struct TextSegment {
     pub color: Option<String>,
     pub font_stretch: Option<String>,
     pub font_optical_sizing: Option<String>,
+    /// `font-variation`, as a CSS `font-variation-settings` string.
+    pub font_variation: Option<String>,
     pub font_smoothing: Option<String>,
     /// Extra space added to each space character, from `word-spacing`.
     pub word_spacing: f32,
@@ -836,6 +838,7 @@ fn content_for(layout: &LayoutBox, metadata: &GuiMetadata, ordinal: usize) -> Pa
                     color: run.style.color,
                     font_stretch: run.style.font_stretch,
                     font_optical_sizing: run.style.font_optical_sizing,
+                    font_variation: run.style.font_variation,
                     font_smoothing: run.style.font_smoothing,
                     word_spacing: run.style.word_spacing,
                     baseline_shift: run.style.baseline_shift,
@@ -1030,6 +1033,7 @@ mod tests {
                     color: None,
                     font_stretch: None,
                     font_optical_sizing: None,
+                    font_variation: None,
                     font_smoothing: None,
                     word_spacing: 0.0,
                     decoration: None,
@@ -1095,6 +1099,7 @@ mod tests {
                     color: None,
                     font_stretch: None,
                     font_optical_sizing: None,
+                    font_variation: None,
                     font_smoothing: None,
                     word_spacing: 0.0,
                     decoration: None,
@@ -1148,6 +1153,7 @@ mod tests {
                     color: None,
                     font_stretch: None,
                     font_optical_sizing: None,
+                    font_variation: None,
                     font_smoothing: None,
                     word_spacing: 0.0,
                     decoration: None,
@@ -1950,8 +1956,11 @@ mod tests {
             <gui version="0.2">
               <col w="200" h="50">
                 <text font-stretch="condensed" font-optical-sizing="auto"
-                      font-smoothing="none" value="Outer">
-                  <segment value="Inner" font-stretch="expanded" />
+                      font-smoothing="none" font-variation="&quot;wght&quot; 350"
+                      value="Outer">
+                  <segment value="Inner" font-stretch="expanded"
+                           font-variation="&quot;wght&quot; 650" />
+                  <segment value="Plain" />
                 </text>
               </col>
             </gui>
@@ -1965,6 +1974,7 @@ mod tests {
         assert_eq!(segments[0].font_stretch.as_deref(), Some("condensed"));
         assert_eq!(segments[0].font_optical_sizing.as_deref(), Some("auto"));
         assert_eq!(segments[0].font_smoothing.as_deref(), Some("none"));
+        assert_eq!(segments[0].font_variation.as_deref(), Some("\"wght\" 350"));
 
         assert_eq!(
             segments[1].font_stretch.as_deref(),
@@ -1972,9 +1982,19 @@ mod tests {
             "a segment overrides what it declares"
         );
         assert_eq!(
+            segments[1].font_variation.as_deref(),
+            Some("\"wght\" 650"),
+            "a segment overrides its own axes"
+        );
+        assert_eq!(
             segments[1].font_smoothing.as_deref(),
             Some("none"),
             "and inherits what it does not"
+        );
+        assert_eq!(
+            segments[2].font_variation.as_deref(),
+            Some("\"wght\" 350"),
+            "axes carry down to a segment that names none of its own"
         );
     }
 

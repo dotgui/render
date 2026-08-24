@@ -34,13 +34,21 @@ pub struct FontFace {
 ///
 /// A face that has no such axis ignores the setting, so these are safe to pass
 /// for any font.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct FontAxes {
     /// `wdth`, a percentage where 100 is normal, from `font-stretch`.
     pub width: Option<f32>,
     /// `opsz`, which CSS drives from the font size unless
     /// `font-optical-sizing="none"` turns it off.
     pub optical_size: Option<f32>,
+    /// Axes named outright by `font-variation`, in the order declared.
+    ///
+    /// These are applied last and so override the three axes above, which is
+    /// what CSS does: `font-variation-settings` is the low-level property and
+    /// wins over `font-weight` and `font-stretch`. Measured in a browser
+    /// rather than assumed — `font-weight: 700` with `"wght" 300` renders at
+    /// exactly the width of a plain `"wght" 300`, and the reverse likewise.
+    pub named: Vec<(Tag, f32)>,
 }
 
 impl FontAxes {
@@ -62,8 +70,72 @@ impl FontAxes {
         Self {
             width: font_stretch.and_then(font_stretch_percentage),
             optical_size: (font_optical_sizing != Some("none")).then_some(font_size),
+            named: Vec::new(),
         }
     }
+
+    /// The same, plus the axes a `font-variation` string names.
+    pub fn from_style_with_variation(
+        font_stretch: Option<&str>,
+        font_optical_sizing: Option<&str>,
+        font_variation: Option<&str>,
+        font_size: f32,
+    ) -> Self {
+        Self {
+            named: font_variation
+                .map(parse_variation_settings)
+                .unwrap_or_default(),
+            ..Self::from_style(font_stretch, font_optical_sizing, font_size)
+        }
+    }
+
+    /// Every axis setting to apply to a face, one entry per axis.
+    ///
+    /// The precedence lives here rather than in the loop that applies it, so
+    /// that what wins is a value a test can read instead of an ordering it has
+    /// to have a variable font on the machine to observe.
+    ///
+    /// A named axis beats the derived one, and a tag named twice keeps its
+    /// last value — both are what CSS does with `font-variation-settings`.
+    pub fn effective(&self, weight: f32) -> Vec<(Tag, f32)> {
+        let mut axes = vec![(Tag::from_bytes(b"wght"), weight)];
+        if let Some(width) = self.width {
+            axes.push((Tag::from_bytes(b"wdth"), width));
+        }
+        if let Some(optical_size) = self.optical_size {
+            axes.push((Tag::from_bytes(b"opsz"), optical_size));
+        }
+        for &(tag, amount) in &self.named {
+            match axes.iter_mut().find(|(existing, _)| *existing == tag) {
+                Some(entry) => entry.1 = amount,
+                None => axes.push((tag, amount)),
+            }
+        }
+        axes
+    }
+}
+
+/// `font-variation` as a list of axis settings.
+///
+/// The value is a CSS `font-variation-settings` string, because that is what
+/// kit passes straight through to the browser, so a document written against
+/// kit already spells it that way: `"wght" 700, "slnt" -10`. Quotes are
+/// optional here, as a tag is unambiguous without them.
+///
+/// An entry that is not a four-byte tag followed by a number is skipped rather
+/// than failing the document — CSS drops an unparsable descriptor and keeps
+/// the rest of the list, and a typo in one axis should not cost the others.
+fn parse_variation_settings(value: &str) -> Vec<(Tag, f32)> {
+    value
+        .split(',')
+        .filter_map(|entry| {
+            let entry = entry.trim();
+            let (tag, amount) = entry.split_once(char::is_whitespace)?;
+            let tag = tag.trim().trim_matches(['"', '\'']);
+            let tag: [u8; 4] = tag.as_bytes().try_into().ok()?;
+            Some((Tag::from_bytes(&tag), amount.trim().parse::<f32>().ok()?))
+        })
+        .collect()
 }
 
 /// `font-stretch` as a `wdth` percentage.
@@ -114,7 +186,7 @@ impl FontFace {
         &self.fallback
     }
 
-    pub fn text_width(&self, value: &str, font_size: f32, axes: FontAxes) -> f32 {
+    pub fn text_width(&self, value: &str, font_size: f32, axes: &FontAxes) -> f32 {
         if let Some(width) = self.variable_text_width(value, font_size, axes) {
             return width;
         }
@@ -217,12 +289,12 @@ impl FontFace {
     /// `leading-trim` removes exactly this, which puts the top of a capital on
     /// the box's top edge. Both layout and painting call it.
     pub fn leading_trim(&self, font_size: f32, line_height: f32) -> f32 {
-        (self.baseline_offset(font_size, line_height, FontAxes::default())
+        (self.baseline_offset(font_size, line_height, &FontAxes::default())
             - self.cap_height(font_size))
         .max(0.0)
     }
 
-    pub fn baseline_offset(&self, font_size: f32, line_height: f32, axes: FontAxes) -> f32 {
+    pub fn baseline_offset(&self, font_size: f32, line_height: f32, axes: &FontAxes) -> f32 {
         if let Some(face) = self.variable_face(axes) {
             let scale = font_size / face.units_per_em() as f32;
             let ascender = face.ascender() as f32 * scale;
@@ -256,19 +328,15 @@ impl FontFace {
             .collect()
     }
 
-    pub fn variable_face(&self, axes: FontAxes) -> Option<Face<'_>> {
+    pub fn variable_face(&self, axes: &FontAxes) -> Option<Face<'_>> {
         let mut face = Face::parse(&self.bytes, self.collection_index).ok()?;
-        let _ = face.set_variation(Tag::from_bytes(b"wght"), self.weight);
-        if let Some(width) = axes.width {
-            let _ = face.set_variation(Tag::from_bytes(b"wdth"), width);
-        }
-        if let Some(optical_size) = axes.optical_size {
-            let _ = face.set_variation(Tag::from_bytes(b"opsz"), optical_size);
+        for (tag, amount) in axes.effective(self.weight) {
+            let _ = face.set_variation(tag, amount);
         }
         Some(face)
     }
 
-    fn variable_text_width(&self, value: &str, font_size: f32, axes: FontAxes) -> Option<f32> {
+    fn variable_text_width(&self, value: &str, font_size: f32, axes: &FontAxes) -> Option<f32> {
         let face = self.variable_face(axes)?;
         let scale = font_size / face.units_per_em() as f32;
         Some(
@@ -434,7 +502,7 @@ impl TextMeasurer for FontStore {
         font_weight: Option<&str>,
         font_style: Option<&str>,
         font_size: f32,
-        axes: FontAxes,
+        axes: &FontAxes,
     ) -> f32 {
         if let Some(face) = self.get(font_family, font_weight, font_style) {
             return face.text_width(value, font_size, axes);
@@ -1020,6 +1088,99 @@ mod tests {
         );
     }
 
+    /// The tag/amount pairs of an axis list, as strings, for readable asserts.
+    fn readable(axes: Vec<(Tag, f32)>) -> Vec<(String, f32)> {
+        axes.into_iter()
+            .map(|(tag, amount)| (tag.to_string(), amount))
+            .collect()
+    }
+
+    #[test]
+    fn font_variation_names_axes_in_css_syntax() {
+        let axes = |value| FontAxes::from_style_with_variation(None, None, Some(value), 16.0).named;
+
+        // The three spellings a document can arrive in. kit hands the value
+        // straight to `font-variation-settings`, so anything a browser accepts
+        // is something this can be asked to read.
+        let quoted = axes("\"wght\" 700, \"slnt\" -10");
+        assert_eq!(
+            readable(quoted.clone()),
+            [("wght".to_owned(), 700.0), ("slnt".to_owned(), -10.0)]
+        );
+        assert_eq!(axes("'wght' 700, 'slnt' -10"), quoted);
+        assert_eq!(axes("wght 700,slnt -10"), quoted);
+        assert_eq!(axes("  \"wght\"   700 ,  \"slnt\"  -10  "), quoted);
+    }
+
+    #[test]
+    fn an_unreadable_axis_is_dropped_without_costing_the_others() {
+        let axes = |value| FontAxes::from_style_with_variation(None, None, Some(value), 16.0).named;
+
+        // CSS drops an unparsable descriptor and keeps the list, so a typo in
+        // one axis must not silently disable the rest of the run's styling.
+        assert_eq!(
+            readable(axes(
+                "\"wght\" 700, \"toolong\" 5, \"opsz\" x, nope, \"slnt\" -10"
+            )),
+            [("wght".to_owned(), 700.0), ("slnt".to_owned(), -10.0)]
+        );
+        assert!(axes("").is_empty());
+        assert!(FontAxes::from_style_with_variation(None, None, None, 16.0)
+            .named
+            .is_empty());
+    }
+
+    #[test]
+    fn a_named_axis_overrides_the_one_derived_from_a_high_level_property() {
+        // CSS makes `font-variation-settings` the low-level property, so it
+        // wins over `font-weight` and `font-stretch`. Measured in a browser
+        // before it was written: `font-weight: 700` with `"wght" 300` comes
+        // out at exactly the width of a plain `"wght" 300`, and the reverse
+        // likewise, so this is the reference's behaviour and not a guess.
+        let axes = FontAxes::from_style_with_variation(
+            Some("condensed"),
+            None,
+            Some("\"wght\" 300, \"wdth\" 120, \"slnt\" -10"),
+            28.0,
+        );
+        assert_eq!(
+            readable(axes.effective(700.0)),
+            [
+                ("wght".to_owned(), 300.0),
+                ("wdth".to_owned(), 120.0),
+                ("opsz".to_owned(), 28.0),
+                ("slnt".to_owned(), -10.0),
+            ]
+        );
+
+        // Nothing named leaves the derived axes exactly as they were.
+        let derived = FontAxes::from_style(Some("condensed"), None, 28.0);
+        assert_eq!(
+            readable(derived.effective(700.0)),
+            [
+                ("wght".to_owned(), 700.0),
+                ("wdth".to_owned(), 75.0),
+                ("opsz".to_owned(), 28.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_axis_named_twice_keeps_its_last_value() {
+        // As in CSS, and it also keeps `effective` one entry per axis, which
+        // is what makes the winner readable rather than order-dependent.
+        let axes = FontAxes::from_style_with_variation(
+            None,
+            Some("none"),
+            Some("wght 300, wght 500"),
+            16.0,
+        );
+        assert_eq!(
+            readable(axes.effective(700.0)),
+            [("wght".to_owned(), 500.0)]
+        );
+    }
+
     #[test]
     fn empty_store_falls_back_to_approximate_width() {
         let store = FontStore::default();
@@ -1031,7 +1192,7 @@ mod tests {
                 Some("400"),
                 Some("normal"),
                 10.0,
-                FontAxes::default()
+                &FontAxes::default()
             ),
             27.5
         );

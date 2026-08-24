@@ -1100,9 +1100,10 @@ impl<'a> RunStyle<'a> {
                 None => segment.font_size * APPROX_LINE_HEIGHT_RATIO,
             }),
             letter_spacing: segment.letter_spacing,
-            axes: FontAxes::from_style(
+            axes: FontAxes::from_style_with_variation(
                 segment.font_stretch.as_deref(),
                 segment.font_optical_sizing.as_deref(),
+                segment.font_variation.as_deref(),
                 segment.font_size,
             ),
             // `none` asks for hard edges. The other two values are both
@@ -1254,7 +1255,7 @@ impl<'a> RunStyle<'a> {
 
     fn width(&self, text: &str) -> f32 {
         let base = match (self.face, self.fallback) {
-            (Some(face), _) => face.text_width(text, self.font_size, self.axes),
+            (Some(face), _) => face.text_width(text, self.font_size, &self.axes),
             (None, Some(font)) => text_width(font, text, self.font_size),
             (None, None) => text.chars().count() as f32 * self.font_size * 0.55,
         };
@@ -1295,7 +1296,7 @@ impl<'a> RunStyle<'a> {
 
     fn baseline_offset(&self, line_height: f32) -> f32 {
         match (self.face, self.fallback) {
-            (Some(face), _) => face.baseline_offset(self.font_size, line_height, self.axes),
+            (Some(face), _) => face.baseline_offset(self.font_size, line_height, &self.axes),
             (None, Some(font)) => fontdue_baseline_offset(font, self.font_size, line_height),
             (None, None) => self.font_size,
         }
@@ -1308,7 +1309,7 @@ impl<'a> RunStyle<'a> {
         };
 
         if let Some(face) = self.face {
-            if let Some(ttf_face) = face.variable_face(self.axes) {
+            if let Some(ttf_face) = face.variable_face(&self.axes) {
                 self.draw_outlines(pixmap, &ttf_face, face, text, cursor_x, baseline, color);
                 return;
             }
@@ -1618,7 +1619,7 @@ impl RunStyle<'_> {
         let Some(face) = self.face else {
             return Vec::new();
         };
-        let Some(ttf_face) = face.variable_face(self.axes) else {
+        let Some(ttf_face) = face.variable_face(&self.axes) else {
             return Vec::new();
         };
 
