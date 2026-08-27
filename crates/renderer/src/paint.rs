@@ -2318,6 +2318,30 @@ fn fill_smoothed_rect(
     }
 }
 
+/// The dash pattern a border style strokes with, and the cap it needs.
+///
+/// `solid` — and anything the spec does not define — strokes unbroken, so it
+/// gets no pattern at all rather than a pattern with no gaps.
+///
+/// The proportions match the ones text decorations already dash by, so a
+/// dashed rule and a dashed border on the same document read as the same
+/// dash rather than as two different ones.
+fn border_dash(style: &str, width: f32) -> (Option<StrokeDash>, LineCap) {
+    match style {
+        // Dots are round, and spaced by their own diameter. The "on" length
+        // is nearly zero because a round cap draws the dot itself.
+        "dotted" => (
+            StrokeDash::new(vec![0.01, width * 2.0], 0.0),
+            LineCap::Round,
+        ),
+        "dashed" => (
+            StrokeDash::new(vec![width * 3.0, width * 2.0], 0.0),
+            LineCap::Butt,
+        ),
+        _ => (None, LineCap::Butt),
+    }
+}
+
 fn stroke_rounded_rect(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
     if border.width <= 0.0 || node.bounds.width <= 0.0 || node.bounds.height <= 0.0 {
         return;
@@ -2329,8 +2353,11 @@ fn stroke_rounded_rect(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
     let mut paint = Paint::default();
     paint.set_color(color);
     paint.anti_alias = true;
+    let (dash, line_cap) = border_dash(&border.style, border.width);
     let stroke = Stroke {
         width: border.width,
+        dash,
+        line_cap,
         ..Default::default()
     };
 
@@ -2387,7 +2414,7 @@ fn stroke_sided_border(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
             "outside" => -sw / 2.0,
             _ => sw / 2.0,
         };
-        stroke_line(pixmap, x, y + dy, x + w, y + dy, sw, color);
+        stroke_border_line(pixmap, x, y + dy, x + w, y + dy, sw, color, &border.style);
     }
     if border.widths.right > 0.0 {
         let sw = border.widths.right;
@@ -2396,7 +2423,16 @@ fn stroke_sided_border(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
             "outside" => sw / 2.0,
             _ => -sw / 2.0,
         };
-        stroke_line(pixmap, x + w + dx, y, x + w + dx, y + h, sw, color);
+        stroke_border_line(
+            pixmap,
+            x + w + dx,
+            y,
+            x + w + dx,
+            y + h,
+            sw,
+            color,
+            &border.style,
+        );
     }
     if border.widths.bottom > 0.0 {
         let sw = border.widths.bottom;
@@ -2405,7 +2441,16 @@ fn stroke_sided_border(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
             "outside" => sw / 2.0,
             _ => -sw / 2.0,
         };
-        stroke_line(pixmap, x, y + h + dy, x + w, y + h + dy, sw, color);
+        stroke_border_line(
+            pixmap,
+            x,
+            y + h + dy,
+            x + w,
+            y + h + dy,
+            sw,
+            color,
+            &border.style,
+        );
     }
     if border.widths.left > 0.0 {
         let sw = border.widths.left;
@@ -2414,7 +2459,7 @@ fn stroke_sided_border(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
             "outside" => -sw / 2.0,
             _ => sw / 2.0,
         };
-        stroke_line(pixmap, x + dx, y, x + dx, y + h, sw, color);
+        stroke_border_line(pixmap, x + dx, y, x + dx, y + h, sw, color, &border.style);
     }
 }
 
@@ -2693,6 +2738,46 @@ fn paint_generic_icon(pixmap: &mut Pixmap, node: &SceneNode, color: Color, strok
         y + h * 0.38,
         stroke_width,
         color,
+    );
+}
+
+/// One side of a border, dashed as its style asks.
+///
+/// Separate from [`stroke_line`] because most of that function's callers are
+/// drawing icon geometry, which no border style has any business dashing.
+#[allow(clippy::too_many_arguments)]
+fn stroke_border_line(
+    pixmap: &mut Pixmap,
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    width: f32,
+    color: Color,
+    style: &str,
+) {
+    let mut builder = PathBuilder::new();
+    builder.move_to(x1, y1);
+    builder.line_to(x2, y2);
+    let Some(path) = builder.finish() else {
+        return;
+    };
+
+    let mut paint = Paint::default();
+    paint.set_color(color);
+    paint.anti_alias = true;
+    let (dash, line_cap) = border_dash(style, width);
+    pixmap.stroke_path(
+        &path,
+        &paint,
+        &Stroke {
+            width,
+            dash,
+            line_cap,
+            ..Default::default()
+        },
+        Transform::identity(),
+        None,
     );
 }
 
@@ -4853,6 +4938,106 @@ mod tests {
             painted.get_pixel(20, 20).0[0..3],
             [0, 0, 255],
             "the raised child stays on top"
+        );
+    }
+
+    /// How many pixels along a horizontal line carry the border colour.
+    fn painted_run(image: &image::RgbaImage, y: u32, from_x: u32, to_x: u32) -> u32 {
+        (from_x..to_x)
+            .filter(|x| image.get_pixel(*x, y).0[0..3] != [255, 255, 255])
+            .count() as u32
+    }
+
+    #[test]
+    fn a_dashed_border_leaves_gaps_a_solid_one_does_not() {
+        let solid = render(
+            r##"
+            <gui version="0.2">
+              <frame w="80" h="40" fill="#ffffff">
+                <rect abs x="10" y="10" w="60" h="20" fill="#ffffff"
+                      border="2 #000000 solid" />
+              </frame>
+            </gui>
+            "##,
+        );
+        let dashed = render(
+            r##"
+            <gui version="0.2">
+              <frame w="80" h="40" fill="#ffffff">
+                <rect abs x="10" y="10" w="60" h="20" fill="#ffffff"
+                      border="2 #000000 dashed" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        let solid_run = painted_run(&solid, 10, 10, 70);
+        let dashed_run = painted_run(&dashed, 10, 10, 70);
+        assert!(solid_run > 50, "the solid top edge is continuous");
+        assert!(
+            dashed_run < solid_run,
+            "the dashed one paints less of the same edge: {dashed_run} of {solid_run}"
+        );
+        assert!(dashed_run > 0, "but it does paint");
+    }
+
+    #[test]
+    fn a_dotted_border_paints_less_than_a_dashed_one() {
+        let dotted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="80" h="40" fill="#ffffff">
+                <rect abs x="10" y="10" w="60" h="20" fill="#ffffff"
+                      border="2 #000000 dotted" />
+              </frame>
+            </gui>
+            "##,
+        );
+        let dashed = render(
+            r##"
+            <gui version="0.2">
+              <frame w="80" h="40" fill="#ffffff">
+                <rect abs x="10" y="10" w="60" h="20" fill="#ffffff"
+                      border="2 #000000 dashed" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert!(
+            painted_run(&dotted, 10, 10, 70) < painted_run(&dashed, 10, 10, 70),
+            "dots are shorter than dashes at the same spacing"
+        );
+    }
+
+    #[test]
+    fn a_sided_border_dashes_too() {
+        // A border with different widths per side takes the other painting
+        // path, which had to learn the same trick.
+        let solid = render(
+            r##"
+            <gui version="0.2">
+              <frame w="80" h="40" fill="#ffffff">
+                <rect abs x="10" y="10" w="60" h="20" fill="#ffffff"
+                      border="2 0 4 0 #000000 solid" />
+              </frame>
+            </gui>
+            "##,
+        );
+        let dashed = render(
+            r##"
+            <gui version="0.2">
+              <frame w="80" h="40" fill="#ffffff">
+                <rect abs x="10" y="10" w="60" h="20" fill="#ffffff"
+                      border="2 0 4 0 #000000 dashed" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert!(
+            painted_run(&dashed, 10, 10, 70) < painted_run(&solid, 10, 10, 70),
+            "the top edge breaks up on the sided path too"
         );
     }
 
