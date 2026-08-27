@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **111** |
+| Implemented | **113** |
 | Partial | **0** |
-| Not implemented | **9** |
+| Not implemented | **7** |
 | Total | **120** |
 
 ## Not implemented
@@ -23,8 +23,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `constraint-h` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `constraint-v` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `font-feature` | `<text>` |
-| `font-postscript` | `<text>` |
-| `font-style-name` | `<text>` |
 | `text-rendering` | `<text>` |
 | `text-resize` | `<text>` |
 | `writing-mode` | `<text>` |
@@ -65,10 +63,12 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `flip` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `font-family` | `<text>` |
 | `font-optical-sizing` | `<text>` |
+| `font-postscript` | `<text>` |
 | `font-size` | `<text>` |
 | `font-smoothing` | `<text>` |
 | `font-stretch` | `<text>` |
 | `font-style` | `<text>` |
+| `font-style-name` | `<text>` |
 | `font-variation` | `<text>` |
 | `font-weight` | `<text>` |
 | `gap` | `<stack>`, `<row>`, `<col>` |

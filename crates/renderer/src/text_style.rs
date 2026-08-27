@@ -181,16 +181,138 @@ pub(crate) struct TextRunStyle {
 
 const DEFAULT_FONT_SIZE: f32 = 16.0;
 
+/// A face named as a whole rather than by family, weight and style.
+///
+/// `font-style-name` carries the name the type designer gave one face —
+/// "SemiBold Italic" — and `font-postscript` carries its PostScript name —
+/// "Inter-SemiBoldItalic". Both name a concrete face, and the font store is
+/// keyed by family, weight and style, so they are translated into those
+/// rather than looked up as a fourth key.
+#[derive(Debug, Default, Clone, PartialEq)]
+struct NamedFace {
+    family: Option<String>,
+    weight: Option<String>,
+    style: Option<String>,
+}
+
+/// Reads whichever of the two naming properties the node carries.
+///
+/// `font-style-name` is the more specific of the two: a PostScript name has
+/// to be split apart to be read at all, so an explicit style name is trusted
+/// over one recovered from it.
+fn resolve_named_face<S: TextSource>(node: &S, metadata: &GuiMetadata) -> NamedFace {
+    let postscript = style_value(node, metadata, "font-postscript");
+    let (family, from_postscript) = match postscript.as_deref() {
+        Some(name) => split_postscript_name(name),
+        None => (None, None),
+    };
+
+    let style_name = style_value(node, metadata, "font-style-name").or(from_postscript);
+    let (weight, style) = match style_name.as_deref() {
+        Some(name) => parse_style_name(name),
+        None => (None, None),
+    };
+
+    NamedFace {
+        family,
+        weight,
+        style,
+    }
+}
+
+/// Splits `"Inter-SemiBoldItalic"` into its family and its style name.
+///
+/// PostScript names join the two with a hyphen and strip the spaces out of
+/// each, so the style half is put back into words before it is read. A name
+/// with no hyphen is all family and describes no style.
+fn split_postscript_name(name: &str) -> (Option<String>, Option<String>) {
+    let name = name.trim();
+    let Some((family, style)) = name.split_once('-') else {
+        return ((!name.is_empty()).then(|| name.to_owned()), None);
+    };
+
+    let family = family.trim();
+    (
+        (!family.is_empty()).then(|| family.to_owned()),
+        (!style.is_empty()).then(|| split_camel_case(style)),
+    )
+}
+
+/// `"SemiBoldItalic"` -> `"Semi Bold Italic"`.
+///
+/// A capital starts a new word, except where it follows another capital, so
+/// an acronym stays whole.
+fn split_camel_case(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 4);
+    let mut previous_upper = true;
+    for character in value.chars() {
+        if character.is_uppercase() && !previous_upper && !out.is_empty() {
+            out.push(' ');
+        }
+        previous_upper = character.is_uppercase();
+        out.push(character);
+    }
+    out
+}
+
+/// Reads a face's style name into the weight and slant it stands for.
+///
+/// The weight words are the CSS-named ones, which is what a type designer
+/// spells a face with; a name mentioning none of them describes a regular.
+/// "Semi Bold" and "SemiBold" both arrive here spaced, so the two-word forms
+/// are matched before the one-word ones they contain.
+fn parse_style_name(name: &str) -> (Option<String>, Option<String>) {
+    let lowered = name.to_lowercase();
+    let squashed: String = lowered.chars().filter(|c| !c.is_whitespace()).collect();
+
+    let weight = [
+        ("extrablack", "950"),
+        ("ultrablack", "950"),
+        ("extrabold", "800"),
+        ("ultrabold", "800"),
+        ("extralight", "200"),
+        ("ultralight", "200"),
+        ("semibold", "600"),
+        ("demibold", "600"),
+        ("semilight", "350"),
+        ("thin", "100"),
+        ("light", "300"),
+        ("medium", "500"),
+        ("bold", "700"),
+        ("black", "900"),
+        ("heavy", "900"),
+        ("regular", "400"),
+        ("normal", "400"),
+        ("book", "400"),
+    ]
+    .into_iter()
+    .find(|(word, _)| squashed.contains(word))
+    .map(|(_, weight)| weight.to_owned());
+
+    let style =
+        (squashed.contains("italic") || squashed.contains("oblique")).then(|| "italic".to_owned());
+
+    // A name that says nothing about weight still describes a face, and that
+    // face is a regular — "Italic" on its own is regular italic.
+    let weight = weight.or_else(|| style.is_some().then(|| "400".to_owned()));
+
+    (weight, style)
+}
+
 /// Resolves the style of a `<text>` node itself.
 pub(crate) fn resolve_text_style<S: TextSource>(node: &S, metadata: &GuiMetadata) -> TextStyle {
     let font_size = style_number(node, metadata, "font-size")
         .or_else(|| style_number(node, metadata, "size"))
         .unwrap_or(DEFAULT_FONT_SIZE);
 
+    // `font-family`/`font-weight`/`font-style` name a face directly and win.
+    // The whole-face names fill in whichever of the three they can.
+    let named = resolve_named_face(node, metadata);
+
     TextStyle {
-        font_family: style_value(node, metadata, "font-family"),
-        font_weight: style_value(node, metadata, "font-weight"),
-        font_style: style_value(node, metadata, "font-style"),
+        font_family: style_value(node, metadata, "font-family").or(named.family),
+        font_weight: style_value(node, metadata, "font-weight").or(named.weight),
+        font_style: style_value(node, metadata, "font-style").or(named.style),
         font_size,
         line_height: style_number(node, metadata, "line-height"),
         letter_spacing: style_number(node, metadata, "letter-spacing").unwrap_or(0.0),
@@ -435,12 +557,20 @@ fn inherit_style<S: TextSource>(node: &S, metadata: &GuiMetadata, parent: &TextS
     };
     let line_height = style_number(node, metadata, "line-height").or(inherited_line_height);
 
+    // A segment naming a whole face is naming its own, so those come before
+    // anything inherited — but after the segment's own explicit properties.
+    let named = resolve_named_face(node, metadata);
+
     TextStyle {
         font_family: style_value(node, metadata, "font-family")
+            .or(named.family)
             .or_else(|| parent.font_family.clone()),
         font_weight: style_value(node, metadata, "font-weight")
+            .or(named.weight)
             .or_else(|| parent.font_weight.clone()),
-        font_style: style_value(node, metadata, "font-style").or_else(|| parent.font_style.clone()),
+        font_style: style_value(node, metadata, "font-style")
+            .or(named.style)
+            .or_else(|| parent.font_style.clone()),
         font_size,
         line_height,
         letter_spacing: style_number(node, metadata, "letter-spacing")
@@ -638,6 +768,135 @@ mod tests {
         assert_eq!(runs[0].value, "ONE ");
         assert_eq!(runs[1].value, "TWO ", "inherited from the text node");
         assert_eq!(runs[2].value, "three", "its own wins");
+    }
+
+    #[test]
+    fn a_style_name_resolves_to_a_weight_and_a_slant() {
+        assert_eq!(
+            parse_style_name("SemiBold Italic"),
+            (Some("600".to_owned()), Some("italic".to_owned()))
+        );
+        assert_eq!(parse_style_name("Bold"), (Some("700".to_owned()), None));
+        assert_eq!(parse_style_name("Thin"), (Some("100".to_owned()), None));
+        assert_eq!(
+            parse_style_name("ExtraBold"),
+            (Some("800".to_owned()), None)
+        );
+        // A slant with no weight word is a regular italic.
+        assert_eq!(
+            parse_style_name("Italic"),
+            (Some("400".to_owned()), Some("italic".to_owned()))
+        );
+        // "Oblique" is the same slant under another name.
+        assert_eq!(
+            parse_style_name("Oblique"),
+            (Some("400".to_owned()), Some("italic".to_owned()))
+        );
+        // A name describing neither describes nothing.
+        assert_eq!(parse_style_name("Condensed"), (None, None));
+    }
+
+    #[test]
+    fn a_two_word_weight_beats_the_word_inside_it() {
+        // "SemiBold" contains "bold", so the longer word has to be tried
+        // first or every semibold face would come out at 700.
+        assert_eq!(parse_style_name("SemiBold").0.as_deref(), Some("600"));
+        assert_eq!(parse_style_name("ExtraLight").0.as_deref(), Some("200"));
+        assert_eq!(parse_style_name("ExtraBlack").0.as_deref(), Some("950"));
+    }
+
+    #[test]
+    fn a_postscript_name_splits_into_a_family_and_a_style() {
+        assert_eq!(
+            split_postscript_name("Inter-SemiBoldItalic"),
+            (
+                Some("Inter".to_owned()),
+                Some("Semi Bold Italic".to_owned())
+            )
+        );
+        // No hyphen: all family, no style.
+        assert_eq!(
+            split_postscript_name("Helvetica"),
+            (Some("Helvetica".to_owned()), None)
+        );
+    }
+
+    #[test]
+    fn splitting_camel_case_keeps_an_acronym_whole() {
+        assert_eq!(split_camel_case("SemiBold"), "Semi Bold");
+        assert_eq!(split_camel_case("SC"), "SC");
+        assert_eq!(split_camel_case("BoldSC"), "Bold SC");
+    }
+
+    #[test]
+    fn font_style_name_selects_the_face() {
+        let (node, metadata) = text_node(
+            r##"
+            <gui version="0.2">
+              <col>
+                <text value="Hello" font-family="Inter"
+                      font-style-name="SemiBold Italic" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        let style = resolve_text_runs(&node, &metadata)[0].style.clone();
+        assert_eq!(style.font_weight.as_deref(), Some("600"));
+        assert_eq!(style.font_style.as_deref(), Some("italic"));
+        assert_eq!(style.font_family.as_deref(), Some("Inter"));
+    }
+
+    #[test]
+    fn font_postscript_supplies_the_family_too() {
+        let (node, metadata) = text_node(
+            r##"
+            <gui version="0.2">
+              <col>
+                <text value="Hello" font-postscript="Inter-Bold" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        let style = resolve_text_runs(&node, &metadata)[0].style.clone();
+        assert_eq!(style.font_family.as_deref(), Some("Inter"));
+        assert_eq!(style.font_weight.as_deref(), Some("700"));
+    }
+
+    #[test]
+    fn an_explicit_weight_outranks_the_face_name() {
+        let (node, metadata) = text_node(
+            r##"
+            <gui version="0.2">
+              <col>
+                <text value="Hello" font-postscript="Inter-Bold"
+                      font-weight="300" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        let style = resolve_text_runs(&node, &metadata)[0].style.clone();
+        assert_eq!(style.font_weight.as_deref(), Some("300"));
+        assert_eq!(style.font_family.as_deref(), Some("Inter"), "still read");
+    }
+
+    #[test]
+    fn a_style_name_outranks_one_recovered_from_a_postscript_name() {
+        let (node, metadata) = text_node(
+            r##"
+            <gui version="0.2">
+              <col>
+                <text value="Hello" font-postscript="Inter-Bold"
+                      font-style-name="Light" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        let style = resolve_text_runs(&node, &metadata)[0].style.clone();
+        assert_eq!(style.font_weight.as_deref(), Some("300"));
     }
 
     #[test]

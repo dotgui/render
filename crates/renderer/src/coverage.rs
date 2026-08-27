@@ -241,6 +241,8 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "text",
         &[
+            "font-postscript",
+            "font-style-name",
             "direction",
             "name",
             "text-case",
@@ -454,6 +456,8 @@ mod tests {
             ("rect", "border-align"),
             ("ellipse", "fill-rule"),
             ("text", "direction"),
+            ("text", "font-postscript"),
+            ("text", "font-style-name"),
         ] {
             assert!(
                 is_supported(tag, attribute, true),
@@ -461,10 +465,12 @@ mod tests {
             );
         }
 
-        // And that the one known gap left stays declared as a gap.
-        assert!(
-            !is_supported("frame", "border-image", true),
-            "<frame> border-image is declared but the renderer does not read it"
-        );
+        // And that the known gaps stay declared as gaps.
+        for (tag, attribute) in [("frame", "border-image"), ("text", "font-feature")] {
+            assert!(
+                !is_supported(tag, attribute, true),
+                "<{tag}> {attribute} is declared but the renderer does not read it"
+            );
+        }
     }
 }
