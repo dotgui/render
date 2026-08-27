@@ -255,6 +255,7 @@ fn style_for_node(node: &GuiNode, metadata: &GuiMetadata, parent_layout: ParentL
     let mut style = Style {
         display: display_for(node, metadata),
         flex_direction: flex_direction_for(node),
+        flex_wrap: flex_wrap_for(node),
         size: size_for(node, metadata),
         // kit stretches every rule on its cross axis, which is what gives a
         // horizontal divider the full width of its column and a vertical one
@@ -354,6 +355,18 @@ fn display_for(node: &GuiNode, metadata: &GuiMetadata) -> Display {
     match node.tag.as_str() {
         "row" | "col" | "stack" | "frame" => Display::Flex,
         _ => Display::Block,
+    }
+}
+
+/// Whether a container lets its children run onto another line.
+///
+/// A spec boolean is true by presence, so any value but `false` enables it.
+/// Children keep `flex_shrink: 0`, so a row that wraps breaks where the next
+/// child would not fit rather than squeezing them all onto one line.
+fn flex_wrap_for(node: &GuiNode) -> FlexWrap {
+    match node.attributes.get("wrap") {
+        Some(value) if value.trim() != "false" => FlexWrap::Wrap,
+        _ => FlexWrap::NoWrap,
     }
 }
 
@@ -816,6 +829,82 @@ mod tests {
     fn layout_of(xml: &str) -> LayoutBox {
         let document = parse_gui_xml(xml).expect("valid gui");
         compute_taffy_layout(&document).expect("layout computes")
+    }
+
+    #[test]
+    fn wrap_moves_a_child_that_does_not_fit_onto_the_next_line() {
+        // Three 40px children in a 100px row: two fit, the third does not.
+        //
+        // The row hugs its height on purpose. With a taller declared height
+        // the lines would also be stretched to share the spare room, as CSS
+        // `align-content: stretch` does, and the second line would start
+        // lower than the first line's own height — true, but a second thing
+        // to reason about in a test that is about the break.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <row w="100" wrap gap="10">
+                <rect w="40" h="20" />
+                <rect w="40" h="20" />
+                <rect w="40" h="20" />
+              </row>
+            </gui>
+            "#,
+        );
+
+        let kids = &layout.children;
+        assert_eq!((kids[0].rect.x, kids[0].rect.y), (0.0, 0.0));
+        assert_eq!((kids[1].rect.x, kids[1].rect.y), (50.0, 0.0));
+        assert_eq!(
+            (kids[2].rect.x, kids[2].rect.y),
+            (0.0, 30.0),
+            "the third starts a second line, a gap below the first"
+        );
+    }
+
+    #[test]
+    fn without_wrap_a_row_keeps_every_child_on_one_line() {
+        // The same row, overflowing rather than wrapping: children declare a
+        // size, so they do not shrink to fit either.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <row w="100" h="60" gap="10">
+                <rect w="40" h="20" />
+                <rect w="40" h="20" />
+                <rect w="40" h="20" />
+              </row>
+            </gui>
+            "#,
+        );
+
+        let kids = &layout.children;
+        assert_eq!((kids[2].rect.x, kids[2].rect.y), (100.0, 0.0));
+        assert_eq!(kids[2].rect.width, 40.0, "and it is not squeezed");
+    }
+
+    #[test]
+    fn a_wrapping_column_breaks_into_a_second_track() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="100" h="50" wrap gap="10">
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        let kids = &layout.children;
+        assert_eq!((kids[0].rect.x, kids[0].rect.y), (0.0, 0.0));
+        assert_eq!((kids[1].rect.x, kids[1].rect.y), (0.0, 30.0));
+        assert_eq!(
+            kids[2].rect.y, 0.0,
+            "the third starts a new column rather than overflowing the height"
+        );
+        assert!(kids[2].rect.x > 0.0, "and it sits beside the first two");
     }
 
     #[test]

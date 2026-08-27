@@ -70,6 +70,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "stack",
         &[
+            "wrap",
             "reverse-z",
             "w",
             "h",
@@ -105,6 +106,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "row",
         &[
+            "wrap",
             "reverse-z",
             "w",
             "h",
@@ -135,6 +137,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "col",
         &[
+            "wrap",
             "reverse-z",
             "w",
             "h",
@@ -390,6 +393,10 @@ mod tests {
             ("text", "decoration-style"),
             ("text", "text-underline-offset"),
             ("text", "text-decoration-skip-ink"),
+            ("rect", "visible"),
+            ("row", "reverse-z"),
+            ("text", "text-case"),
+            ("row", "wrap"),
         ] {
             assert!(
                 is_supported(tag, attribute, true),
@@ -398,11 +405,7 @@ mod tests {
         }
 
         // And that known gaps stay declared as gaps.
-        for (tag, attribute) in [
-            ("frame", "border-image"),
-            ("rect", "fill-rule"),
-            ("row", "wrap"),
-        ] {
+        for (tag, attribute) in [("frame", "border-image"), ("rect", "fill-rule")] {
             assert!(
                 !is_supported(tag, attribute, true),
                 "<{tag}> {attribute} is declared but the renderer does not read it"

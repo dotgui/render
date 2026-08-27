@@ -1,0 +1,33 @@
+<gui version="0.2">
+  <col w="240" fill="#ffffff" p="12" gap="12">
+
+    <!-- Five 60px chips in a 200px row. Three fit per line, so the row
+         breaks twice and hugs to two lines. -->
+    <row w="200" wrap gap="8">
+      <rect w="60" h="24" fill="#0d99ff" radius="4" />
+      <rect w="60" h="24" fill="#0d99ff" radius="4" />
+      <rect w="60" h="24" fill="#0d99ff" radius="4" />
+      <rect w="60" h="24" fill="#0d99ff" radius="4" />
+      <rect w="60" h="24" fill="#0d99ff" radius="4" />
+    </row>
+
+    <!-- The same children without `wrap`: one line, overflowing the box,
+         because a declared size does not give way. -->
+    <row w="200" gap="8">
+      <rect w="60" h="24" fill="#f2b8b5" radius="4" />
+      <rect w="60" h="24" fill="#f2b8b5" radius="4" />
+      <rect w="60" h="24" fill="#f2b8b5" radius="4" />
+      <rect w="60" h="24" fill="#f2b8b5" radius="4" />
+      <rect w="60" h="24" fill="#f2b8b5" radius="4" />
+    </row>
+
+    <!-- A wrapping column breaks into a second track instead. -->
+    <col w="200" h="80" wrap gap="8">
+      <rect w="40" h="24" fill="#111111" radius="4" />
+      <rect w="40" h="24" fill="#111111" radius="4" />
+      <rect w="40" h="24" fill="#111111" radius="4" />
+      <rect w="40" h="24" fill="#111111" radius="4" />
+    </col>
+
+  </col>
+</gui>
