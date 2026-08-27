@@ -88,6 +88,17 @@ This is an early native renderer. It can already:
 - expand `<instance>` nodes against `<components>` definitions, with declared
   props, ad-hoc overrides by layer id, variants, and instance scaling
 - expose parsing, layout, scene, and PNG rendering through WASM
+- skip a node the document hides with `visible`, keeping the space it holds
+- paint children back to front with `reverse-z`, and wrap them with `wrap`
+- case a run with `text-case`, small capitals included, before it is measured
+- gap a grid's axes apart with `row-gap`/`col-gap`
+- describe a border by longhand — `border-width`, `border-color`,
+  `border-style`, `border-align` — dash it, and fill it with `border-image`
+- pin an out-of-flow child with `constraint-h`/`constraint-v`, including
+  centring and stretching between both edges
+- select a face by `font-postscript` or `font-style-name`
+- size a text box with `text-resize`, and turn one on its side with
+  `writing-mode`
 
 It is not complete yet. The renderer should be treated as a growing engine, not
 as a pixel-perfect replacement for the HTML renderer.
@@ -731,6 +742,23 @@ attribute means adding it to that list in the same change.
 ```bash
 UPDATE_COVERAGE=1 cargo test -p dotgui-renderer --test spec_coverage
 ```
+
+#### The one property still unread
+
+`font-feature` is the only spec property the renderer does not read, and it
+is left that way deliberately rather than pending.
+
+Applying OpenType features means shaping the text, and shaping is not a
+painting detail that could be added at the last step: layout measures every
+run to size the box it will be drawn into, so a feature that changes which
+glyphs are used has to change the measurement too, or a box is sized for one
+string and painted with another. This renderer rasterises glyphs through
+fontdue with no shaper, and both halves of that pipeline would have to move
+from characters to glyph ids together.
+
+So it stays declared as a gap. Reading the attribute and dropping the
+features would put a row in the table that the renderer could not honour,
+which is the one thing a generated coverage report exists to prevent.
 
 The spec itself is vendored at `spec/spec.json` rather than read from a
 sibling `dotgui/core` checkout, so generation and the check work from a
