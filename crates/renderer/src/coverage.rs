@@ -310,6 +310,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "rect",
         &[
+            "fill-rule",
             "border-width",
             "border-color",
             "border-style",
@@ -331,6 +332,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "ellipse",
         &[
+            "fill-rule",
             "border-width",
             "border-color",
             "border-style",
@@ -449,6 +451,7 @@ mod tests {
             ("rect", "border-color"),
             ("rect", "border-style"),
             ("rect", "border-align"),
+            ("ellipse", "fill-rule"),
         ] {
             assert!(
                 is_supported(tag, attribute, true),
@@ -456,12 +459,10 @@ mod tests {
             );
         }
 
-        // And that known gaps stay declared as gaps.
-        for (tag, attribute) in [("frame", "border-image"), ("rect", "fill-rule")] {
-            assert!(
-                !is_supported(tag, attribute, true),
-                "<{tag}> {attribute} is declared but the renderer does not read it"
-            );
-        }
+        // And that the one known gap left stays declared as a gap.
+        assert!(
+            !is_supported("frame", "border-image", true),
+            "<frame> border-image is declared but the renderer does not read it"
+        );
     }
 }

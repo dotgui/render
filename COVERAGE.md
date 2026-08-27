@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **109** |
+| Implemented | **110** |
 | Partial | **1** |
-| Not implemented | **10** |
+| Not implemented | **9** |
 | Total | **120** |
 
 ## Not implemented
@@ -22,7 +22,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `border-image` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `constraint-h` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `constraint-v` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `fill-rule` | `<rect>`, `<ellipse>` |
 | `font-feature` | `<text>` |
 | `font-postscript` | `<text>` |
 | `font-style-name` | `<text>` |
@@ -66,6 +65,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `decoration-thickness` | `<text>` |
 | `effect-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<rect>`, `<ellipse>` |
 | `fill` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
+| `fill-rule` | `<rect>`, `<ellipse>` |
 | `fill-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
 | `filter` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `fit` | `<img>` |

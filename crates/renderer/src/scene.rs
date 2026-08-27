@@ -4,6 +4,21 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Which rule decides the inside of a shape's path.
+///
+/// The two rules only disagree where a path crosses itself, and neither a
+/// `<rect>` nor an `<ellipse>` does — the spec has no element that carries an
+/// arbitrary path. So this changes nothing about what the current shapes look
+/// like. It is read and handed to the rasteriser anyway, rather than dropped,
+/// because the alternative is silently ignoring a property the document set,
+/// and because the shapes are the only thing keeping the two rules equal here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ShapeFillRule {
+    NonZero,
+    EvenOdd,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scene {
     pub name: Option<String>,
@@ -61,6 +76,8 @@ pub struct SceneNode {
     /// interactive consumer of the scene needs it, so it is carried rather
     /// than dropped.
     pub href: Option<String>,
+    /// `fill-rule`, for the shapes that take one.
+    pub fill_rule: ShapeFillRule,
     pub opacity: f32,
     /// Whether the node paints.
     ///
@@ -339,6 +356,10 @@ fn build_scene_node(
             .map(|value| resolve_token(value, metadata))
             .filter(|value| !value.trim().is_empty() && value.trim() != "none"),
         href: attr(layout, "href").map(ToOwned::to_owned),
+        fill_rule: match attr(layout, "fill-rule").map(str::trim) {
+            Some("evenodd") => ShapeFillRule::EvenOdd,
+            _ => ShapeFillRule::NonZero,
+        },
         transform: transform_for(layout, metadata),
         mask: attr(layout, "mask").is_some_and(|value| value != "false"),
         image_mask: image_mask_for(layout, metadata),
@@ -1103,6 +1124,33 @@ fn truncates(layout: &LayoutBox) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_shape_carries_the_fill_rule_it_declares() {
+        let document = parse_gui_xml(
+            r##"
+            <gui version="0.2">
+              <col>
+                <rect w="10" h="10" fill="#000000" fill-rule="evenodd" />
+                <rect w="10" h="10" fill="#000000" fill-rule="nonzero" />
+                <ellipse w="10" h="10" fill="#000000" />
+              </col>
+            </gui>
+            "##,
+        )
+        .expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+
+        let kids = &scene.root.children;
+        assert_eq!(kids[0].fill_rule, ShapeFillRule::EvenOdd);
+        assert_eq!(kids[1].fill_rule, ShapeFillRule::NonZero);
+        assert_eq!(
+            kids[2].fill_rule,
+            ShapeFillRule::NonZero,
+            "nonzero is the default, as in SVG"
+        );
+    }
 
     fn border_of(xml: &str) -> Option<Border> {
         let document = parse_gui_xml(xml).expect("valid gui");

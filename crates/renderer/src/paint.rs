@@ -6,8 +6,8 @@ use crate::{
     gradient,
     layout::APPROX_LINE_HEIGHT_RATIO,
     text, AssetCache, Border, BorderWidths, DecorationLine, DecorationStyle, Effect, Fill,
-    FontFace, FontStore, ImageMask, PaintContent, Scene, SceneNode, TextDecoration, TextMeasurer,
-    TextSegment, Transform2D,
+    FontFace, FontStore, ImageMask, PaintContent, Scene, SceneNode, ShapeFillRule, TextDecoration,
+    TextMeasurer, TextSegment, Transform2D,
 };
 use fontdue::{Font, FontSettings};
 use std::{fs, path::Path};
@@ -787,6 +787,14 @@ fn paint_fill(pixmap: &mut Pixmap, node: &SceneNode, asset_cache: Option<&AssetC
     }
 }
 
+/// The node's `fill-rule`, in the rasteriser's terms.
+fn shape_fill_rule(node: &SceneNode) -> FillRule {
+    match node.fill_rule {
+        ShapeFillRule::EvenOdd => FillRule::EvenOdd,
+        ShapeFillRule::NonZero => FillRule::Winding,
+    }
+}
+
 fn paint_one_fill(
     pixmap: &mut Pixmap,
     node: &SceneNode,
@@ -827,7 +835,7 @@ fn paint_one_fill(
             pixmap.fill_path(
                 &path,
                 &paint,
-                FillRule::Winding,
+                shape_fill_rule(node),
                 Transform::identity(),
                 None,
             );
