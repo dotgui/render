@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **102** |
+| Implemented | **104** |
 | Partial | **1** |
-| Not implemented | **17** |
+| Not implemented | **15** |
 | Total | **120** |
 
 ## Not implemented
@@ -24,7 +24,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `border-image` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `border-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `border-width` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
-| `col-gap` | `<grid>` |
 | `constraint-h` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `constraint-v` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `fill-rule` | `<rect>`, `<ellipse>` |
@@ -32,7 +31,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `font-postscript` | `<text>` |
 | `font-style-name` | `<text>` |
 | `name` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `row-gap` | `<grid>` |
 | `text-rendering` | `<text>` |
 | `text-resize` | `<text>` |
 | `writing-mode` | `<text>` |
@@ -60,6 +58,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `border` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `clip` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `clip-path` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `col-gap` | `<grid>` |
 | `columns` | `<grid>` |
 | `corner-smoothing` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>` |
 | `decoration` | `<text>` |
@@ -125,6 +124,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `radius` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>` |
 | `reverse-z` | `<stack>`, `<row>`, `<col>` |
 | `rotation` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `row-gap` | `<grid>` |
 | `rows` | `<grid>` |
 | `scale-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `scale-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |

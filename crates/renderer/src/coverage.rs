@@ -168,6 +168,8 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "grid",
         &[
+            "row-gap",
+            "col-gap",
             "w",
             "h",
             "x",

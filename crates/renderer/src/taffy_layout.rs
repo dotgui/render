@@ -501,27 +501,43 @@ fn dimension_attr(node: &GuiNode, metadata: &GuiMetadata, name: &str) -> Dimensi
 /// `gap="auto"` means "push the children apart", handled as zero spacing plus
 /// space-between justification.
 fn gap_size(node: &GuiNode, metadata: &GuiMetadata) -> Size<LengthPercentage> {
-    let Some(raw) = node.attributes.get("gap") else {
-        return Size {
-            width: zero(),
-            height: zero(),
-        };
-    };
-
-    let resolved = resolve_token(raw, metadata);
-    let mut values = resolved.split_whitespace().map(|part| {
-        if part == "auto" {
-            return zero();
-        }
-        parse_number(part).map_or(zero(), length)
+    let shorthand = node.attributes.get("gap").map(|raw| {
+        let resolved = resolve_token(raw, metadata);
+        let mut values = resolved.split_whitespace().map(gap_length);
+        let column = values.next().unwrap_or(zero());
+        // One value sets both axes, as the CSS shorthand does.
+        let row = values.next().unwrap_or(column);
+        (column, row)
     });
+    let (column, row) = shorthand.unwrap_or((zero(), zero()));
 
-    let column = values.next().unwrap_or(zero());
-    let row = values.next().unwrap_or(column);
+    // The per-axis properties are the more specific of the two, so either one
+    // overrides the shorthand on its own axis and leaves the other alone.
+    //
+    // Taffy's `Size` names the axes the gap runs *along*: `width` is the gap
+    // between columns and `height` the gap between rows, which is why they
+    // read crossed here.
     Size {
-        width: column,
-        height: row,
+        width: axis_gap(node, metadata, "col-gap").unwrap_or(column),
+        height: axis_gap(node, metadata, "row-gap").unwrap_or(row),
     }
+}
+
+fn axis_gap(node: &GuiNode, metadata: &GuiMetadata, name: &str) -> Option<LengthPercentage> {
+    node.attributes
+        .get(name)
+        .map(|raw| gap_length(&resolve_token(raw, metadata)))
+}
+
+/// One gap value.
+///
+/// `auto` is a distribution instruction rather than a length — it is read as a
+/// `justify-content` further up — so as a length it contributes nothing.
+fn gap_length(value: &str) -> LengthPercentage {
+    if value.trim() == "auto" {
+        return zero();
+    }
+    parse_number(value.trim()).map_or(zero(), length)
 }
 
 /// How a container lines its children up on its cross axis.
@@ -829,6 +845,48 @@ mod tests {
     fn layout_of(xml: &str) -> LayoutBox {
         let document = parse_gui_xml(xml).expect("valid gui");
         compute_taffy_layout(&document).expect("layout computes")
+    }
+
+    #[test]
+    fn a_grid_can_gap_its_axes_independently() {
+        // Two columns, two rows, 20px cells: 30 between the columns and 6
+        // between the rows.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <grid columns="2" col-gap="30" row-gap="6">
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+              </grid>
+            </gui>
+            "#,
+        );
+
+        let kids = &layout.children;
+        assert_eq!(kids[1].rect.x, 50.0, "20 wide plus a 30 column gap");
+        assert_eq!(kids[2].rect.y, 26.0, "20 tall plus a 6 row gap");
+    }
+
+    #[test]
+    fn a_per_axis_gap_overrides_the_shorthand_on_that_axis_only() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <grid columns="2" gap="10" row-gap="40">
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+              </grid>
+            </gui>
+            "#,
+        );
+
+        let kids = &layout.children;
+        assert_eq!(kids[1].rect.x, 30.0, "the shorthand still sets the columns");
+        assert_eq!(kids[2].rect.y, 60.0, "row-gap replaces it on the rows");
     }
 
     #[test]
