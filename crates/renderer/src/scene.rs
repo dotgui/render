@@ -284,6 +284,9 @@ pub enum PaintContent {
         max_lines: Option<usize>,
         truncate: bool,
         text_align: Option<String>,
+        /// `text-rendering`: which way the rasteriser is asked to lean when
+        /// speed and fidelity disagree.
+        text_rendering: Option<String>,
         /// `white-space`, `text-wrap` and `word-break`, which decide where
         /// lines may break.
         white_space: Option<String>,
@@ -1016,6 +1019,7 @@ fn content_for(layout: &LayoutBox, metadata: &GuiMetadata, ordinal: usize) -> Pa
                 max_lines: max_text_lines(layout),
                 truncate: truncates(layout),
                 text_align: text_align_for(layout),
+                text_rendering: attr(layout, "text-rendering").map(ToOwned::to_owned),
                 white_space: attr(layout, "white-space").map(ToOwned::to_owned),
                 text_wrap: attr(layout, "text-wrap").map(ToOwned::to_owned),
                 word_break: attr(layout, "word-break").map(ToOwned::to_owned),
@@ -1438,6 +1442,7 @@ mod tests {
                 max_lines: None,
                 truncate: false,
                 text_align: None,
+                text_rendering: None,
                 white_space: None,
                 text_wrap: None,
                 word_break: None,
@@ -1504,6 +1509,7 @@ mod tests {
                 max_lines: None,
                 truncate: false,
                 text_align: None,
+                text_rendering: None,
                 white_space: None,
                 text_wrap: None,
                 word_break: None,
@@ -1558,6 +1564,7 @@ mod tests {
                 max_lines: Some(1),
                 truncate: true,
                 text_align: Some("right".to_owned()),
+                text_rendering: None,
                 white_space: None,
                 text_wrap: None,
                 word_break: None,

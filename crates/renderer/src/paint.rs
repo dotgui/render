@@ -206,6 +206,22 @@ fn node_matrix(node: &SceneNode, transform: Transform2D) -> Transform {
         .pre_concat(Transform::from_translate(-pivot_x, -pivot_y))
 }
 
+/// Whether the node asked for speed over fidelity.
+///
+/// Of the four `text-rendering` values, this is the only one that can change
+/// anything here. `optimizeLegibility` asks for ligatures and kerning, which
+/// need a shaper this renderer does not have; `geometricPrecision` asks for
+/// unrounded advances, which is what the layout already computes in, so it is
+/// already what `auto` does. Those three are therefore the same drawing, and
+/// saying so is more useful than three arms that do nothing.
+fn optimizes_for_speed(node: &SceneNode) -> bool {
+    matches!(
+        &node.content,
+        PaintContent::Text { text_rendering, .. }
+            if text_rendering.as_deref().map(str::trim) == Some("optimizeSpeed")
+    )
+}
+
 /// The alpha a node's own draws use.
 ///
 /// A node painted onto its own layer has its `opacity` applied when that layer
@@ -1125,7 +1141,13 @@ impl<'a> RunStyle<'a> {
             // `none` asks for hard edges. The other two values are both
             // grayscale antialiasing here; subpixel needs the target's own
             // stripe order, which a PNG has no business assuming.
-            anti_alias: segment.font_smoothing.as_deref() != Some("none"),
+            //
+            // `text-rendering="optimizeSpeed"` asks for the same hard edges
+            // from the other direction — it is the node saying it would
+            // rather have the pixels cheaply — so either one turns smoothing
+            // off and neither can turn the other back on.
+            anti_alias: segment.font_smoothing.as_deref() != Some("none")
+                && !optimizes_for_speed(node),
             word_spacing: segment.word_spacing,
             baseline_shift: segment.baseline_shift,
             decoration: segment.decoration.clone(),
@@ -5047,6 +5069,88 @@ mod tests {
             painted_run(&dashed, 10, 10, 70) < painted_run(&solid, 10, 10, 70),
             "the top edge breaks up on the sided path too"
         );
+    }
+
+    /// How many pixels in a box are neither the background nor solid ink —
+    /// the partial coverage antialiasing leaves along a glyph's edge.
+    fn soft_pixels(image: &image::RgbaImage, w: u32, h: u32) -> u32 {
+        let mut soft = 0;
+        for y in 0..h.min(image.height()) {
+            for x in 0..w.min(image.width()) {
+                let p = image.get_pixel(x, y).0;
+                let grey = p[0];
+                if p[0] == p[1] && p[1] == p[2] && grey > 8 && grey < 247 {
+                    soft += 1;
+                }
+            }
+        }
+        soft
+    }
+
+    #[test]
+    fn optimize_speed_draws_text_without_antialiasing() {
+        let smooth = render(
+            r##"
+            <gui version="0.2">
+              <col w="120" h="40" fill="#ffffff">
+                <text value="Handgloves" font-size="20" fill="#000000" />
+              </col>
+            </gui>
+            "##,
+        );
+        let fast = render(
+            r##"
+            <gui version="0.2">
+              <col w="120" h="40" fill="#ffffff">
+                <text value="Handgloves" font-size="20" fill="#000000"
+                      text-rendering="optimizeSpeed" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        let smooth_edges = soft_pixels(&smooth, 120, 40);
+        let fast_edges = soft_pixels(&fast, 120, 40);
+        assert!(smooth_edges > 0, "the default smooths its glyph edges");
+        assert!(
+            fast_edges < smooth_edges,
+            "optimizeSpeed leaves harder edges: {fast_edges} against {smooth_edges}"
+        );
+    }
+
+    #[test]
+    fn the_other_text_rendering_values_draw_what_auto_draws() {
+        // `optimizeLegibility` wants a shaper and `geometricPrecision` wants
+        // unrounded advances, which is what layout already computes in. Both
+        // are the default drawing, and this pins that they have not quietly
+        // become something else.
+        let baseline = render(
+            r##"
+            <gui version="0.2">
+              <col w="120" h="40" fill="#ffffff">
+                <text value="Handgloves" font-size="20" fill="#000000" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        for value in ["auto", "optimizeLegibility", "geometricPrecision"] {
+            let painted = render(&format!(
+                r##"
+                <gui version="0.2">
+                  <col w="120" h="40" fill="#ffffff">
+                    <text value="Handgloves" font-size="20" fill="#000000"
+                          text-rendering="{value}" />
+                  </col>
+                </gui>
+                "##
+            ));
+            assert_eq!(
+                painted.as_raw(),
+                baseline.as_raw(),
+                "{value} should draw what auto draws"
+            );
+        }
     }
 
     fn render(xml: &str) -> image::RgbaImage {
