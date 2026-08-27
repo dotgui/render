@@ -37,6 +37,9 @@ struct TextContext {
     list_indent: f32,
     /// Whether `leading-trim` takes the half-leading off the first line.
     leading_trim: bool,
+    /// Whether `writing-mode` turns the block on its side, so lines run down
+    /// the box and stack across it.
+    vertical: bool,
 }
 
 /// Lays the document out using rough per-character width estimates.
@@ -754,7 +757,20 @@ fn text_context(node: &GuiNode, metadata: &GuiMetadata, ordinal: usize) -> Optio
             .attributes
             .get("leading-trim")
             .is_some_and(|value| value != "normal"),
+        vertical: is_vertical_writing(node, metadata),
     })
+}
+
+/// Whether `writing-mode` runs the text down the box rather than across it.
+///
+/// `vertical-rl` and `vertical-lr` differ in which side the first line sits
+/// on, which is a painting question; both turn the block on its side, which
+/// is this one.
+fn is_vertical_writing(node: &GuiNode, metadata: &GuiMetadata) -> bool {
+    node.attributes
+        .get("writing-mode")
+        .map(|value| resolve_token(value, metadata))
+        .is_some_and(|value| value.trim().starts_with("vertical"))
 }
 
 /// Resolves how many lines a `<text>` node may occupy.
@@ -809,9 +825,18 @@ fn measure_text(
             + value.chars().filter(|ch| *ch == ' ').count() as f32 * style.word_spacing
     };
 
+    // A vertical block's lines run down the box, so the length a line has to
+    // fit into is the box's height and everything below is measured against
+    // that. The result is swapped back at the end.
+    let (along, across) = if context.vertical {
+        (known_dimensions.height, available_space.height)
+    } else {
+        (known_dimensions.width, available_space.width)
+    };
+
     // `MinContent` asks how narrow the text can get, which is a zero-width
     // wrap: every word lands on its own line and the widest one wins.
-    let wrap_width = known_dimensions.width.or(match available_space.width {
+    let wrap_width = along.or(match across {
         AvailableSpace::Definite(width) => Some(width),
         AvailableSpace::MinContent => Some(0.0),
         AvailableSpace::MaxContent => None,
@@ -874,11 +899,22 @@ fn measure_text(
         0.0
     };
 
+    // `line_extent` is how far the longest line reaches, `block_extent` how
+    // far the stack of lines reaches across them. Horizontally those are the
+    // width and the height; turned on its side they trade places.
+    let line_extent = text::max_line_width(&lines, &measure) + marker_width + context.list_indent;
+    let block_extent = (height - trim).max(0.0);
+
+    if context.vertical {
+        return Size {
+            width: known_dimensions.width.unwrap_or(block_extent),
+            height: known_dimensions.height.unwrap_or(line_extent),
+        };
+    }
+
     Size {
-        width: known_dimensions.width.unwrap_or_else(|| {
-            text::max_line_width(&lines, &measure) + marker_width + context.list_indent
-        }),
-        height: known_dimensions.height.unwrap_or((height - trim).max(0.0)),
+        width: known_dimensions.width.unwrap_or(line_extent),
+        height: known_dimensions.height.unwrap_or(block_extent),
     }
 }
 
@@ -1172,6 +1208,72 @@ mod tests {
         assert_eq!(
             (scaled.children[0].rect.x, scaled.children[0].rect.y),
             (10.0, 10.0)
+        );
+    }
+
+    #[test]
+    fn a_vertical_text_box_swaps_the_axes_it_hugs() {
+        // The same string both ways. Horizontally it hugs wide and short;
+        // vertically the two have to trade places, because the lines now run
+        // down the box and stack across it.
+        let across = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="Handgloves" font-size="10" line-height="12" />
+              </col>
+            </gui>
+            "#,
+        );
+        let down = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="Handgloves" font-size="10" line-height="12"
+                      writing-mode="vertical-rl" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        let flat = across.children[0].rect;
+        let turned = down.children[0].rect;
+        assert_eq!(
+            turned.width, flat.height,
+            "the block extent is now the width"
+        );
+        assert_eq!(turned.height, flat.width, "and the line extent the height");
+    }
+
+    #[test]
+    fn a_vertical_block_wraps_against_the_boxs_height() {
+        // A declared height is the length a line has to fit into, so a short
+        // one wraps the text into more than one line — and each extra line
+        // makes the box wider rather than taller.
+        let roomy = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="Handgloves wave" h="200" font-size="10"
+                      line-height="12" writing-mode="vertical-rl" />
+              </col>
+            </gui>
+            "#,
+        );
+        let cramped = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="Handgloves wave" h="40" font-size="10"
+                      line-height="12" writing-mode="vertical-rl" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert!(
+            cramped.children[0].rect.width > roomy.children[0].rect.width,
+            "wrapping into more lines widens a vertical block"
         );
     }
 

@@ -986,6 +986,90 @@ fn paint_height(node: &SceneNode) -> f32 {
     node.bounds.height
 }
 
+/// The vertical `writing-mode` a text node asks for, if it asks for one.
+fn vertical_writing_mode(node: &SceneNode) -> Option<&str> {
+    let PaintContent::Text { writing_mode, .. } = &node.content else {
+        return None;
+    };
+    match writing_mode.as_deref().map(str::trim) {
+        Some(mode @ ("vertical-rl" | "vertical-lr")) => Some(mode),
+        _ => None,
+    }
+}
+
+/// Draws a text block turned on its side.
+///
+/// The block is laid out and drawn horizontally into a layer of its own, in a
+/// box with the node's two axes swapped, and that layer is then rotated a
+/// quarter turn into place. Doing it this way means vertical text wraps,
+/// truncates, aligns, decorates and lists exactly as horizontal text does,
+/// because it *is* horizontal text until the last step — rather than every
+/// one of those needing a second code path.
+///
+/// What the quarter turn does not do is set the glyphs upright. CSS calls
+/// that `text-orientation`, which this format has no property for, and a
+/// rotated run is what `text-orientation: sideways` gives — the correct
+/// rendering for Latin text in a vertical block, and not the one an
+/// upright-by-default script would want.
+///
+/// `vertical-rl` stacks its lines from the right edge, `vertical-lr` from the
+/// left; the rotation lands on the first of those, so the second mirrors it
+/// back across the box.
+fn paint_vertical_text(
+    pixmap: &mut Pixmap,
+    node: &SceneNode,
+    mode: &str,
+    font: Option<&Font>,
+    asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
+) {
+    let bounds = node.bounds;
+    let height = paint_height(node);
+    if bounds.width <= 0.0 || height <= 0.0 {
+        return;
+    }
+
+    // The same node in a box turned on its side, and without the writing mode
+    // that brought it here, so the horizontal path draws it.
+    let mut flat = node.clone();
+    flat.bounds.width = height;
+    flat.bounds.height = bounds.width;
+    if let PaintContent::Text { writing_mode, .. } = &mut flat.content {
+        *writing_mode = None;
+    }
+
+    let Some(mut layer) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+        return;
+    };
+    paint_content(&mut layer, &flat, font, asset_cache, fonts);
+
+    // A quarter turn clockwise about the box's own corner, then back along x
+    // by the box's width, which is where that turn leaves it.
+    let mut transform = Transform::from_translate(bounds.x + bounds.width, bounds.y)
+        .pre_concat(Transform::from_rotate(90.0))
+        .pre_concat(Transform::from_translate(-bounds.x, -bounds.y));
+
+    if mode == "vertical-lr" {
+        // Mirror across the box's vertical centre line, so the first line
+        // sits on the left edge instead of the right.
+        transform = Transform::from_translate(2.0 * bounds.x + bounds.width, 0.0)
+            .pre_concat(Transform::from_scale(-1.0, 1.0))
+            .pre_concat(transform);
+    }
+
+    pixmap.draw_pixmap(
+        0,
+        0,
+        layer.as_ref(),
+        &PixmapPaint {
+            quality: tiny_skia::FilterQuality::Bicubic,
+            ..Default::default()
+        },
+        transform,
+        None,
+    );
+}
+
 fn paint_content(
     pixmap: &mut Pixmap,
     node: &SceneNode,
@@ -993,6 +1077,11 @@ fn paint_content(
     asset_cache: Option<&AssetCache>,
     fonts: Option<&FontStore>,
 ) {
+    if let Some(mode) = vertical_writing_mode(node) {
+        paint_vertical_text(pixmap, node, mode, font, asset_cache, fonts);
+        return;
+    }
+
     match &node.content {
         PaintContent::None => {}
         PaintContent::Text {
@@ -5482,6 +5571,113 @@ mod tests {
                  but the image spans {image_from:?}..{image_to:?}"
             );
         }
+    }
+
+    /// The bounding box of everything darker than the background.
+    fn ink_bounds(image: &image::RgbaImage) -> Option<(u32, u32, u32, u32)> {
+        let mut found: Option<(u32, u32, u32, u32)> = None;
+        for y in 0..image.height() {
+            for x in 0..image.width() {
+                if image.get_pixel(x, y).0[0] < 200 {
+                    found = Some(match found {
+                        None => (x, y, x, y),
+                        Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+                    });
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn a_vertical_writing_mode_runs_the_text_down_the_box() {
+        // The same string horizontally and vertically. Horizontally its ink
+        // is wider than it is tall; turned on its side that has to reverse.
+        let across = render(
+            r##"
+            <gui version="0.2">
+              <frame w="120" h="120" fill="#ffffff">
+                <text abs x="10" y="10" value="Handgloves" font-size="14"
+                      fill="#000000" />
+              </frame>
+            </gui>
+            "##,
+        );
+        let down = render(
+            r##"
+            <gui version="0.2">
+              <frame w="120" h="120" fill="#ffffff">
+                <text abs x="10" y="10" value="Handgloves" font-size="14"
+                      fill="#000000" writing-mode="vertical-rl" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        let (ax0, ay0, ax1, ay1) = ink_bounds(&across).expect("horizontal text paints");
+        let (dx0, dy0, dx1, dy1) = ink_bounds(&down).expect("vertical text paints");
+
+        assert!(
+            ax1 - ax0 > ay1 - ay0,
+            "the horizontal run is wider than it is tall"
+        );
+        assert!(
+            dy1 - dy0 > dx1 - dx0,
+            "the vertical run is taller than it is wide"
+        );
+    }
+
+    #[test]
+    fn the_two_vertical_modes_stack_their_lines_from_opposite_edges() {
+        // Two lines, so there is a stacking direction to see. `vertical-rl`
+        // puts the first line on the right of the block, `vertical-lr` on the
+        // left, and the difference is which half of the box carries more ink.
+        let ink_split = |mode: &str| {
+            let painted = render(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="140" h="140" fill="#ffffff">
+                    <text abs x="10" y="10" w="60" h="120"
+                          value="Handgloves wave" font-size="14"
+                          fill="#000000" writing-mode="{mode}" />
+                  </frame>
+                </gui>
+                "##
+            ));
+            let (x0, _, x1, _) = ink_bounds(&painted).expect("text paints");
+            (x0 + x1) / 2
+        };
+
+        assert!(
+            ink_split("vertical-rl") > ink_split("vertical-lr"),
+            "rl stacks from the right, lr from the left"
+        );
+    }
+
+    #[test]
+    fn horizontal_tb_is_left_exactly_as_it_was() {
+        let bare = render(
+            r##"
+            <gui version="0.2">
+              <frame w="120" h="60" fill="#ffffff">
+                <text abs x="10" y="10" value="Handgloves" font-size="14"
+                      fill="#000000" />
+              </frame>
+            </gui>
+            "##,
+        );
+        let declared = render(
+            r##"
+            <gui version="0.2">
+              <frame w="120" h="60" fill="#ffffff">
+                <text abs x="10" y="10" value="Handgloves" font-size="14"
+                      fill="#000000" writing-mode="horizontal-tb" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(bare.as_raw(), declared.as_raw());
     }
 
     fn render(xml: &str) -> image::RgbaImage {

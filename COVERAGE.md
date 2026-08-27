@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **118** |
+| Implemented | **119** |
 | Partial | **0** |
-| Not implemented | **2** |
+| Not implemented | **1** |
 | Total | **120** |
 
 ## Not implemented
@@ -20,7 +20,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | Property | Elements |
 |---|---|
 | `font-feature` | `<text>` |
-| `writing-mode` | `<text>` |
 
 ## Implemented
 
@@ -141,6 +140,7 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `word-break` | `<text>` |
 | `word-spacing` | `<text>` |
 | `wrap` | `<stack>`, `<row>`, `<col>` |
+| `writing-mode` | `<text>` |
 | `x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `z-index` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
