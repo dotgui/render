@@ -41,6 +41,8 @@ pub const SHARED: &[&str] = &[
     "min-height",
     "max-height",
     "visible",
+    "constraint-h",
+    "constraint-v",
 ];
 
 /// Attributes honoured per element, beyond [`SHARED`].
@@ -462,6 +464,8 @@ mod tests {
             ("text", "font-style-name"),
             ("text", "text-rendering"),
             ("text", "text-resize"),
+            ("rect", "constraint-h"),
+            ("rect", "constraint-v"),
         ] {
             assert!(
                 is_supported(tag, attribute, true),

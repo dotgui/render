@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **115** |
+| Implemented | **117** |
 | Partial | **0** |
-| Not implemented | **5** |
+| Not implemented | **3** |
 | Total | **120** |
 
 ## Not implemented
@@ -20,8 +20,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | Property | Elements |
 |---|---|
 | `border-image` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
-| `constraint-h` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `constraint-v` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `font-feature` | `<text>` |
 | `writing-mode` | `<text>` |
 
@@ -46,6 +44,8 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `clip-path` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `col-gap` | `<grid>` |
 | `columns` | `<grid>` |
+| `constraint-h` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `constraint-v` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `corner-smoothing` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>` |
 | `decoration` | `<text>` |
 | `decoration-color` | `<text>` |

@@ -328,10 +328,79 @@ fn style_for_node(node: &GuiNode, metadata: &GuiMetadata, parent_layout: ParentL
     // positions everything it holds.
     if is_absolute(node) || parent_layout == ParentLayout::Positioned {
         style.position = Position::Absolute;
-        style.inset.left = number_attr(node, metadata, "x").map_or(auto(), length);
-        style.inset.top = number_attr(node, metadata, "y").map_or(auto(), length);
+        apply_constraints(&mut style, node, metadata);
     }
     style
+}
+
+/// Pins an out-of-flow child to the edges its constraints name.
+///
+/// `x` and `y` are offsets, and the constraints say which edge each is
+/// measured from. Without them a child is pinned to the left and the top,
+/// which is what the spec gives as the default for each axis.
+///
+/// `stretch` pins both edges of an axis at once, so the child spans its
+/// parent less the offset at each end and its own declared size stops
+/// applying — that is how one attribute makes a child grow with its parent.
+///
+/// `scale` describes how a child's position and size change *as its parent
+/// resizes*, proportionally rather than by a fixed offset. Nothing here
+/// resizes anything: a document is laid out once at the size it declares. At
+/// that one size a proportional pin and a fixed one put the child in exactly
+/// the same place, so `scale` is read and behaves as the leading edge, and
+/// would only diverge in a renderer that reflows.
+fn apply_constraints(style: &mut Style, node: &GuiNode, metadata: &GuiMetadata) {
+    let x = number_attr(node, metadata, "x").map_or(auto(), length);
+    let y = number_attr(node, metadata, "y").map_or(auto(), length);
+
+    match constraint(node, metadata, "constraint-h").as_deref() {
+        Some("right") => style.inset.right = x,
+        Some("center") => {
+            // Centring is the one case the offsets cannot express, because an
+            // inset measures from an edge. Taffy centres a box whose insets
+            // are both zero and whose margins are auto on that axis.
+            style.inset.left = zero();
+            style.inset.right = zero();
+            style.margin.left = auto();
+            style.margin.right = auto();
+        }
+        Some("stretch") => {
+            style.inset.left = x;
+            style.inset.right = x;
+            style.size.width = auto();
+        }
+        _ => style.inset.left = x,
+    }
+
+    match constraint(node, metadata, "constraint-v").as_deref() {
+        Some("bottom") => style.inset.bottom = y,
+        Some("center") => {
+            style.inset.top = zero();
+            style.inset.bottom = zero();
+            style.margin.top = auto();
+            style.margin.bottom = auto();
+        }
+        Some("stretch") => {
+            style.inset.top = y;
+            style.inset.bottom = y;
+            style.size.height = auto();
+        }
+        _ => style.inset.top = y,
+    }
+}
+
+/// One constraint attribute, if it names a value the spec defines.
+///
+/// An unrecognised value falls through to the axis default rather than
+/// pinning the child somewhere the document did not ask for.
+fn constraint(node: &GuiNode, metadata: &GuiMetadata, name: &str) -> Option<String> {
+    let value = resolve_token(node.attributes.get(name)?, metadata);
+    let value = value.trim();
+    matches!(
+        value,
+        "left" | "right" | "center" | "scale" | "stretch" | "top" | "bottom"
+    )
+    .then(|| value.to_owned())
 }
 
 /// Tags the layout engine understands. Anything else is laid out as a plain
@@ -989,6 +1058,121 @@ mod tests {
 
         let text = &layout.children[0];
         assert_eq!((text.rect.width, text.rect.height), (300.0, 80.0));
+    }
+
+    #[test]
+    fn a_right_constraint_measures_x_from_the_right_edge() {
+        // 20 wide in a 100 wide parent, 10 in from the right: 100 - 10 - 20.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <frame w="100" h="100">
+                <rect abs x="10" y="10" w="20" h="20" constraint-h="right" />
+              </frame>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.x, 70.0);
+        assert_eq!(layout.children[0].rect.y, 10.0, "the other axis is left");
+    }
+
+    #[test]
+    fn a_bottom_constraint_measures_y_from_the_bottom_edge() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <frame w="100" h="100">
+                <rect abs x="10" y="10" w="20" h="20" constraint-v="bottom" />
+              </frame>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.y, 70.0);
+        assert_eq!(layout.children[0].rect.x, 10.0);
+    }
+
+    #[test]
+    fn a_center_constraint_centres_the_child_on_that_axis() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <frame w="100" h="100">
+                <rect abs x="10" y="10" w="20" h="20"
+                      constraint-h="center" constraint-v="center" />
+              </frame>
+            </gui>
+            "#,
+        );
+
+        let rect = layout.children[0].rect;
+        assert_eq!((rect.x, rect.y), (40.0, 40.0));
+    }
+
+    #[test]
+    fn a_stretch_constraint_pins_both_edges_and_drops_the_declared_size() {
+        // Pinned 10 in on each side of a 100 wide parent: 100 - 10 - 10.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <frame w="100" h="100">
+                <rect abs x="10" y="10" w="20" h="20" constraint-h="stretch" />
+              </frame>
+            </gui>
+            "#,
+        );
+
+        let rect = layout.children[0].rect;
+        assert_eq!(rect.x, 10.0);
+        assert_eq!(rect.width, 80.0, "the declared 20 gives way to the pins");
+        assert_eq!(rect.height, 20.0, "the unpinned axis keeps its size");
+    }
+
+    #[test]
+    fn the_default_constraints_pin_left_and_top() {
+        let pinned = layout_of(
+            r#"
+            <gui version="0.2">
+              <frame w="100" h="100">
+                <rect abs x="10" y="10" w="20" h="20"
+                      constraint-h="left" constraint-v="top" />
+              </frame>
+            </gui>
+            "#,
+        );
+        let bare = layout_of(
+            r#"
+            <gui version="0.2">
+              <frame w="100" h="100">
+                <rect abs x="10" y="10" w="20" h="20" />
+              </frame>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(pinned.children[0].rect, bare.children[0].rect);
+    }
+
+    #[test]
+    fn scale_pins_the_leading_edge_at_a_single_layout_size() {
+        // `scale` describes a proportional pin under resize, and nothing here
+        // resizes. At one size it lands where a leading-edge pin lands.
+        let scaled = layout_of(
+            r#"
+            <gui version="0.2">
+              <frame w="100" h="100">
+                <rect abs x="10" y="10" w="20" h="20"
+                      constraint-h="scale" constraint-v="scale" />
+              </frame>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(
+            (scaled.children[0].rect.x, scaled.children[0].rect.y),
+            (10.0, 10.0)
+        );
     }
 
     #[test]
