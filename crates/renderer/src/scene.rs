@@ -78,6 +78,9 @@ pub struct SceneNode {
     pub href: Option<String>,
     /// `fill-rule`, for the shapes that take one.
     pub fill_rule: ShapeFillRule,
+    /// `border-image`: an image drawn in place of the border's own colour,
+    /// filling the ring the border occupies.
+    pub border_image: Option<String>,
     pub opacity: f32,
     /// Whether the node paints.
     ///
@@ -359,6 +362,9 @@ fn build_scene_node(
             .map(|value| resolve_token(value, metadata))
             .filter(|value| !value.trim().is_empty() && value.trim() != "none"),
         href: attr(layout, "href").map(ToOwned::to_owned),
+        border_image: attr(layout, "border-image")
+            .map(|value| resolve_token(value, metadata))
+            .filter(|value| !value.trim().is_empty() && value.trim() != "none"),
         fill_rule: match attr(layout, "fill-rule").map(str::trim) {
             Some("evenodd") => ShapeFillRule::EvenOdd,
             _ => ShapeFillRule::NonZero,

@@ -339,7 +339,7 @@ fn paint_node_direct(
     }
 
     if node.visible {
-        paint_border(pixmap, node);
+        paint_border(pixmap, node, asset_cache);
         paint_outline(pixmap, node);
     }
 }
@@ -2222,14 +2222,165 @@ fn paint_image_placeholder(pixmap: &mut Pixmap, node: &SceneNode) {
 }
 
 /// Paints the node's border stack, bottom entry first.
-fn paint_border(pixmap: &mut Pixmap, node: &SceneNode) {
+fn paint_border(pixmap: &mut Pixmap, node: &SceneNode, asset_cache: Option<&AssetCache>) {
     for border in &node.borders {
+        // A border image replaces the border's own colour, as it does in CSS.
+        // If it cannot be drawn — no cache, a source that will not resolve —
+        // the colour is what is left, so the stroke is the fallback rather
+        // than something painted underneath and covered up.
+        if paint_border_image(pixmap, node, border, asset_cache) {
+            continue;
+        }
         if border.widths.is_uniform() {
             stroke_rounded_rect(pixmap, node, border);
         } else {
             stroke_sided_border(pixmap, node, border);
         }
     }
+}
+
+/// Draws `border-image` into the ring the border occupies.
+///
+/// Returns whether it painted, so the caller knows whether the colour is
+/// still needed.
+///
+/// The ring is the node's own shape with the inside cut out of it: the border
+/// widths say how thick it is, per side, which is what makes a sided border
+/// carry a sided image. A node with no border has no ring and so no image,
+/// which is CSS's rule too — `border-image` needs a border width to sit in.
+fn paint_border_image(
+    pixmap: &mut Pixmap,
+    node: &SceneNode,
+    border: &Border,
+    asset_cache: Option<&AssetCache>,
+) -> bool {
+    let (Some(src), Some(cache)) = (node.border_image.as_deref(), asset_cache) else {
+        return false;
+    };
+    if border.width <= 0.0 {
+        return false;
+    }
+    let Ok(asset) = cache.resolve(src) else {
+        return false;
+    };
+    let Some(mask) = border_ring_mask(pixmap.width(), pixmap.height(), node, border) else {
+        return false;
+    };
+    let Some(mut layer) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+        return false;
+    };
+
+    let drawn =
+        if asset.media_type.as_deref() == Some("image/svg+xml") || looks_like_svg(&asset.bytes) {
+            render_svg_asset(&mut layer, node, &asset.bytes)
+        } else {
+            render_raster_asset(&mut layer, node, &asset.bytes, ImageStyle::default())
+        };
+    if drawn.is_err() {
+        return false;
+    }
+
+    pixmap.draw_pixmap(
+        0,
+        0,
+        layer.as_ref(),
+        &PixmapPaint::default(),
+        Transform::identity(),
+        Some(&mask),
+    );
+    true
+}
+
+/// Coverage over the ring a border occupies: the node's shape, less the box
+/// its own widths leave inside.
+fn border_ring_mask(
+    width: u32,
+    height: u32,
+    node: &SceneNode,
+    border: &Border,
+) -> Option<tiny_skia::Mask> {
+    let mut ring = Pixmap::new(width, height)?;
+    let bounds = node.bounds;
+    let painted_height = paint_height(node);
+
+    // The ring has to sit exactly where the stroke would, or the same border
+    // would cover different pixels depending on whether it carried an image.
+    // `align` is what decides that: `inside` grows inwards from the edge,
+    // `outside` grows outwards, and `center` straddles it.
+    let widths = border.widths;
+    let (outward, inward) = match border.align.as_str() {
+        "inside" => (0.0, 1.0),
+        "outside" => (1.0, 0.0),
+        _ => (0.5, 0.5),
+    };
+    let scaled = |factor: f32| BorderWidths {
+        top: widths.top * factor,
+        right: widths.right * factor,
+        bottom: widths.bottom * factor,
+        left: widths.left * factor,
+    };
+    let out = scaled(outward);
+    let inset = scaled(inward);
+
+    let outer = border_box_path(
+        bounds.x - out.left,
+        bounds.y - out.top,
+        bounds.width + out.left + out.right,
+        painted_height + out.top + out.bottom,
+        node,
+        -out.left.max(out.top),
+    )?;
+    let mut paint = Paint::default();
+    paint.set_color(Color::WHITE);
+    paint.anti_alias = true;
+    ring.fill_path(
+        &outer,
+        &paint,
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
+
+    let inner_width = bounds.width - inset.left - inset.right;
+    let inner_height = painted_height - inset.top - inset.bottom;
+    if inner_width > 0.0 && inner_height > 0.0 {
+        // The inside is cut out rather than drawn over, so the ring keeps a
+        // transparent middle and the node's own fill stays visible through it.
+        if let Some(inner) = border_box_path(
+            bounds.x + inset.left,
+            bounds.y + inset.top,
+            inner_width,
+            inner_height,
+            node,
+            inset.left.max(inset.top),
+        ) {
+            let mut cut = Paint::default();
+            cut.set_color(Color::WHITE);
+            cut.anti_alias = true;
+            cut.blend_mode = BlendMode::Clear;
+            ring.fill_path(&inner, &cut, FillRule::Winding, Transform::identity(), None);
+        }
+    }
+
+    Some(alpha_mask(&ring))
+}
+
+/// The node's shape at an arbitrary box, with its corners tightened by
+/// `inset` — an inner rounded rectangle follows its outer one rather than
+/// keeping the same radius, or the ring would be thicker at the corners.
+fn border_box_path(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    node: &SceneNode,
+    inset: f32,
+) -> Option<tiny_skia::Path> {
+    if node.tag == "ellipse" {
+        return ellipse_path(x, y, width, height);
+    }
+    let radius = (node.radius.unwrap_or(0.0) - inset).max(0.0);
+    smoothed_rect_path(x, y, width, height, radius, node.corner_smoothing)
 }
 
 /// Paints the node's outline: a stroke that sits outside the box, centred on
@@ -5149,6 +5300,186 @@ mod tests {
                 painted.as_raw(),
                 baseline.as_raw(),
                 "{value} should draw what auto draws"
+            );
+        }
+    }
+
+    #[test]
+    fn a_border_image_fills_the_ring_and_leaves_the_middle_alone() {
+        // A solid green SVG as the border image on a 40x40 box with an 8px
+        // border. The ring should come out green; the middle should still be
+        // the node's own blue fill, because the inside is cut out of the ring
+        // rather than painted over.
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">
+            <rect width="40" height="40" fill="#00ff00"/></svg>"##;
+
+        let document = parse_gui_xml(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <frame abs x="0" y="0" w="40" h="40" fill="#0000ff"
+                       border="8 #ff0000" border-image="assets/edge.svg" />
+              </frame>
+            </gui>
+            "##,
+        )
+        .expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+
+        let mut package_assets = std::collections::BTreeMap::new();
+        package_assets.insert("assets/edge.svg".to_owned(), svg.to_vec());
+        let cache = AssetCache::new(std::env::temp_dir()).with_package_assets(package_assets);
+
+        let png = paint_scene_to_png_bytes(&scene, Some(&cache), None).expect("scene paints");
+        let painted = image::load_from_memory(&png)
+            .expect("painted png decodes")
+            .to_rgba8();
+
+        assert_eq!(
+            painted.get_pixel(2, 20).0[0..3],
+            [0, 255, 0],
+            "the ring carries the image, not the border colour"
+        );
+        assert_eq!(
+            painted.get_pixel(20, 20).0[0..3],
+            [0, 0, 255],
+            "the middle is still the node's own fill"
+        );
+    }
+
+    #[test]
+    fn a_border_image_that_cannot_be_resolved_leaves_the_colour() {
+        // Nothing in the cache under that name, so the border falls back to
+        // being stroked rather than disappearing.
+        let document = parse_gui_xml(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <frame abs x="0" y="0" w="40" h="40" fill="#0000ff"
+                       border="8 #ff0000" border-image="assets/missing.svg" />
+              </frame>
+            </gui>
+            "##,
+        )
+        .expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+        let cache = AssetCache::new(std::env::temp_dir())
+            .with_package_assets(std::collections::BTreeMap::new());
+
+        let png = paint_scene_to_png_bytes(&scene, Some(&cache), None).expect("scene paints");
+        let painted = image::load_from_memory(&png)
+            .expect("painted png decodes")
+            .to_rgba8();
+
+        assert_eq!(
+            painted.get_pixel(2, 20).0[0..3],
+            [255, 0, 0],
+            "the border colour is what is left"
+        );
+    }
+
+    #[test]
+    fn a_border_image_needs_a_border_to_sit_in() {
+        // No border, so no ring: the image has nowhere to go, as in CSS.
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">
+            <rect width="40" height="40" fill="#00ff00"/></svg>"##;
+
+        let document = parse_gui_xml(
+            r##"
+            <gui version="0.2">
+              <frame w="40" h="40" fill="#ffffff">
+                <frame abs x="0" y="0" w="40" h="40" fill="#0000ff"
+                       border-image="assets/edge.svg" />
+              </frame>
+            </gui>
+            "##,
+        )
+        .expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+
+        let mut package_assets = std::collections::BTreeMap::new();
+        package_assets.insert("assets/edge.svg".to_owned(), svg.to_vec());
+        let cache = AssetCache::new(std::env::temp_dir()).with_package_assets(package_assets);
+
+        let png = paint_scene_to_png_bytes(&scene, Some(&cache), None).expect("scene paints");
+        let painted = image::load_from_memory(&png)
+            .expect("painted png decodes")
+            .to_rgba8();
+
+        assert_eq!(
+            painted.get_pixel(2, 20).0[0..3],
+            [0, 0, 255],
+            "nothing is drawn over the node's fill"
+        );
+    }
+
+    #[test]
+    fn a_border_image_covers_the_pixels_the_border_colour_would() {
+        // The ring is built separately from the stroke, so the two can drift
+        // apart on `align` — they did. This walks a row across the left edge
+        // and asks that wherever the colour paints, the image paints too.
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">
+            <rect width="40" height="40" fill="#00ff00"/></svg>"##;
+
+        for align in ["inside", "center", "outside"] {
+            let xml = format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="60" h="60" fill="#ffffff">
+                    <frame abs x="20" y="10" w="30" h="40" fill="#0000ff"
+                           border="6 #ff0000 {align}"
+                           border-image="assets/edge.svg" />
+                  </frame>
+                </gui>
+                "##
+            );
+
+            let document = parse_gui_xml(&xml).expect("valid gui");
+            let layout = compute_taffy_layout(&document).expect("layout computes");
+            let scene = build_scene(&document, &layout);
+
+            let mut package_assets = std::collections::BTreeMap::new();
+            package_assets.insert("assets/edge.svg".to_owned(), svg.to_vec());
+            let with_image =
+                AssetCache::new(std::env::temp_dir()).with_package_assets(package_assets);
+            let without_image = AssetCache::new(std::env::temp_dir())
+                .with_package_assets(std::collections::BTreeMap::new());
+
+            let decode = |cache: &AssetCache| {
+                let png =
+                    paint_scene_to_png_bytes(&scene, Some(cache), None).expect("scene paints");
+                image::load_from_memory(&png)
+                    .expect("painted png decodes")
+                    .to_rgba8()
+            };
+            let imaged = decode(&with_image);
+            let coloured = decode(&without_image);
+
+            // The two are rasterised separately — one as a stroke, one as a
+            // filled ring — so their edge pixels are antialiased slightly
+            // differently. What has to agree is where the band lands, so the
+            // spans are compared rather than every pixel.
+            let span = |image: &image::RgbaImage, channel: usize| {
+                let painted: Vec<u32> = (0..60u32)
+                    .filter(|x| image.get_pixel(*x, 30).0[channel] > 128)
+                    .collect();
+                (painted.first().copied(), painted.last().copied())
+            };
+            let (colour_from, colour_to) = span(&coloured, 0);
+            let (image_from, image_to) = span(&imaged, 1);
+
+            let close = |a: Option<u32>, b: Option<u32>| match (a, b) {
+                (Some(a), Some(b)) => a.abs_diff(b) <= 1,
+                (None, None) => true,
+                _ => false,
+            };
+            assert!(
+                close(colour_from, image_from) && close(colour_to, image_to),
+                "align={align}: the colour spans {colour_from:?}..{colour_to:?} \
+                 but the image spans {image_from:?}..{image_to:?}"
             );
         }
     }

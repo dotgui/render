@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **117** |
+| Implemented | **118** |
 | Partial | **0** |
-| Not implemented | **3** |
+| Not implemented | **2** |
 | Total | **120** |
 
 ## Not implemented
@@ -19,7 +19,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 
 | Property | Elements |
 |---|---|
-| `border-image` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `font-feature` | `<text>` |
 | `writing-mode` | `<text>` |
 
@@ -38,6 +37,7 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `border` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `border-align` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `border-color` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
+| `border-image` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `border-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `border-width` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `clip` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |

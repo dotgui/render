@@ -50,6 +50,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "frame",
         &[
+            "border-image",
             "border-width",
             "border-color",
             "border-style",
@@ -77,6 +78,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "stack",
         &[
+            "border-image",
             "border-width",
             "border-color",
             "border-style",
@@ -118,6 +120,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "row",
         &[
+            "border-image",
             "border-width",
             "border-color",
             "border-style",
@@ -154,6 +157,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "col",
         &[
+            "border-image",
             "border-width",
             "border-color",
             "border-style",
@@ -190,6 +194,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "grid",
         &[
+            "border-image",
             "border-width",
             "border-color",
             "border-style",
@@ -466,6 +471,7 @@ mod tests {
             ("text", "text-resize"),
             ("rect", "constraint-h"),
             ("rect", "constraint-v"),
+            ("frame", "border-image"),
         ] {
             assert!(
                 is_supported(tag, attribute, true),
@@ -473,12 +479,10 @@ mod tests {
             );
         }
 
-        // And that the known gaps stay declared as gaps.
-        for (tag, attribute) in [("frame", "border-image"), ("text", "font-feature")] {
-            assert!(
-                !is_supported(tag, attribute, true),
-                "<{tag}> {attribute} is declared but the renderer does not read it"
-            );
-        }
+        // And that the one known gap left stays declared as a gap.
+        assert!(
+            !is_supported("text", "font-feature", true),
+            "<text> font-feature is declared but the renderer does not read it"
+        );
     }
 }
