@@ -48,6 +48,10 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "frame",
         &[
+            "border-width",
+            "border-color",
+            "border-style",
+            "border-align",
             "name",
             "w",
             "h",
@@ -71,6 +75,10 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "stack",
         &[
+            "border-width",
+            "border-color",
+            "border-style",
+            "border-align",
             "name",
             "wrap",
             "reverse-z",
@@ -108,6 +116,10 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "row",
         &[
+            "border-width",
+            "border-color",
+            "border-style",
+            "border-align",
             "name",
             "wrap",
             "reverse-z",
@@ -140,6 +152,10 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "col",
         &[
+            "border-width",
+            "border-color",
+            "border-style",
+            "border-align",
             "name",
             "wrap",
             "reverse-z",
@@ -172,6 +188,10 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "grid",
         &[
+            "border-width",
+            "border-color",
+            "border-style",
+            "border-align",
             "name",
             "row-gap",
             "col-gap",
@@ -269,6 +289,10 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "img",
         &[
+            "border-width",
+            "border-color",
+            "border-style",
+            "border-align",
             "name",
             "w",
             "h",
@@ -286,6 +310,10 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "rect",
         &[
+            "border-width",
+            "border-color",
+            "border-style",
+            "border-align",
             "name",
             "w",
             "h",
@@ -303,6 +331,10 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "ellipse",
         &[
+            "border-width",
+            "border-color",
+            "border-style",
+            "border-align",
             "name",
             "w",
             "h",
@@ -413,6 +445,10 @@ mod tests {
             ("grid", "row-gap"),
             ("grid", "col-gap"),
             ("group", "name"),
+            ("rect", "border-width"),
+            ("rect", "border-color"),
+            ("rect", "border-style"),
+            ("rect", "border-align"),
         ] {
             assert!(
                 is_supported(tag, attribute, true),
