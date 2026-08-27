@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **100** |
+| Implemented | **101** |
 | Partial | **1** |
-| Not implemented | **19** |
+| Not implemented | **18** |
 | Total | **120** |
 
 ## Not implemented
@@ -33,7 +33,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `font-style-name` | `<text>` |
 | `name` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `row-gap` | `<grid>` |
-| `text-case` | `<text>` |
 | `text-rendering` | `<text>` |
 | `text-resize` | `<text>` |
 | `wrap` | `<stack>`, `<row>`, `<col>` |
@@ -134,6 +133,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `skew-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `skew-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `src` | `<img>` |
+| `text-case` | `<text>` |
 | `text-decoration-skip-ink` | `<text>` |
 | `text-style` | `<text>` |
 | `text-underline-offset` | `<text>` |

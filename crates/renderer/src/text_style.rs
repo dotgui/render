@@ -75,6 +75,30 @@ pub enum DecorationStyle {
     Double,
 }
 
+/// How a run's letters are cased before it is measured or drawn.
+///
+/// `small-caps` and `small-caps-forced` differ in reach, not in look: the
+/// first leaves letters that were already capitals at full size and shrinks
+/// only the ones it had to capitalise, the second shrinks every letter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TextCase {
+    Upper,
+    Lower,
+    Capitalize,
+    SmallCaps,
+    SmallCapsForced,
+}
+
+/// The size a synthesised small capital is drawn at, as a share of the run's
+/// own size.
+///
+/// A face with a real `smcp` feature has drawn small capitals whose stems are
+/// thickened to match the full-size ones. Nothing here reads OpenType
+/// features, so these are scaled capitals instead, which is the same
+/// substitution a browser makes for a face without the feature. 0.8 is the
+/// ratio browsers synthesise at.
+const SMALL_CAPS_SCALE: f32 = 0.8;
+
 /// A `<text>`'s decoration, resolved.
 ///
 /// Neither this renderer nor kit drew one before: `decoration` is in the
@@ -125,6 +149,8 @@ pub(crate) struct TextStyle {
     pub baseline_shift: f32,
     /// The rule drawn through this run, from `decoration` and its controls.
     pub decoration: Option<TextDecoration>,
+    /// `text-case`, applied to the run's text before anything measures it.
+    pub text_case: Option<TextCase>,
 }
 
 impl TextStyle {
@@ -180,6 +206,21 @@ pub(crate) fn resolve_text_style<S: TextSource>(node: &S, metadata: &GuiMetadata
         word_spacing: style_number(node, metadata, "word-spacing").unwrap_or(0.0),
         baseline_shift: style_number(node, metadata, "baseline-shift").unwrap_or(0.0),
         decoration: resolve_decoration(node, metadata),
+        text_case: resolve_text_case(node, metadata),
+    }
+}
+
+/// Reads `text-case`.
+fn resolve_text_case<S: TextSource>(node: &S, metadata: &GuiMetadata) -> Option<TextCase> {
+    match style_value(node, metadata, "text-case")?.trim() {
+        "uppercase" => Some(TextCase::Upper),
+        "lowercase" => Some(TextCase::Lower),
+        "capitalize" => Some(TextCase::Capitalize),
+        "small-caps" => Some(TextCase::SmallCaps),
+        "small-caps-forced" => Some(TextCase::SmallCapsForced),
+        // `original` is the spec's way of spelling "leave it alone", and an
+        // unknown value is not a licence to mangle the text either.
+        _ => None,
     }
 }
 
@@ -275,7 +316,108 @@ pub(crate) fn resolve_text_runs<S: TextSource>(
         });
     }
 
-    runs
+    apply_text_case(runs)
+}
+
+/// Rewrites each run's text for its `text-case`.
+///
+/// This happens here, in the one function both layout and painting call, so
+/// the two cannot measure one string and draw another — an uppercased run is
+/// wider than what the document wrote, and a box sized to the original would
+/// clip it.
+fn apply_text_case(runs: Vec<TextRunStyle>) -> Vec<TextRunStyle> {
+    runs.into_iter().flat_map(cased_run).collect()
+}
+
+/// One run, cased — as several runs when the casing needs two sizes.
+fn cased_run(run: TextRunStyle) -> Vec<TextRunStyle> {
+    let Some(case) = run.style.text_case else {
+        return vec![run];
+    };
+
+    match case {
+        TextCase::Upper => vec![TextRunStyle {
+            value: run.value.to_uppercase(),
+            ..run
+        }],
+        TextCase::Lower => vec![TextRunStyle {
+            value: run.value.to_lowercase(),
+            ..run
+        }],
+        TextCase::Capitalize => vec![TextRunStyle {
+            value: capitalized(&run.value),
+            ..run
+        }],
+        // Small capitals are drawn at two sizes, and a run carries one size,
+        // so the text is split where the size changes. `-forced` shrinks
+        // every letter; plain `small-caps` shrinks only what it capitalised,
+        // which leaves an acronym standing at full height.
+        TextCase::SmallCaps => small_caps_runs(&run, false),
+        TextCase::SmallCapsForced => small_caps_runs(&run, true),
+    }
+}
+
+/// Upper-cases the first letter of each word and lower-cases the rest.
+fn capitalized(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut at_word_start = true;
+    for character in value.chars() {
+        if character.is_alphabetic() {
+            if at_word_start {
+                out.extend(character.to_uppercase());
+            } else {
+                out.extend(character.to_lowercase());
+            }
+            at_word_start = false;
+        } else {
+            out.push(character);
+            // An apostrophe is inside a word — "don't" is not "Don'T" — so
+            // only whitespace and punctuation that separates words restarts.
+            at_word_start = !matches!(character, '\'' | '\u{2019}');
+        }
+    }
+    out
+}
+
+/// Splits a run into full-size and small-capital pieces.
+///
+/// Adjacent characters that take the same size stay in one run, so a word
+/// that is entirely lower case still measures as a single string rather than
+/// as one run per letter, which would lose the kerning between them.
+fn small_caps_runs(run: &TextRunStyle, forced: bool) -> Vec<TextRunStyle> {
+    let mut out: Vec<TextRunStyle> = Vec::new();
+
+    for character in run.value.chars() {
+        // A character with no upper case of its own — a digit, a space, a
+        // comma — is left at full size, as a browser does.
+        let shrinks = forced && character.is_alphabetic() || !forced && character.is_lowercase();
+        let text: String = if shrinks {
+            character.to_uppercase().collect()
+        } else {
+            character.to_string()
+        };
+
+        match out.last_mut() {
+            Some(last) if (last.style.font_size < run.style.font_size) == shrinks => {
+                last.value.push_str(&text);
+            }
+            _ => {
+                let mut style = run.style.clone();
+                if shrinks {
+                    style.font_size = run.style.font_size * SMALL_CAPS_SCALE;
+                    // The pieces sit on one baseline, so the shrunk run must
+                    // not also pull the line height down with it.
+                    style.line_height = style.line_height.or(Some(run.style.font_size));
+                }
+                out.push(TextRunStyle { value: text, style });
+            }
+        }
+    }
+
+    if out.is_empty() {
+        return vec![run.clone()];
+    }
+    out
 }
 
 fn inherit_style<S: TextSource>(node: &S, metadata: &GuiMetadata, parent: &TextStyle) -> TextStyle {
@@ -327,6 +469,8 @@ fn inherit_style<S: TextSource>(node: &S, metadata: &GuiMetadata, parent: &TextS
             Some(_) => resolve_decoration(node, metadata),
             None => parent.decoration.clone(),
         },
+        // Casing applies to the whole `<text>` unless a segment names its own.
+        text_case: resolve_text_case(node, metadata).or(parent.text_case),
     }
 }
 
@@ -404,6 +548,96 @@ mod tests {
         let document = parse_gui_xml(xml).expect("valid gui");
         let node = document.root.children[0].clone();
         (node, document.metadata)
+    }
+
+    fn cased(case: &str, value: &str) -> Vec<TextRunStyle> {
+        let xml = format!(
+            r##"
+            <gui version="0.2">
+              <col>
+                <text value="{value}" font-size="10" text-case="{case}" />
+              </col>
+            </gui>
+            "##
+        );
+        let (node, metadata) = text_node(&xml);
+        resolve_text_runs(&node, &metadata)
+    }
+
+    #[test]
+    fn text_case_rewrites_the_run_before_anything_measures_it() {
+        assert_eq!(cased("uppercase", "Hello there")[0].value, "HELLO THERE");
+        assert_eq!(cased("lowercase", "Hello There")[0].value, "hello there");
+        assert_eq!(cased("capitalize", "hello there")[0].value, "Hello There");
+    }
+
+    #[test]
+    fn capitalize_lowers_the_rest_of_each_word() {
+        // CSS `capitalize` only touches the first letter, but the spec value
+        // here is a case *conversion*, as in a design tool: "iPhone" titled is
+        // "Iphone". An apostrophe stays inside its word.
+        assert_eq!(cased("capitalize", "hELLO wORLD")[0].value, "Hello World");
+        assert_eq!(cased("capitalize", "don't stop")[0].value, "Don't Stop");
+    }
+
+    #[test]
+    fn text_case_leaves_a_value_it_does_not_recognise_alone() {
+        assert_eq!(cased("original", "Hello")[0].value, "Hello");
+        assert_eq!(cased("sideways", "Hello")[0].value, "Hello");
+    }
+
+    #[test]
+    fn small_caps_shrinks_only_the_letters_it_capitalised() {
+        // "GUI kit": the acronym was already capital and stays at full size,
+        // the lower-case word becomes capitals at the smaller one.
+        let runs = cased("small-caps", "GUI kit");
+        let text: String = runs.iter().map(|run| run.value.as_str()).collect();
+        assert_eq!(text, "GUI KIT");
+
+        assert_eq!(runs[0].value, "GUI ", "the acronym and the space");
+        assert_eq!(runs[0].style.font_size, 10.0);
+        assert_eq!(runs[1].value, "KIT");
+        assert_eq!(runs[1].style.font_size, 10.0 * SMALL_CAPS_SCALE);
+    }
+
+    #[test]
+    fn small_caps_forced_shrinks_every_letter() {
+        let runs = cased("small-caps-forced", "GUI kit");
+        let text: String = runs.iter().map(|run| run.value.as_str()).collect();
+        assert_eq!(text, "GUI KIT");
+
+        // The space is not a letter, so it stays at full size and splits the
+        // two shrunk pieces.
+        let letters: Vec<f32> = runs
+            .iter()
+            .filter(|run| run.value.trim() != "")
+            .map(|run| run.style.font_size)
+            .collect();
+        assert!(
+            letters.iter().all(|size| *size == 10.0 * SMALL_CAPS_SCALE),
+            "every letter shrinks: {letters:?}"
+        );
+    }
+
+    #[test]
+    fn a_segment_inherits_text_case_and_can_override_it() {
+        let (node, metadata) = text_node(
+            r##"
+            <gui version="0.2">
+              <col>
+                <text value="one " text-case="uppercase">
+                  <segment value="two " />
+                  <segment value="three" text-case="lowercase" />
+                </text>
+              </col>
+            </gui>
+            "##,
+        );
+
+        let runs = resolve_text_runs(&node, &metadata);
+        assert_eq!(runs[0].value, "ONE ");
+        assert_eq!(runs[1].value, "TWO ", "inherited from the text node");
+        assert_eq!(runs[2].value, "three", "its own wins");
     }
 
     #[test]

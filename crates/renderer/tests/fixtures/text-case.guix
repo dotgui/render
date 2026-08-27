@@ -1,0 +1,39 @@
+<gui version="0.2">
+  <col w="260" fill="#ffffff" p="12" gap="6">
+    <fonts>
+      <font family="Inter" source="google" category="sans-serif"
+            weights="400" styles="normal" />
+    </fonts>
+
+    <!-- The same string at each casing. These four measure alike in the
+         snapshot on purpose: casing does not change the character count, and
+         the snapshot's measurer has no font, so it advances a fixed amount
+         per character. What they pin is that casing does not disturb the
+         box. The small-caps rows below are where layout visibly reacts. -->
+    <text value="Handgloves wave" font-family="Inter" font-weight="400"
+          font-size="16" fill="#111111" />
+    <text value="Handgloves wave" font-family="Inter" font-weight="400"
+          font-size="16" fill="#111111" text-case="uppercase" />
+    <text value="Handgloves wave" font-family="Inter" font-weight="400"
+          font-size="16" fill="#111111" text-case="lowercase" />
+    <text value="handgloves wave" font-family="Inter" font-weight="400"
+          font-size="16" fill="#111111" text-case="capitalize" />
+
+    <!-- Small capitals are drawn at two sizes, so the run is split and the
+         box measures narrower than the full-size line above — which it can
+         only do if layout saw the split, not just the painter. Forcing the
+         casing shrinks the acronym too, and the line with it. -->
+    <text value="GUI kit renders" font-family="Inter" font-weight="400"
+          font-size="16" fill="#111111" text-case="small-caps" />
+    <text value="GUI kit renders" font-family="Inter" font-weight="400"
+          font-size="16" fill="#111111" text-case="small-caps-forced" />
+
+    <!-- Casing reaches segments, and a segment can say otherwise. -->
+    <text value="total " font-family="Inter" font-weight="400" font-size="16"
+          fill="#111111" text-case="uppercase">
+      <segment value="twelve " />
+      <segment value="dollars" text-case="lowercase" />
+    </text>
+
+  </col>
+</gui>

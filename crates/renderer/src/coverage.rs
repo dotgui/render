@@ -210,6 +210,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "text",
         &[
+            "text-case",
             "w",
             "h",
             "x",
