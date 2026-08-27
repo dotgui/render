@@ -1147,10 +1147,44 @@ fn max_text_lines(layout: &LayoutBox) -> Option<usize> {
 fn truncates(layout: &LayoutBox) -> bool {
     attr(layout, "truncate").is_some_and(|value| value != "false")
         || attr(layout, "overflow").is_some_and(|value| value == "ellipsis")
+        // `text-resize="truncate"` is a fixed box that cuts what overflows,
+        // so it is the third spelling of the same instruction.
+        || attr(layout, "text-resize").is_some_and(|value| value.trim() == "truncate")
 }
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn text_resize_truncate_asks_the_painter_to_truncate() {
+        let truncating = |xml: &str| {
+            let document = parse_gui_xml(xml).expect("valid gui");
+            let layout = compute_taffy_layout(&document).expect("layout computes");
+            let scene = build_scene(&document, &layout);
+            match &scene.root.children[0].content {
+                PaintContent::Text { truncate, .. } => *truncate,
+                other => panic!("expected text, got {other:?}"),
+            }
+        };
+
+        assert!(truncating(
+            r##"
+            <gui version="0.2">
+              <col><text value="Hi" w="20" text-resize="truncate" /></col>
+            </gui>
+            "##
+        ));
+        assert!(
+            !truncating(
+                r##"
+                <gui version="0.2">
+                  <col><text value="Hi" w="20" text-resize="fixed" /></col>
+                </gui>
+                "##
+            ),
+            "a fixed box overflows rather than cutting"
+        );
+    }
 
     fn text_align_of(xml: &str) -> Option<String> {
         let document = parse_gui_xml(xml).expect("valid gui");

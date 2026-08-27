@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **114** |
+| Implemented | **115** |
 | Partial | **0** |
-| Not implemented | **6** |
+| Not implemented | **5** |
 | Total | **120** |
 
 ## Not implemented
@@ -23,7 +23,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `constraint-h` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `constraint-v` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `font-feature` | `<text>` |
-| `text-resize` | `<text>` |
 | `writing-mode` | `<text>` |
 
 ## Implemented
@@ -127,6 +126,7 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `text-case` | `<text>` |
 | `text-decoration-skip-ink` | `<text>` |
 | `text-rendering` | `<text>` |
+| `text-resize` | `<text>` |
 | `text-style` | `<text>` |
 | `text-underline-offset` | `<text>` |
 | `text-wrap` | `<text>` |

@@ -241,6 +241,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "text",
         &[
+            "text-resize",
             "text-rendering",
             "font-postscript",
             "font-style-name",
@@ -460,6 +461,7 @@ mod tests {
             ("text", "font-postscript"),
             ("text", "font-style-name"),
             ("text", "text-rendering"),
+            ("text", "text-resize"),
         ] {
             assert!(
                 is_supported(tag, attribute, true),

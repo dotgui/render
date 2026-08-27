@@ -446,6 +446,24 @@ fn size_for(node: &GuiNode, metadata: &GuiMetadata) -> Size<Dimension> {
         height: dimension_attr(node, metadata, "h"),
     };
 
+    // `text-resize` says which of a text box's axes follow its content,
+    // whatever `w`/`h` were set to. An absent `w` already hugs, so this only
+    // has to act where the two disagree: a box that declares a width and then
+    // asks to hug it.
+    if node.tag == "text" {
+        match text_resize(node, metadata).as_deref() {
+            Some("hug") => {
+                size.width = auto();
+                size.height = auto();
+            }
+            Some("hug-height") => size.height = auto(),
+            // `fixed` and `truncate` both keep the declared box. They differ
+            // in what happens to the text that does not fit, which is the
+            // painter's business rather than the layout's.
+            _ => {}
+        }
+    }
+
     if node.tag == "line" {
         let thickness = length(
             number_attr(node, metadata, "thickness")
@@ -465,6 +483,18 @@ fn size_for(node: &GuiNode, metadata: &GuiMetadata) -> Size<Dimension> {
     }
 
     size
+}
+
+/// A `<text>` node's `text-resize`, if it names one of the spec's values.
+fn text_resize(node: &GuiNode, metadata: &GuiMetadata) -> Option<String> {
+    let value = node
+        .attributes
+        .get("text-resize")
+        .map(|raw| resolve_token(raw, metadata))?;
+    match value.trim() {
+        "hug" | "hug-height" | "fixed" | "truncate" => Some(value.trim().to_owned()),
+        _ => None,
+    }
 }
 
 /// Whether a `<line>` runs down rather than across.
@@ -887,6 +917,78 @@ mod tests {
         let kids = &layout.children;
         assert_eq!(kids[1].rect.x, 30.0, "the shorthand still sets the columns");
         assert_eq!(kids[2].rect.y, 60.0, "row-gap replaces it on the rows");
+    }
+
+    #[test]
+    fn text_resize_hug_overrides_a_declared_box() {
+        // The declared 300x80 is what the two disagree about: `hug` says the
+        // box follows the text, so neither number survives.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="Hi" w="300" h="80" font-size="10"
+                      line-height="12" text-resize="hug" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        let text = &layout.children[0];
+        assert!(text.rect.width < 300.0, "the width follows the text");
+        assert_eq!(text.rect.height, 12.0, "and so does the height");
+    }
+
+    #[test]
+    fn text_resize_hug_height_keeps_the_declared_width() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="Hi" w="300" h="80" font-size="10"
+                      line-height="12" text-resize="hug-height" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        let text = &layout.children[0];
+        assert_eq!(text.rect.width, 300.0, "the width is still declared");
+        assert_eq!(text.rect.height, 12.0, "only the height hugs");
+    }
+
+    #[test]
+    fn text_resize_fixed_keeps_both() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="Hi" w="300" h="80" font-size="10"
+                      text-resize="fixed" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        let text = &layout.children[0];
+        assert_eq!((text.rect.width, text.rect.height), (300.0, 80.0));
+    }
+
+    #[test]
+    fn text_resize_truncate_keeps_the_box_like_fixed_does() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="Hi" w="300" h="80" font-size="10"
+                      text-resize="truncate" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        let text = &layout.children[0];
+        assert_eq!((text.rect.width, text.rect.height), (300.0, 80.0));
     }
 
     #[test]
