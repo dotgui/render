@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **104** |
+| Implemented | **105** |
 | Partial | **1** |
-| Not implemented | **15** |
+| Not implemented | **14** |
 | Total | **120** |
 
 ## Not implemented
@@ -30,7 +30,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `font-feature` | `<text>` |
 | `font-postscript` | `<text>` |
 | `font-style-name` | `<text>` |
-| `name` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `text-rendering` | `<text>` |
 | `text-resize` | `<text>` |
 | `writing-mode` | `<text>` |
@@ -107,6 +106,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `max-width` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `min-height` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `min-width` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `name` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `object-position` | `<img>` |
 | `opacity` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `outline` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |

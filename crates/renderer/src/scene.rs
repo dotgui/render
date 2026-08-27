@@ -13,6 +13,14 @@ pub struct Scene {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneNode {
     pub tag: String,
+    /// The layer name the source design gave this node.
+    ///
+    /// It paints nothing. It is carried because it is the only handle a
+    /// consumer of the scene has on which node is which — a diagnostic naming
+    /// the box it is complaining about, a viewer's layer list, a diff between
+    /// two versions of a document — and dropping it here would leave them
+    /// pointing at a tag and a rectangle.
+    pub name: Option<String>,
     pub bounds: LayoutRect,
     /// The node's fill stack, in document order: the first entry is painted
     /// first and the last one ends up on top.
@@ -314,6 +322,7 @@ fn build_scene_node(
     let visible = visibility_of(layout, inherited_visible);
     SceneNode {
         tag: layout.tag.clone(),
+        name: attr(layout, "name").map(ToOwned::to_owned),
         bounds: layout.rect,
         fills: fills_for(layout, metadata),
         borders: borders_for(layout, metadata),
@@ -1037,6 +1046,30 @@ fn truncates(layout: &LayoutBox) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_node_carries_the_layer_name_the_design_gave_it() {
+        let document = parse_gui_xml(
+            r##"
+            <gui version="0.2">
+              <col name="Card">
+                <rect w="10" h="10" name="Thumbnail" />
+                <rect w="10" h="10" />
+              </col>
+            </gui>
+            "##,
+        )
+        .expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+
+        assert_eq!(scene.root.name.as_deref(), Some("Card"));
+        assert_eq!(scene.root.children[0].name.as_deref(), Some("Thumbnail"));
+        assert_eq!(
+            scene.root.children[1].name, None,
+            "a node that was never named does not invent one"
+        );
+    }
     use super::*;
     use crate::{compute_taffy_layout, parse_gui_xml};
 

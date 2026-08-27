@@ -48,6 +48,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "frame",
         &[
+            "name",
             "w",
             "h",
             "x",
@@ -70,6 +71,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "stack",
         &[
+            "name",
             "wrap",
             "reverse-z",
             "w",
@@ -106,6 +108,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "row",
         &[
+            "name",
             "wrap",
             "reverse-z",
             "w",
@@ -137,6 +140,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "col",
         &[
+            "name",
             "wrap",
             "reverse-z",
             "w",
@@ -168,6 +172,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "grid",
         &[
+            "name",
             "row-gap",
             "col-gap",
             "w",
@@ -199,6 +204,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "group",
         &[
+            "name",
             "w",
             "h",
             "x",
@@ -215,6 +221,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "text",
         &[
+            "name",
             "text-case",
             "w",
             "h",
@@ -262,6 +269,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "img",
         &[
+            "name",
             "w",
             "h",
             "x",
@@ -278,6 +286,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "rect",
         &[
+            "name",
             "w",
             "h",
             "x",
@@ -294,6 +303,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "ellipse",
         &[
+            "name",
             "w",
             "h",
             "x",
@@ -308,6 +318,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "line",
         &[
+            "name",
             "w",
             "h",
             "x",
@@ -399,6 +410,9 @@ mod tests {
             ("row", "reverse-z"),
             ("text", "text-case"),
             ("row", "wrap"),
+            ("grid", "row-gap"),
+            ("grid", "col-gap"),
+            ("group", "name"),
         ] {
             assert!(
                 is_supported(tag, attribute, true),
