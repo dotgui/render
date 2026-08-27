@@ -8,8 +8,8 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **110** |
-| Partial | **1** |
+| Implemented | **111** |
+| Partial | **0** |
 | Not implemented | **9** |
 | Total | **120** |
 
@@ -28,14 +28,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `text-rendering` | `<text>` |
 | `text-resize` | `<text>` |
 | `writing-mode` | `<text>` |
-
-## Partially implemented
-
-Read on some elements but not others — usually cheaper to finish than to start.
-
-| Property | Implemented on | Missing on |
-|---|---|---|
-| `direction` | `<stack>`, `<line>` | `<text>` |
 
 ## Implemented
 
@@ -63,6 +55,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `decoration-color` | `<text>` |
 | `decoration-style` | `<text>` |
 | `decoration-thickness` | `<text>` |
+| `direction` | `<stack>`, `<text>`, `<line>` |
 | `effect-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<rect>`, `<ellipse>` |
 | `fill` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
 | `fill-rule` | `<rect>`, `<ellipse>` |

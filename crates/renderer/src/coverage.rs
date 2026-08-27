@@ -241,6 +241,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "text",
         &[
+            "direction",
             "name",
             "text-case",
             "w",
@@ -452,6 +453,7 @@ mod tests {
             ("rect", "border-style"),
             ("rect", "border-align"),
             ("ellipse", "fill-rule"),
+            ("text", "direction"),
         ] {
             assert!(
                 is_supported(tag, attribute, true),

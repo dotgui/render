@@ -526,6 +526,29 @@ fn node_border(layout: &LayoutBox, metadata: &GuiMetadata) -> Option<Border> {
     })
 }
 
+/// Where a `<text>` node's lines sit in its box.
+///
+/// A declared `align` is the answer. With none, the base `direction` decides,
+/// which is what CSS does through the initial `text-align: start`: a run of
+/// right-to-left text starts at the right edge of its box.
+///
+/// Note what this does *not* do. Setting `direction="rtl"` does not reorder
+/// the characters within a line: that is the Unicode bidirectional algorithm,
+/// this renderer does not run it, and the glyphs are drawn in the order the
+/// document stores them. For text already stored in visual order — which is
+/// what a design tool exports — the edge it starts from is the part that was
+/// missing.
+fn text_align_for(layout: &LayoutBox) -> Option<String> {
+    if let Some(align) = attr(layout, "align") {
+        return Some(align.to_owned());
+    }
+
+    match attr(layout, "direction").map(str::trim) {
+        Some("rtl") => Some("right".to_owned()),
+        _ => None,
+    }
+}
+
 /// The colour a node picks up from `fill-style="name"`.
 ///
 /// `<fill-style name="X" value="..." />` lands in `metadata.styles` with the
@@ -992,7 +1015,7 @@ fn content_for(layout: &LayoutBox, metadata: &GuiMetadata, ordinal: usize) -> Pa
                 segments,
                 max_lines: max_text_lines(layout),
                 truncate: truncates(layout),
-                text_align: attr(layout, "align").map(ToOwned::to_owned),
+                text_align: text_align_for(layout),
                 white_space: attr(layout, "white-space").map(ToOwned::to_owned),
                 text_wrap: attr(layout, "text-wrap").map(ToOwned::to_owned),
                 word_break: attr(layout, "word-break").map(ToOwned::to_owned),
@@ -1124,6 +1147,67 @@ fn truncates(layout: &LayoutBox) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    fn text_align_of(xml: &str) -> Option<String> {
+        let document = parse_gui_xml(xml).expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+        match &scene.root.children[0].content {
+            PaintContent::Text { text_align, .. } => text_align.clone(),
+            other => panic!("expected text content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rtl_text_starts_at_the_right_edge_of_its_box() {
+        assert_eq!(
+            text_align_of(
+                r##"
+                <gui version="0.2">
+                  <col w="100">
+                    <text value="שלום" direction="rtl" />
+                  </col>
+                </gui>
+                "##,
+            )
+            .as_deref(),
+            Some("right")
+        );
+    }
+
+    #[test]
+    fn ltr_text_keeps_the_left_edge() {
+        assert_eq!(
+            text_align_of(
+                r##"
+                <gui version="0.2">
+                  <col w="100">
+                    <text value="hello" direction="ltr" />
+                  </col>
+                </gui>
+                "##,
+            ),
+            None,
+            "left is the default, so there is nothing to record"
+        );
+    }
+
+    #[test]
+    fn a_declared_align_outranks_the_base_direction() {
+        assert_eq!(
+            text_align_of(
+                r##"
+                <gui version="0.2">
+                  <col w="100">
+                    <text value="שלום" direction="rtl" align="center" />
+                  </col>
+                </gui>
+                "##,
+            )
+            .as_deref(),
+            Some("center")
+        );
+    }
 
     #[test]
     fn a_shape_carries_the_fill_rule_it_declares() {
