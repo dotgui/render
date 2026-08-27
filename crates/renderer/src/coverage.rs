@@ -40,6 +40,7 @@ pub const SHARED: &[&str] = &[
     "max-width",
     "min-height",
     "max-height",
+    "visible",
 ];
 
 /// Attributes honoured per element, beyond [`SHARED`].

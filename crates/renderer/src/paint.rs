@@ -272,11 +272,17 @@ fn paint_node_direct(
     asset_cache: Option<&AssetCache>,
     fonts: Option<&FontStore>,
 ) {
-    paint_backdrop_effects(pixmap, node);
-    paint_drop_shadows(pixmap, node);
-    paint_fill(pixmap, node, asset_cache);
-    paint_inner_shadows(pixmap, node);
-    paint_content(pixmap, node, font, asset_cache, fonts);
+    // `visible="false"` is `visibility: hidden`, so the node keeps the space it
+    // was laid out into and only its own paint is skipped. Children are still
+    // walked: the property inherits, but a descendant can set `visible="true"`
+    // and paint anyway, and the scene has already resolved which those are.
+    if node.visible {
+        paint_backdrop_effects(pixmap, node);
+        paint_drop_shadows(pixmap, node);
+        paint_fill(pixmap, node, asset_cache);
+        paint_inner_shadows(pixmap, node);
+        paint_content(pixmap, node, font, asset_cache, fonts);
+    }
 
     if (node.clip_x || node.clip_y) && !node.children.is_empty() {
         if let Some(mut child_pixmap) = Pixmap::new(pixmap.width(), pixmap.height()) {
@@ -316,8 +322,10 @@ fn paint_node_direct(
         }
     }
 
-    paint_border(pixmap, node);
-    paint_outline(pixmap, node);
+    if node.visible {
+        paint_border(pixmap, node);
+        paint_outline(pixmap, node);
+    }
 }
 
 /// The mask a node composites through, from whichever source it declares.
@@ -4635,6 +4643,114 @@ mod tests {
     }
 
     /// Renders a document and hands back the pixels.
+    #[test]
+    fn a_hidden_node_keeps_its_space_but_does_not_paint() {
+        // Three 20x20 boxes stacked with no gap in a 40x80 white frame. The
+        // middle one is hidden, so its band reads white — but the third still
+        // paints at y = 40..60, which is where it sits only because the hidden
+        // one still occupies 20..40. That is the whole difference between
+        // `visibility: hidden` and removing the node.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <col w="40" h="80" fill="#ffffff">
+                <rect w="20" h="20" fill="#000000" />
+                <rect w="20" h="20" fill="#000000" visible="false" />
+                <rect w="20" h="20" fill="#000000" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(painted.get_pixel(10, 10).0[0..3], [0, 0, 0], "first paints");
+        assert_eq!(
+            painted.get_pixel(10, 30).0[0..3],
+            [255, 255, 255],
+            "the hidden one does not paint"
+        );
+        assert_eq!(
+            painted.get_pixel(10, 50).0[0..3],
+            [0, 0, 0],
+            "the third still sits below the space the hidden one kept"
+        );
+    }
+
+    #[test]
+    fn hiding_a_container_hides_its_children() {
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <col w="40" h="40" fill="#ffffff">
+                <row w="40" h="40" fill="#ff0000" visible="false">
+                  <rect w="20" h="20" fill="#000000" />
+                </row>
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            painted.get_pixel(10, 10).0[0..3],
+            [255, 255, 255],
+            "the child goes with the container that hid it"
+        );
+    }
+
+    #[test]
+    fn a_child_can_take_itself_back_out_of_a_hidden_container() {
+        // `visibility` is the one CSS visibility value a descendant can undo.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <col w="40" h="40" fill="#ffffff">
+                <row w="40" h="40" fill="#ff0000" visible="false">
+                  <rect w="20" h="20" fill="#000000" visible="true" />
+                </row>
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            painted.get_pixel(10, 10).0[0..3],
+            [0, 0, 0],
+            "the child paints again"
+        );
+        assert_eq!(
+            painted.get_pixel(30, 30).0[0..3],
+            [255, 255, 255],
+            "the container that hid itself still does not"
+        );
+    }
+
+    #[test]
+    fn a_hidden_node_takes_its_border_and_outline_with_it() {
+        // Border and outline are painted after the children, on their own
+        // path, so they need the same gate as the fill.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="60" h="60" fill="#ffffff">
+                <rect abs x="20" y="20" w="20" h="20" fill="#ffffff"
+                      border="2 #00ff00" outline="2 #ff0000" outline-offset="4"
+                      visible="false" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            painted.get_pixel(21, 30).0[0..3],
+            [255, 255, 255],
+            "no border"
+        );
+        assert_eq!(
+            painted.get_pixel(15, 30).0[0..3],
+            [255, 255, 255],
+            "no outline"
+        );
+    }
+
     fn render(xml: &str) -> image::RgbaImage {
         let document = parse_gui_xml(xml).expect("valid gui");
         let layout = compute_taffy_layout(&document).expect("layout computes");

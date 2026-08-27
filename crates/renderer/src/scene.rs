@@ -54,6 +54,13 @@ pub struct SceneNode {
     /// than dropped.
     pub href: Option<String>,
     pub opacity: f32,
+    /// Whether the node paints.
+    ///
+    /// `visible="false"` is CSS `visibility: hidden`, not `display: none`: the
+    /// node keeps the space it was laid out into, so everything around it
+    /// stays where it was, and only its own paint is skipped. It inherits, and
+    /// a descendant can take itself back out of it with `visible="true"`.
+    pub visible: bool,
     /// Whether the node clips its children horizontally and vertically.
     ///
     /// Both axes together clip to the node's own shape, rounded corners
@@ -285,7 +292,7 @@ pub enum PaintContent {
 pub fn build_scene(document: &GuiDocument, layout: &LayoutBox) -> Scene {
     Scene {
         name: document.name.clone(),
-        root: build_scene_node(layout, &document.metadata, 1),
+        root: build_scene_node(layout, &document.metadata, 1, true),
     }
 }
 
@@ -294,7 +301,17 @@ pub fn build_scene(document: &GuiDocument, layout: &LayoutBox) -> Scene {
 /// `ordinal` is the node's position among its list-item siblings, counting
 /// from 1. Only a `list="decimal"` node uses it, but it can only be known
 /// from the parent, so it is passed down rather than looked up.
-fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata, ordinal: usize) -> SceneNode {
+///
+/// `inherited_visible` is whether the parent chain paints. `visible` inherits
+/// like the CSS property it names, so it is resolved here rather than at paint
+/// time, where the ancestors are no longer in hand.
+fn build_scene_node(
+    layout: &LayoutBox,
+    metadata: &GuiMetadata,
+    ordinal: usize,
+    inherited_visible: bool,
+) -> SceneNode {
+    let visible = visibility_of(layout, inherited_visible);
     SceneNode {
         tag: layout.tag.clone(),
         bounds: layout.rect,
@@ -322,11 +339,12 @@ fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata, ordinal: usize) 
         opacity: attr(layout, "opacity")
             .and_then(parse_number)
             .unwrap_or(1.0),
+        visible,
         clip_x: clips_axis(layout, "overflow-x"),
         clip_y: clips_axis(layout, "overflow-y"),
         effects: effects_for(layout, metadata),
         content: content_for(layout, metadata, ordinal),
-        children: paint_ordered_children(layout, metadata),
+        children: paint_ordered_children(layout, metadata, visible),
     }
 }
 
@@ -543,7 +561,11 @@ fn image_mask_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Option<ImageMas
 /// The scene is a paint model, so `z-index` is resolved here rather than left
 /// for the painter to re-derive. A node without one sorts as 0, and the sort
 /// is stable, so document order still decides between equals.
-fn paint_ordered_children(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<SceneNode> {
+fn paint_ordered_children(
+    layout: &LayoutBox,
+    metadata: &GuiMetadata,
+    visible: bool,
+) -> Vec<SceneNode> {
     // A decimal list item is numbered by its place among its list-item
     // siblings, which only the parent can count.
     let mut ordinal = 0usize;
@@ -557,13 +579,29 @@ fn paint_ordered_children(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Sce
             }
             (
                 z_index_of(child, metadata),
-                build_scene_node(child, metadata, ordinal.max(1)),
+                build_scene_node(child, metadata, ordinal.max(1), visible),
             )
         })
         .collect();
 
     children.sort_by_key(|(z, _)| *z);
     children.into_iter().map(|(_, child)| child).collect()
+}
+
+/// Whether a node paints, given whether its ancestors do.
+///
+/// The spec defines `visible="false"` as CSS `visibility: hidden`, and that
+/// property inherits: hiding a container hides everything inside it. It is
+/// also the one CSS visibility value a descendant can undo, so an explicit
+/// `visible="true"` under a hidden ancestor paints again. Anything else — the
+/// attribute absent, or carrying a value that is neither — leaves the node
+/// with whatever its ancestors decided.
+fn visibility_of(layout: &LayoutBox, inherited: bool) -> bool {
+    match attr(layout, "visible").map(str::trim) {
+        Some("false") => false,
+        Some("true") => true,
+        _ => inherited,
+    }
 }
 
 /// One indent step per `list-level`, matching kit.

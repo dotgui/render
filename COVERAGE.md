@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **98** |
+| Implemented | **99** |
 | Partial | **1** |
-| Not implemented | **21** |
+| Not implemented | **20** |
 | Total | **120** |
 
 ## Not implemented
@@ -37,7 +37,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `text-case` | `<text>` |
 | `text-rendering` | `<text>` |
 | `text-resize` | `<text>` |
-| `visible` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `wrap` | `<stack>`, `<row>`, `<col>` |
 | `writing-mode` | `<text>` |
 
@@ -144,6 +143,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `truncate` | `<text>` |
 | `value` | `<text>` |
 | `vertical-align` | `<text>` |
+| `visible` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `w` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `white-space` | `<text>` |
 | `word-break` | `<text>` |

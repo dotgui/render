@@ -1,0 +1,27 @@
+<gui version="0.2">
+  <col w="220" h="200" fill="#ffffff" p="12" gap="8">
+
+    <!-- A hidden node still takes its space: the rows below sit where they
+         would if it painted, which is what separates `visible` from removal. -->
+    <rect w="80" h="24" fill="#0d99ff" />
+    <rect w="80" h="24" fill="#0d99ff" visible="false" />
+    <rect w="80" h="24" fill="#0d99ff" />
+
+    <!-- Hiding a container hides what is inside it. -->
+    <row w="196" h="28" fill="#f2b8b5" gap="6" visible="false">
+      <rect w="24" h="24" fill="#111111" />
+      <rect w="24" h="24" fill="#111111" />
+    </row>
+
+    <!-- ...except a descendant that takes itself back out of it. -->
+    <row w="196" h="28" fill="#f2b8b5" gap="6" visible="false">
+      <rect w="24" h="24" fill="#111111" />
+      <rect w="24" h="24" fill="#0d99ff" visible="true" />
+    </row>
+
+    <!-- A hidden node's border and outline go with it. -->
+    <rect w="80" h="24" fill="#ffffff" border="2 #111111"
+          outline="2 #ff0000" outline-offset="2" visible="false" />
+
+  </col>
+</gui>
