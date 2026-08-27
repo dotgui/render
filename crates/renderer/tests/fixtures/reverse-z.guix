@@ -1,0 +1,23 @@
+<gui version="0.2">
+  <col w="200" h="150" fill="#ffffff" p="10" gap="10">
+
+    <!-- Overlapping siblings, painted in document order: blue ends on top. -->
+    <col w="180" h="50">
+      <rect abs x="0" y="0" w="80" h="50" fill="#ff0000" />
+      <rect abs x="30" y="0" w="80" h="50" fill="#0000ff" />
+    </col>
+
+    <!-- The same pair reversed: red ends on top, and neither box moves. -->
+    <col w="180" h="50" reverse-z>
+      <rect abs x="0" y="0" w="80" h="50" fill="#ff0000" />
+      <rect abs x="30" y="0" w="80" h="50" fill="#0000ff" />
+    </col>
+
+    <!-- An explicit z-index is the stronger statement and survives it. -->
+    <col w="180" h="50" reverse-z>
+      <rect abs x="0" y="0" w="80" h="50" fill="#ff0000" />
+      <rect abs x="30" y="0" w="80" h="50" fill="#0000ff" z-index="1" />
+    </col>
+
+  </col>
+</gui>

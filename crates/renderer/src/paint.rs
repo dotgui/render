@@ -4751,6 +4751,111 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reverse_z_paints_the_first_child_on_top() {
+        // Siblings have to overlap for paint order to be visible at all, and
+        // a container here lays its children out in flow, so the two are
+        // stacked with `abs` rather than by nesting them in a `<stack>`.
+        // Document order normally puts the last one on top.
+        let plain = render(
+            r##"
+            <gui version="0.2">
+              <col w="40" h="40" fill="#ffffff">
+                <rect abs x="0" y="0" w="40" h="40" fill="#ff0000" />
+                <rect abs x="0" y="0" w="40" h="40" fill="#0000ff" />
+              </col>
+            </gui>
+            "##,
+        );
+        assert_eq!(
+            plain.get_pixel(20, 20).0[0..3],
+            [0, 0, 255],
+            "the last child normally wins"
+        );
+
+        let reversed = render(
+            r##"
+            <gui version="0.2">
+              <col w="40" h="40" fill="#ffffff" reverse-z="true">
+                <rect abs x="0" y="0" w="40" h="40" fill="#ff0000" />
+                <rect abs x="0" y="0" w="40" h="40" fill="#0000ff" />
+              </col>
+            </gui>
+            "##,
+        );
+        assert_eq!(
+            reversed.get_pixel(20, 20).0[0..3],
+            [255, 0, 0],
+            "reverse-z puts the first child on top"
+        );
+    }
+
+    #[test]
+    fn reverse_z_is_true_by_presence() {
+        // The spec makes it a presence boolean, and the parser normalises a
+        // bare attribute to "true", so the valueless form has to work too.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <col w="40" h="40" fill="#ffffff" reverse-z>
+                <rect abs x="0" y="0" w="40" h="40" fill="#ff0000" />
+                <rect abs x="0" y="0" w="40" h="40" fill="#0000ff" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(painted.get_pixel(20, 20).0[0..3], [255, 0, 0]);
+    }
+
+    #[test]
+    fn reverse_z_does_not_move_anything() {
+        // It is a paint-order property: the boxes stay where layout put them.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <col w="40" h="60" fill="#ffffff" reverse-z="true">
+                <rect w="40" h="20" fill="#ff0000" />
+                <rect w="40" h="20" fill="#0000ff" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            painted.get_pixel(20, 10).0[0..3],
+            [255, 0, 0],
+            "the first child is still first in the column"
+        );
+        assert_eq!(
+            painted.get_pixel(20, 30).0[0..3],
+            [0, 0, 255],
+            "the second is still second"
+        );
+    }
+
+    #[test]
+    fn z_index_still_outranks_reverse_z() {
+        // `reverse-z` only decides between siblings that share a z-index; an
+        // explicit one is the stronger statement and keeps its child on top.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <col w="40" h="40" fill="#ffffff" reverse-z="true">
+                <rect abs x="0" y="0" w="40" h="40" fill="#ff0000" />
+                <rect abs x="0" y="0" w="40" h="40" fill="#0000ff" z-index="1" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            painted.get_pixel(20, 20).0[0..3],
+            [0, 0, 255],
+            "the raised child stays on top"
+        );
+    }
+
     fn render(xml: &str) -> image::RgbaImage {
         let document = parse_gui_xml(xml).expect("valid gui");
         let layout = compute_taffy_layout(&document).expect("layout computes");

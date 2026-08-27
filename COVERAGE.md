@@ -8,9 +8,9 @@ Listed by property, because that is the unit of work: implementing `radius` is o
 
 | | Properties |
 |---|---|
-| Implemented | **99** |
+| Implemented | **100** |
 | Partial | **1** |
-| Not implemented | **20** |
+| Not implemented | **19** |
 | Total | **120** |
 
 ## Not implemented
@@ -32,7 +32,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `font-postscript` | `<text>` |
 | `font-style-name` | `<text>` |
 | `name` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `reverse-z` | `<stack>`, `<row>`, `<col>` |
 | `row-gap` | `<grid>` |
 | `text-case` | `<text>` |
 | `text-rendering` | `<text>` |
@@ -126,6 +125,7 @@ Read on some elements but not others — usually cheaper to finish than to start
 | `pr` | `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `pt` | `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `radius` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>` |
+| `reverse-z` | `<stack>`, `<row>`, `<col>` |
 | `rotation` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `rows` | `<grid>` |
 | `scale-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |

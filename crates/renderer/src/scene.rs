@@ -584,8 +584,24 @@ fn paint_ordered_children(
         })
         .collect();
 
+    // `reverse-z` flips which sibling ends up on top without moving anything:
+    // the layout was already computed from document order, and this list is
+    // only the order they are painted in. Reversing before the sort rather
+    // than after keeps `z-index` the stronger of the two, because the sort is
+    // stable and so only decides between siblings that share a z-index.
+    if reverses_z(layout) {
+        children.reverse();
+    }
+
     children.sort_by_key(|(z, _)| *z);
     children.into_iter().map(|(_, child)| child).collect()
+}
+
+/// Whether a container paints its children back to front.
+///
+/// A spec boolean is true by presence, so any value but `false` enables it.
+fn reverses_z(layout: &LayoutBox) -> bool {
+    attr(layout, "reverse-z").is_some_and(|value| value.trim() != "false")
 }
 
 /// Whether a node paints, given whether its ancestors do.

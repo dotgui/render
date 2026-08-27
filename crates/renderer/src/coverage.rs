@@ -70,6 +70,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "stack",
         &[
+            "reverse-z",
             "w",
             "h",
             "x",
@@ -104,6 +105,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "row",
         &[
+            "reverse-z",
             "w",
             "h",
             "x",
@@ -133,6 +135,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "col",
         &[
+            "reverse-z",
             "w",
             "h",
             "x",
