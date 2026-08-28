@@ -187,6 +187,15 @@ impl FontFace {
     }
 
     pub fn text_width(&self, value: &str, font_size: f32, axes: &FontAxes) -> f32 {
+        // Shaping is the accurate answer: it applies the face's own kerning
+        // and substitutions, which summing per-glyph advances cannot see.
+        // Painting shapes the same run, so the two agree by construction.
+        if let Some(glyphs) = self.shape(value, font_size, axes) {
+            return glyphs.iter().map(|glyph| glyph.x_advance).sum();
+        }
+
+        // A face rustybuzz will not parse still has to measure, so the old
+        // per-glyph sum stays as the fallback rather than returning zero.
         if let Some(width) = self.variable_text_width(value, font_size, axes) {
             return width;
         }
@@ -416,6 +425,38 @@ impl FontFace {
                 .collect(),
         )
     }
+}
+
+/// How many characters, and how many spaces, each shaped glyph stands for.
+///
+/// `letter-spacing` and `word-spacing` are defined per *character*, and
+/// shaping breaks the one-glyph-per-character assumption in both directions:
+/// a ligature is one glyph covering several characters, and a decomposed mark
+/// is several glyphs sharing one. So the spacing owed by a run is worked out
+/// from the source text and attributed to the first glyph of each cluster —
+/// which keeps the total identical to counting the string directly, however
+/// the face chose to render it.
+pub fn cluster_char_counts(glyphs: &[ShapedGlyph], text: &str) -> Vec<(usize, usize)> {
+    glyphs
+        .iter()
+        .enumerate()
+        .map(|(index, glyph)| {
+            // A glyph sharing its cluster with the one before it is part of
+            // the same character; the spacing was already counted there.
+            if index > 0 && glyphs[index - 1].cluster == glyph.cluster {
+                return (0, 0);
+            }
+            let end = glyphs[index + 1..]
+                .iter()
+                .find(|next| next.cluster != glyph.cluster)
+                .map_or(text.len(), |next| next.cluster);
+            let span = text.get(glyph.cluster..end).unwrap_or("");
+            (
+                span.chars().count(),
+                span.chars().filter(|ch| *ch == ' ').count(),
+            )
+        })
+        .collect()
 }
 
 impl FontStore {
@@ -1081,7 +1122,9 @@ mod tests {
                 .iter()
                 .map(|glyph| glyph.x_advance)
                 .sum();
-            let summed = face.text_width(sample, 16.0, &axes);
+            let summed = face
+                .variable_text_width(sample, 16.0, &axes)
+                .expect("the face measures");
             let delta = (summed - shaped) / summed * 100.0;
             total_shaped += shaped;
             total_summed += summed;
@@ -1090,6 +1133,45 @@ mod tests {
         }
         let overall = (total_summed - total_shaped) / total_summed * 100.0;
         println!("\noverall {overall:+.2}%, worst line {worst:.2}%");
+    }
+
+    #[test]
+    fn spacing_attributed_per_cluster_totals_what_the_string_says() {
+        // This is the invariant that keeps layout and painting together.
+        // Measurement counts letter/word spacing off the source string;
+        // painting attributes it per shaped cluster. However the face groups
+        // the glyphs, the two totals have to be the same number, or a box is
+        // sized to one width and drawn to another.
+        let Some(face) = dejavu() else {
+            return;
+        };
+        let axes = FontAxes::default();
+
+        for sample in [
+            "AV Wave",
+            "office affair", // ligature candidates
+            "a b c",         // several spaces
+            "",              // nothing at all
+            "Ω≈ç√",          // outside latin
+            "  leading and trailing  ",
+        ] {
+            let glyphs = face.shape(sample, 16.0, &axes).expect("shapes");
+            let spans = cluster_char_counts(&glyphs, sample);
+
+            let chars: usize = spans.iter().map(|(chars, _)| chars).sum();
+            let spaces: usize = spans.iter().map(|(_, spaces)| spaces).sum();
+
+            assert_eq!(
+                chars,
+                sample.chars().count(),
+                "every character is accounted for exactly once in {sample:?}"
+            );
+            assert_eq!(
+                spaces,
+                sample.chars().filter(|ch| *ch == ' ').count(),
+                "and so is every space in {sample:?}"
+            );
+        }
     }
 
     #[test]
@@ -1108,7 +1190,11 @@ mod tests {
             .iter()
             .map(|glyph| glyph.x_advance)
             .sum();
-        let summed = face.text_width("AV", 100.0, &axes);
+        // Deliberately the pre-shaping path: `text_width` now shapes, so
+        // comparing against it would compare shaping with itself.
+        let summed = face
+            .variable_text_width("AV", 100.0, &axes)
+            .expect("the face measures");
 
         assert!(
             shaped < summed,
@@ -1130,7 +1216,9 @@ mod tests {
             .iter()
             .map(|glyph| glyph.x_advance)
             .sum();
-        let summed = face.text_width("nn", 100.0, &axes);
+        let summed = face
+            .variable_text_width("nn", 100.0, &axes)
+            .expect("the face measures");
 
         assert!(
             (shaped - summed).abs() < 0.01,

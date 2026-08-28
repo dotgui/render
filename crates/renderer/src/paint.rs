@@ -1464,6 +1464,52 @@ impl<'a> RunStyle<'a> {
         paint.set_color(color);
         paint.anti_alias = self.anti_alias;
 
+        // Shaped, so the glyphs drawn and the distance between them are the
+        // face's own answer — the same one measurement asked for. Drawing
+        // per character here while layout measured a shaped run would size a
+        // box to one width and fill it to another.
+        let shaped = face.shape(text, self.font_size, &self.axes);
+        let Some(shaped) = shaped else {
+            self.draw_outlines_unshaped(pixmap, ttf_face, face, text, cursor_x, baseline, &paint);
+            return;
+        };
+        let spans = crate::fonts::cluster_char_counts(&shaped, text);
+
+        for (glyph, (chars, spaces)) in shaped.iter().zip(spans) {
+            let mut builder =
+                GlyphPathBuilder::new(*cursor_x + glyph.x_offset, baseline - glyph.y_offset, scale);
+            ttf_face.outline_glyph(ttf_parser::GlyphId(glyph.glyph_id), &mut builder);
+            if let Some(path) = builder.finish() {
+                pixmap.fill_path(
+                    &path,
+                    &paint,
+                    FillRule::Winding,
+                    Transform::identity(),
+                    None,
+                );
+            }
+
+            // Spacing is per character, counted off the source text, so a
+            // ligature carries the spacing of everything it replaced.
+            *cursor_x += glyph.x_advance
+                + chars as f32 * self.letter_spacing
+                + spaces as f32 * self.word_spacing;
+        }
+    }
+
+    /// The pre-shaping path, kept for a face rustybuzz will not parse.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_outlines_unshaped(
+        &self,
+        pixmap: &mut Pixmap,
+        ttf_face: &ttf_parser::Face<'_>,
+        face: &FontFace,
+        text: &str,
+        cursor_x: &mut f32,
+        baseline: f32,
+        paint: &Paint<'_>,
+    ) {
+        let scale = self.font_size / ttf_face.units_per_em() as f32;
         for ch in text.chars() {
             let Some(glyph) = ttf_face.glyph_index(ch) else {
                 *cursor_x += face.fallback().metrics(ch, self.font_size).advance_width
@@ -1475,13 +1521,7 @@ impl<'a> RunStyle<'a> {
             let mut builder = GlyphPathBuilder::new(*cursor_x, baseline, scale);
             ttf_face.outline_glyph(glyph, &mut builder);
             if let Some(path) = builder.finish() {
-                pixmap.fill_path(
-                    &path,
-                    &paint,
-                    FillRule::Winding,
-                    Transform::identity(),
-                    None,
-                );
+                pixmap.fill_path(&path, paint, FillRule::Winding, Transform::identity(), None);
             }
 
             *cursor_x += ttf_face
