@@ -174,7 +174,13 @@ fn paint_node(
 
 /// Multiplies a mask into a layer's alpha.
 fn mask_layer(layer: &mut Pixmap, mask: &tiny_skia::Mask) {
-    for (pixel, coverage) in layer.data_mut().chunks_exact_mut(4).zip(mask.data()) {
+    for (pixel, coverage) in layer
+        .data_mut()
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(mask.data())
+    {
         // Premultiplied, so every channel scales with the alpha.
         for channel in pixel {
             *channel = ((*channel as u16 * *coverage as u16 + 127) / 255) as u8;
@@ -2224,7 +2230,7 @@ fn render_raster_asset(
 
 fn premultiply_rgba(straight: &[u8]) -> Vec<u8> {
     let mut premultiplied = Vec::with_capacity(straight.len());
-    for pixel in straight.chunks_exact(4) {
+    for pixel in straight.as_chunks::<4>().0 {
         let alpha = pixel[3] as u32;
         for channel in &pixel[..3] {
             // Rounded `channel * alpha / 255`, which stays <= alpha and so is

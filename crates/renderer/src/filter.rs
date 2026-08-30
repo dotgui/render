@@ -116,7 +116,7 @@ fn parse_length(value: &str) -> Option<f32> {
 /// and multiplied back — mapping premultiplied bytes directly would darken
 /// translucent pixels twice.
 fn map_channels(pixmap: &mut Pixmap, map: impl Fn(f32) -> f32) {
-    for pixel in pixmap.data_mut().chunks_exact_mut(4) {
+    for pixel in pixmap.data_mut().as_chunks_mut::<4>().0 {
         let alpha = pixel[3] as f32 / 255.0;
         if alpha <= 0.0 {
             continue;
@@ -130,7 +130,7 @@ fn map_channels(pixmap: &mut Pixmap, map: impl Fn(f32) -> f32) {
 }
 
 fn scale_alpha(pixmap: &mut Pixmap, amount: f32) {
-    for pixel in pixmap.data_mut().chunks_exact_mut(4) {
+    for pixel in pixmap.data_mut().as_chunks_mut::<4>().0 {
         // Premultiplied, so every channel scales with the alpha.
         for channel in pixel {
             *channel = to_byte(*channel as f32 / 255.0 * amount);
@@ -180,7 +180,7 @@ fn saturate_matrix(amount: f32) -> ColorMatrix {
 }
 
 fn apply_matrix(pixmap: &mut Pixmap, matrix: &ColorMatrix) {
-    for pixel in pixmap.data_mut().chunks_exact_mut(4) {
+    for pixel in pixmap.data_mut().as_chunks_mut::<4>().0 {
         let alpha = pixel[3] as f32 / 255.0;
         if alpha <= 0.0 {
             continue;
