@@ -1,0 +1,34 @@
+<gui version="0.2">
+  <col w="240" fill="#ffffff" p="12" gap="10">
+
+    <!-- Declared entirely by longhand, with no shorthand present. -->
+    <rect w="200" h="24" fill="#ffffff" border-width="3" border-color="#111111"
+          border-style="dashed" border-align="inside" />
+
+    <!-- Each style at the same width, so the three read against each other. -->
+    <rect w="200" h="24" fill="#ffffff" border-width="2" border-color="#111111"
+          border-style="solid" />
+    <rect w="200" h="24" fill="#ffffff" border-width="2" border-color="#111111"
+          border-style="dashed" />
+    <rect w="200" h="24" fill="#ffffff" border-width="2" border-color="#111111"
+          border-style="dotted" />
+
+    <!-- The three alignments: the same 4px border sitting inside, centred on,
+         and outside the same box. -->
+    <rect w="200" h="24" fill="#ffffff" border-width="4" border-color="#0d99ff"
+          border-align="inside" />
+    <rect w="200" h="24" fill="#ffffff" border-width="4" border-color="#0d99ff"
+          border-align="center" />
+    <rect w="200" h="24" fill="#ffffff" border-width="4" border-color="#0d99ff"
+          border-align="outside" />
+
+    <!-- A shorthand with one part replaced: the width and alignment survive,
+         the colour does not. -->
+    <rect w="200" h="24" fill="#ffffff" border="3 #111111 solid inside"
+          border-color="#f2b8b5" />
+
+    <!-- A colour on its own takes the 1px default. -->
+    <rect w="200" h="24" fill="#ffffff" border-color="#111111" />
+
+  </col>
+</gui>

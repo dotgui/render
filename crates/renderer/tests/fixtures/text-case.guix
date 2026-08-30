@@ -1,0 +1,15 @@
+<gui version="0.2" name="Text case">
+  <fonts><font family="Roboto" source="google" category="sans-serif" weights="400 700" styles="normal" /></fonts>
+  <col w="520" h="330" fill="#FFFFFF" p="20" gap="6">
+    <text w="fill" h="34" font-family="Roboto" font-size="24" fill="#111111" value="hello WORLD x-ray 3rd" />
+    <text w="fill" h="34" font-family="Roboto" font-size="24" fill="#111111" text-case="uppercase" value="hello WORLD x-ray 3rd" />
+    <text w="fill" h="34" font-family="Roboto" font-size="24" fill="#111111" text-case="lowercase" value="hello WORLD x-ray 3rd" />
+    <text w="fill" h="34" font-family="Roboto" font-size="24" fill="#111111" text-case="capitalize" value="hello WORLD x-ray 3rd o'neill" />
+    <text w="fill" h="34" font-family="Roboto" font-size="24" fill="#111111" text-case="small-caps" value="hello WORLD x-ray 3rd" />
+    <text w="fill" h="34" font-family="Roboto" font-size="24" fill="#111111" text-case="small-caps-forced" value="hello WORLD x-ray 3rd" />
+    <text w="fill" h="34" font-family="Roboto" font-size="24" fill="#111111" text-case="uppercase">
+      <segment value="inherited " />
+      <segment value="overridden" text-case="lowercase" font-weight="700" />
+    </text>
+  </col>
+</gui>

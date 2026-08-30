@@ -25,6 +25,7 @@ ttf-parser.workspace = true
 ureq = { workspace = true, optional = true }
 zip.workspace = true
 image.workspace = true
+rustybuzz = "0.20.1"
 
 [dev-dependencies]
 

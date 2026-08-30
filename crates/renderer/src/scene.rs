@@ -13,6 +13,14 @@ pub struct Scene {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneNode {
     pub tag: String,
+    /// The layer name the source design gave this node.
+    ///
+    /// It paints nothing. It is carried because it is the only handle a
+    /// consumer of the scene has on which node is which — a diagnostic naming
+    /// the box it is complaining about, a viewer's layer list, a diff between
+    /// two versions of a document — and dropping it here would leave them
+    /// pointing at a tag and a rectangle.
+    pub name: Option<String>,
     pub bounds: LayoutRect,
     /// The node's fill stack, in document order: the first entry is painted
     /// first and the last one ends up on top.
@@ -54,6 +62,13 @@ pub struct SceneNode {
     /// than dropped.
     pub href: Option<String>,
     pub opacity: f32,
+    /// Whether the node paints.
+    ///
+    /// `visible="false"` is CSS `visibility: hidden`, not `display: none`: the
+    /// node keeps the space it was laid out into, so everything around it
+    /// stays where it was, and only its own paint is skipped. It inherits, and
+    /// a descendant can take itself back out of it with `visible="true"`.
+    pub visible: bool,
     /// Whether the node clips its children horizontally and vertically.
     ///
     /// Both axes together clip to the node's own shape, rounded corners
@@ -252,6 +267,12 @@ pub enum PaintContent {
         max_lines: Option<usize>,
         truncate: bool,
         text_align: Option<String>,
+        /// `text-rendering`: which way the rasteriser is asked to lean when
+        /// speed and fidelity disagree.
+        text_rendering: Option<String>,
+        /// `writing-mode`: `horizontal-tb`, or one of the two vertical modes,
+        /// which turn the block on its side.
+        writing_mode: Option<String>,
         /// `white-space`, `text-wrap` and `word-break`, which decide where
         /// lines may break.
         white_space: Option<String>,
@@ -285,7 +306,7 @@ pub enum PaintContent {
 pub fn build_scene(document: &GuiDocument, layout: &LayoutBox) -> Scene {
     Scene {
         name: document.name.clone(),
-        root: build_scene_node(layout, &document.metadata, 1),
+        root: build_scene_node(layout, &document.metadata, 1, true),
     }
 }
 
@@ -294,9 +315,20 @@ pub fn build_scene(document: &GuiDocument, layout: &LayoutBox) -> Scene {
 /// `ordinal` is the node's position among its list-item siblings, counting
 /// from 1. Only a `list="decimal"` node uses it, but it can only be known
 /// from the parent, so it is passed down rather than looked up.
-fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata, ordinal: usize) -> SceneNode {
+///
+/// `inherited_visible` is whether the parent chain paints. `visible` inherits
+/// like the CSS property it names, so it is resolved here rather than at paint
+/// time, where the ancestors are no longer in hand.
+fn build_scene_node(
+    layout: &LayoutBox,
+    metadata: &GuiMetadata,
+    ordinal: usize,
+    inherited_visible: bool,
+) -> SceneNode {
+    let visible = visibility_of(layout, inherited_visible);
     SceneNode {
         tag: layout.tag.clone(),
+        name: attr(layout, "name").map(ToOwned::to_owned),
         bounds: layout.rect,
         fills: fills_for(layout, metadata),
         borders: borders_for(layout, metadata),
@@ -322,11 +354,12 @@ fn build_scene_node(layout: &LayoutBox, metadata: &GuiMetadata, ordinal: usize) 
         opacity: attr(layout, "opacity")
             .and_then(parse_number)
             .unwrap_or(1.0),
+        visible,
         clip_x: clips_axis(layout, "overflow-x"),
         clip_y: clips_axis(layout, "overflow-y"),
         effects: effects_for(layout, metadata),
         content: content_for(layout, metadata, ordinal),
-        children: paint_ordered_children(layout, metadata),
+        children: paint_ordered_children(layout, metadata, visible),
     }
 }
 
@@ -415,10 +448,90 @@ fn borders_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Border> {
         return borders;
     }
 
-    attr(layout, "border")
-        .and_then(|value| parse_border(&resolve_token(value, metadata)))
-        .into_iter()
-        .collect()
+    // An `<appearance>` border is a complete description, which is why it
+    // returns above without consulting anything else. What is left is the
+    // node's own border: the `border` shorthand, the four longhands, or both.
+    node_border(layout, metadata).into_iter().collect()
+}
+
+/// The border a node declares on itself.
+///
+/// `border` sets every part at once and each longhand replaces one of them,
+/// so the shorthand is read first and then overridden — the same way the
+/// shorthand and longhands relate in CSS, and the same way `gap` and
+/// `row-gap`/`col-gap` relate a few properties over.
+///
+/// A border needs a colour to be drawn at all, so a node that gives a width
+/// and no colour paints nothing, exactly as an `<appearance><border>` without
+/// one does. A node that gives a colour and no width gets a 1px border, which
+/// is the width an `<appearance><border>` assumes when it omits `w`.
+fn node_border(layout: &LayoutBox, metadata: &GuiMetadata) -> Option<Border> {
+    let value = |name: &str| attr(layout, name).map(|value| resolve_token(value, metadata));
+    let shorthand = value("border").and_then(|value| parse_border(&value));
+
+    let longhand_color = value("border-color");
+    let longhand_width = value("border-width").and_then(|value| parse_number(&value));
+    let longhand_style = value("border-style");
+    let longhand_align = value("border-align");
+
+    // Nothing declared, nothing to draw.
+    if shorthand.is_none()
+        && longhand_color.is_none()
+        && longhand_width.is_none()
+        && longhand_style.is_none()
+        && longhand_align.is_none()
+    {
+        return None;
+    }
+
+    let color = longhand_color.or_else(|| shorthand.as_ref().map(|border| border.color.clone()))?;
+
+    let widths = match longhand_width {
+        Some(width) => BorderWidths::uniform(width),
+        None => shorthand
+            .as_ref()
+            .map(|border| border.widths)
+            .unwrap_or_else(|| BorderWidths::uniform(1.0)),
+    };
+
+    Some(Border {
+        width: widths
+            .top
+            .max(widths.right)
+            .max(widths.bottom)
+            .max(widths.left),
+        widths,
+        color,
+        style: longhand_style
+            .or_else(|| shorthand.as_ref().map(|border| border.style.clone()))
+            .unwrap_or_else(|| "solid".to_owned()),
+        align: longhand_align
+            .or_else(|| shorthand.as_ref().map(|border| border.align.clone()))
+            .unwrap_or_else(|| "center".to_owned()),
+    })
+}
+
+/// Where a `<text>` node's lines sit in its box.
+///
+/// A declared `align` is the answer. With none, the base `direction` decides,
+/// which is what CSS does through the initial `text-align: start`: a run of
+/// right-to-left text starts at the right edge of its box.
+///
+/// Note what this does *not* do. Setting `direction="rtl"` does not reorder
+/// the characters within a line: that is the Unicode bidirectional algorithm,
+/// this renderer does not run it, and the glyphs are drawn in the order the
+/// document stores them. For text already stored in visual order — which is
+/// what a design tool exports — the edge it starts from is the part that was
+/// missing.
+fn text_align_for(layout: &LayoutBox) -> Option<String> {
+    if let Some(align) = attr(layout, "align") {
+        return Some(align.to_owned());
+    }
+
+    match attr(layout, "direction").map(str::trim) {
+        Some("rtl") => Some("right".to_owned()),
+        _ => None,
+    }
 }
 
 /// The colour a node picks up from `fill-style="name"`.
@@ -543,7 +656,11 @@ fn image_mask_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Option<ImageMas
 /// The scene is a paint model, so `z-index` is resolved here rather than left
 /// for the painter to re-derive. A node without one sorts as 0, and the sort
 /// is stable, so document order still decides between equals.
-fn paint_ordered_children(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<SceneNode> {
+fn paint_ordered_children(
+    layout: &LayoutBox,
+    metadata: &GuiMetadata,
+    visible: bool,
+) -> Vec<SceneNode> {
     // A decimal list item is numbered by its place among its list-item
     // siblings, which only the parent can count.
     let mut ordinal = 0usize;
@@ -557,13 +674,45 @@ fn paint_ordered_children(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Sce
             }
             (
                 z_index_of(child, metadata),
-                build_scene_node(child, metadata, ordinal.max(1)),
+                build_scene_node(child, metadata, ordinal.max(1), visible),
             )
         })
         .collect();
 
+    // `reverse-z` flips which sibling ends up on top without moving anything:
+    // the layout was already computed from document order, and this list is
+    // only the order they are painted in. Reversing before the sort rather
+    // than after keeps `z-index` the stronger of the two, because the sort is
+    // stable and so only decides between siblings that share a z-index.
+    if reverses_z(layout) {
+        children.reverse();
+    }
+
     children.sort_by_key(|(z, _)| *z);
     children.into_iter().map(|(_, child)| child).collect()
+}
+
+/// Whether a container paints its children back to front.
+///
+/// A spec boolean is true by presence, so any value but `false` enables it.
+fn reverses_z(layout: &LayoutBox) -> bool {
+    attr(layout, "reverse-z").is_some_and(|value| value.trim() != "false")
+}
+
+/// Whether a node paints, given whether its ancestors do.
+///
+/// The spec defines `visible="false"` as CSS `visibility: hidden`, and that
+/// property inherits: hiding a container hides everything inside it. It is
+/// also the one CSS visibility value a descendant can undo, so an explicit
+/// `visible="true"` under a hidden ancestor paints again. Anything else — the
+/// attribute absent, or carrying a value that is neither — leaves the node
+/// with whatever its ancestors decided.
+fn visibility_of(layout: &LayoutBox, inherited: bool) -> bool {
+    match attr(layout, "visible").map(str::trim) {
+        Some("false") => false,
+        Some("true") => true,
+        _ => inherited,
+    }
 }
 
 /// One indent step per `list-level`, matching kit.
@@ -851,7 +1000,9 @@ fn content_for(layout: &LayoutBox, metadata: &GuiMetadata, ordinal: usize) -> Pa
                 segments,
                 max_lines: max_text_lines(layout),
                 truncate: truncates(layout),
-                text_align: attr(layout, "align").map(ToOwned::to_owned),
+                text_align: text_align_for(layout),
+                text_rendering: attr(layout, "text-rendering").map(ToOwned::to_owned),
+                writing_mode: attr(layout, "writing-mode").map(ToOwned::to_owned),
                 white_space: attr(layout, "white-space").map(ToOwned::to_owned),
                 text_wrap: attr(layout, "text-wrap").map(ToOwned::to_owned),
                 word_break: attr(layout, "word-break").map(ToOwned::to_owned),
@@ -979,10 +1130,248 @@ fn max_text_lines(layout: &LayoutBox) -> Option<usize> {
 fn truncates(layout: &LayoutBox) -> bool {
     attr(layout, "truncate").is_some_and(|value| value != "false")
         || attr(layout, "overflow").is_some_and(|value| value == "ellipsis")
+        // `text-resize="truncate"` is a fixed box that cuts what overflows,
+        // so it is the third spelling of the same instruction.
+        || attr(layout, "text-resize").is_some_and(|value| value.trim() == "truncate")
 }
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn text_resize_truncate_asks_the_painter_to_truncate() {
+        let truncating = |xml: &str| {
+            let document = parse_gui_xml(xml).expect("valid gui");
+            let layout = compute_taffy_layout(&document).expect("layout computes");
+            let scene = build_scene(&document, &layout);
+            match &scene.root.children[0].content {
+                PaintContent::Text { truncate, .. } => *truncate,
+                other => panic!("expected text, got {other:?}"),
+            }
+        };
+
+        assert!(truncating(
+            r##"
+            <gui version="0.2">
+              <col><text value="Hi" w="20" text-resize="truncate" /></col>
+            </gui>
+            "##
+        ));
+        assert!(
+            !truncating(
+                r##"
+                <gui version="0.2">
+                  <col><text value="Hi" w="20" text-resize="fixed" /></col>
+                </gui>
+                "##
+            ),
+            "a fixed box overflows rather than cutting"
+        );
+    }
+
+    fn text_align_of(xml: &str) -> Option<String> {
+        let document = parse_gui_xml(xml).expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+        match &scene.root.children[0].content {
+            PaintContent::Text { text_align, .. } => text_align.clone(),
+            other => panic!("expected text content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rtl_text_starts_at_the_right_edge_of_its_box() {
+        assert_eq!(
+            text_align_of(
+                r##"
+                <gui version="0.2">
+                  <col w="100">
+                    <text value="שלום" direction="rtl" />
+                  </col>
+                </gui>
+                "##,
+            )
+            .as_deref(),
+            Some("right")
+        );
+    }
+
+    #[test]
+    fn ltr_text_keeps_the_left_edge() {
+        assert_eq!(
+            text_align_of(
+                r##"
+                <gui version="0.2">
+                  <col w="100">
+                    <text value="hello" direction="ltr" />
+                  </col>
+                </gui>
+                "##,
+            ),
+            None,
+            "left is the default, so there is nothing to record"
+        );
+    }
+
+    #[test]
+    fn a_declared_align_outranks_the_base_direction() {
+        assert_eq!(
+            text_align_of(
+                r##"
+                <gui version="0.2">
+                  <col w="100">
+                    <text value="שלום" direction="rtl" align="center" />
+                  </col>
+                </gui>
+                "##,
+            )
+            .as_deref(),
+            Some("center")
+        );
+    }
+    fn border_of(xml: &str) -> Option<Border> {
+        let document = parse_gui_xml(xml).expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+        scene.root.children[0].borders.first().cloned()
+    }
+
+    #[test]
+    fn the_border_longhands_can_declare_a_border_on_their_own() {
+        let border = border_of(
+            r##"
+            <gui version="0.2">
+              <col>
+                <rect w="20" h="20" border-width="3" border-color="#ff0000"
+                      border-style="dashed" border-align="inside" />
+              </col>
+            </gui>
+            "##,
+        )
+        .expect("a border");
+
+        assert_eq!(border.width, 3.0);
+        assert_eq!(border.color, "#ff0000");
+        assert_eq!(border.style, "dashed");
+        assert_eq!(border.align, "inside");
+    }
+
+    #[test]
+    fn a_longhand_overrides_only_its_own_part_of_the_shorthand() {
+        let border = border_of(
+            r##"
+            <gui version="0.2">
+              <col>
+                <rect w="20" h="20" border="2 #000000 solid outside"
+                      border-color="#00ff00" />
+              </col>
+            </gui>
+            "##,
+        )
+        .expect("a border");
+
+        assert_eq!(border.color, "#00ff00", "the longhand wins");
+        assert_eq!(border.width, 2.0, "the shorthand still sets the width");
+        assert_eq!(border.style, "solid");
+        assert_eq!(border.align, "outside");
+    }
+
+    #[test]
+    fn a_colour_with_no_width_gets_the_same_default_an_appearance_border_has() {
+        let border = border_of(
+            r##"
+            <gui version="0.2">
+              <col>
+                <rect w="20" h="20" border-color="#0000ff" />
+              </col>
+            </gui>
+            "##,
+        )
+        .expect("a border");
+
+        assert_eq!(border.width, 1.0);
+        assert_eq!(border.style, "solid");
+        assert_eq!(border.align, "center");
+    }
+
+    #[test]
+    fn a_width_with_no_colour_draws_nothing() {
+        // Same rule the `<appearance><border>` path already follows: there is
+        // no default border colour to fall back on.
+        assert_eq!(
+            border_of(
+                r##"
+                <gui version="0.2">
+                  <col>
+                    <rect w="20" h="20" border-width="4" />
+                  </col>
+                </gui>
+                "##,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_node_with_no_border_attributes_has_no_border() {
+        assert_eq!(
+            border_of(
+                r##"
+                <gui version="0.2">
+                  <col>
+                    <rect w="20" h="20" fill="#000000" />
+                  </col>
+                </gui>
+                "##,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn an_appearance_border_still_beats_the_longhands() {
+        let border = border_of(
+            r##"
+            <gui version="0.2">
+              <col>
+                <rect w="20" h="20" border-color="#ff0000" border-width="9">
+                  <appearance>
+                    <border w="2" color="#00ff00" />
+                  </appearance>
+                </rect>
+              </col>
+            </gui>
+            "##,
+        )
+        .expect("a border");
+
+        assert_eq!(border.color, "#00ff00");
+        assert_eq!(border.width, 2.0);
+    }
+
+    #[test]
+    fn a_node_carries_the_layer_name_the_design_gave_it() {
+        let document = parse_gui_xml(
+            r##"
+            <gui version="0.2">
+              <col name="Card">
+                <rect w="10" h="10" name="Thumbnail" />
+                <rect w="10" h="10" />
+              </col>
+            </gui>
+            "##,
+        )
+        .expect("valid gui");
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+
+        assert_eq!(scene.root.name.as_deref(), Some("Card"));
+        assert_eq!(scene.root.children[0].name.as_deref(), Some("Thumbnail"));
+        assert_eq!(
+            scene.root.children[1].name, None,
+            "a node that was never named does not invent one"
+        );
+    }
     use super::*;
     use crate::{compute_taffy_layout, parse_gui_xml};
 
@@ -1042,6 +1431,8 @@ mod tests {
                 max_lines: None,
                 truncate: false,
                 text_align: None,
+                text_rendering: None,
+                writing_mode: None,
                 white_space: None,
                 text_wrap: None,
                 word_break: None,
@@ -1108,6 +1499,8 @@ mod tests {
                 max_lines: None,
                 truncate: false,
                 text_align: None,
+                text_rendering: None,
+                writing_mode: None,
                 white_space: None,
                 text_wrap: None,
                 word_break: None,
@@ -1162,6 +1555,8 @@ mod tests {
                 max_lines: Some(1),
                 truncate: true,
                 text_align: Some("right".to_owned()),
+                text_rendering: None,
+                writing_mode: None,
                 white_space: None,
                 text_wrap: None,
                 word_break: None,

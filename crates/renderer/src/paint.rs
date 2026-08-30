@@ -174,7 +174,13 @@ fn paint_node(
 
 /// Multiplies a mask into a layer's alpha.
 fn mask_layer(layer: &mut Pixmap, mask: &tiny_skia::Mask) {
-    for (pixel, coverage) in layer.data_mut().chunks_exact_mut(4).zip(mask.data()) {
+    for (pixel, coverage) in layer
+        .data_mut()
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(mask.data())
+    {
         // Premultiplied, so every channel scales with the alpha.
         for channel in pixel {
             *channel = ((*channel as u16 * *coverage as u16 + 127) / 255) as u8;
@@ -204,6 +210,22 @@ fn node_matrix(node: &SceneNode, transform: Transform2D) -> Transform {
         .pre_concat(Transform::from_skew(skew_x, 0.0))
         .pre_concat(Transform::from_skew(0.0, skew_y))
         .pre_concat(Transform::from_translate(-pivot_x, -pivot_y))
+}
+
+/// Whether the node asked for speed over fidelity.
+///
+/// Of the four `text-rendering` values, this is the only one that can change
+/// anything here. `optimizeLegibility` asks for ligatures and kerning, which
+/// need a shaper this renderer does not have; `geometricPrecision` asks for
+/// unrounded advances, which is what the layout already computes in, so it is
+/// already what `auto` does. Those three are therefore the same drawing, and
+/// saying so is more useful than three arms that do nothing.
+fn optimizes_for_speed(node: &SceneNode) -> bool {
+    matches!(
+        &node.content,
+        PaintContent::Text { text_rendering, .. }
+            if text_rendering.as_deref().map(str::trim) == Some("optimizeSpeed")
+    )
 }
 
 /// The alpha a node's own draws use.
@@ -272,11 +294,17 @@ fn paint_node_direct(
     asset_cache: Option<&AssetCache>,
     fonts: Option<&FontStore>,
 ) {
-    paint_backdrop_effects(pixmap, node);
-    paint_drop_shadows(pixmap, node);
-    paint_fill(pixmap, node, asset_cache);
-    paint_inner_shadows(pixmap, node);
-    paint_content(pixmap, node, font, asset_cache, fonts);
+    // `visible="false"` is `visibility: hidden`, so the node keeps the space it
+    // was laid out into and only its own paint is skipped. Children are still
+    // walked: the property inherits, but a descendant can set `visible="true"`
+    // and paint anyway, and the scene has already resolved which those are.
+    if node.visible {
+        paint_backdrop_effects(pixmap, node);
+        paint_drop_shadows(pixmap, node);
+        paint_fill(pixmap, node, asset_cache);
+        paint_inner_shadows(pixmap, node);
+        paint_content(pixmap, node, font, asset_cache, fonts);
+    }
 
     if (node.clip_x || node.clip_y) && !node.children.is_empty() {
         if let Some(mut child_pixmap) = Pixmap::new(pixmap.width(), pixmap.height()) {
@@ -316,8 +344,10 @@ fn paint_node_direct(
         }
     }
 
-    paint_border(pixmap, node);
-    paint_outline(pixmap, node);
+    if node.visible {
+        paint_border(pixmap, node);
+        paint_outline(pixmap, node);
+    }
 }
 
 /// The mask a node composites through, from whichever source it declares.
@@ -954,6 +984,90 @@ fn paint_height(node: &SceneNode) -> f32 {
     node.bounds.height
 }
 
+/// The vertical `writing-mode` a text node asks for, if it asks for one.
+fn vertical_writing_mode(node: &SceneNode) -> Option<&str> {
+    let PaintContent::Text { writing_mode, .. } = &node.content else {
+        return None;
+    };
+    match writing_mode.as_deref().map(str::trim) {
+        Some(mode @ ("vertical-rl" | "vertical-lr")) => Some(mode),
+        _ => None,
+    }
+}
+
+/// Draws a text block turned on its side.
+///
+/// The block is laid out and drawn horizontally into a layer of its own, in a
+/// box with the node's two axes swapped, and that layer is then rotated a
+/// quarter turn into place. Doing it this way means vertical text wraps,
+/// truncates, aligns, decorates and lists exactly as horizontal text does,
+/// because it *is* horizontal text until the last step — rather than every
+/// one of those needing a second code path.
+///
+/// What the quarter turn does not do is set the glyphs upright. CSS calls
+/// that `text-orientation`, which this format has no property for, and a
+/// rotated run is what `text-orientation: sideways` gives — the correct
+/// rendering for Latin text in a vertical block, and not the one an
+/// upright-by-default script would want.
+///
+/// `vertical-rl` stacks its lines from the right edge, `vertical-lr` from the
+/// left; the rotation lands on the first of those, so the second mirrors it
+/// back across the box.
+fn paint_vertical_text(
+    pixmap: &mut Pixmap,
+    node: &SceneNode,
+    mode: &str,
+    font: Option<&Font>,
+    asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
+) {
+    let bounds = node.bounds;
+    let height = paint_height(node);
+    if bounds.width <= 0.0 || height <= 0.0 {
+        return;
+    }
+
+    // The same node in a box turned on its side, and without the writing mode
+    // that brought it here, so the horizontal path draws it.
+    let mut flat = node.clone();
+    flat.bounds.width = height;
+    flat.bounds.height = bounds.width;
+    if let PaintContent::Text { writing_mode, .. } = &mut flat.content {
+        *writing_mode = None;
+    }
+
+    let Some(mut layer) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+        return;
+    };
+    paint_content(&mut layer, &flat, font, asset_cache, fonts);
+
+    // A quarter turn clockwise about the box's own corner, then back along x
+    // by the box's width, which is where that turn leaves it.
+    let mut transform = Transform::from_translate(bounds.x + bounds.width, bounds.y)
+        .pre_concat(Transform::from_rotate(90.0))
+        .pre_concat(Transform::from_translate(-bounds.x, -bounds.y));
+
+    if mode == "vertical-lr" {
+        // Mirror across the box's vertical centre line, so the first line
+        // sits on the left edge instead of the right.
+        transform = Transform::from_translate(2.0 * bounds.x + bounds.width, 0.0)
+            .pre_concat(Transform::from_scale(-1.0, 1.0))
+            .pre_concat(transform);
+    }
+
+    pixmap.draw_pixmap(
+        0,
+        0,
+        layer.as_ref(),
+        &PixmapPaint {
+            quality: tiny_skia::FilterQuality::Bicubic,
+            ..Default::default()
+        },
+        transform,
+        None,
+    );
+}
+
 fn paint_content(
     pixmap: &mut Pixmap,
     node: &SceneNode,
@@ -961,6 +1075,11 @@ fn paint_content(
     asset_cache: Option<&AssetCache>,
     fonts: Option<&FontStore>,
 ) {
+    if let Some(mode) = vertical_writing_mode(node) {
+        paint_vertical_text(pixmap, node, mode, font, asset_cache, fonts);
+        return;
+    }
+
     match &node.content {
         PaintContent::None => {}
         PaintContent::Text {
@@ -1109,7 +1228,13 @@ impl<'a> RunStyle<'a> {
             // `none` asks for hard edges. The other two values are both
             // grayscale antialiasing here; subpixel needs the target's own
             // stripe order, which a PNG has no business assuming.
-            anti_alias: segment.font_smoothing.as_deref() != Some("none"),
+            //
+            // `text-rendering="optimizeSpeed"` asks for the same hard edges
+            // from the other direction — it is the node saying it would
+            // rather have the pixels cheaply — so either one turns smoothing
+            // off and neither can turn the other back on.
+            anti_alias: segment.font_smoothing.as_deref() != Some("none")
+                && !optimizes_for_speed(node),
             word_spacing: segment.word_spacing,
             baseline_shift: segment.baseline_shift,
             decoration: segment.decoration.clone(),
@@ -1337,6 +1462,52 @@ impl<'a> RunStyle<'a> {
         paint.set_color(color);
         paint.anti_alias = self.anti_alias;
 
+        // Shaped, so the glyphs drawn and the distance between them are the
+        // face's own answer — the same one measurement asked for. Drawing
+        // per character here while layout measured a shaped run would size a
+        // box to one width and fill it to another.
+        let shaped = face.shape(text, self.font_size, &self.axes);
+        let Some(shaped) = shaped else {
+            self.draw_outlines_unshaped(pixmap, ttf_face, face, text, cursor_x, baseline, &paint);
+            return;
+        };
+        let spans = crate::fonts::cluster_char_counts(&shaped, text);
+
+        for (glyph, (chars, spaces)) in shaped.iter().zip(spans) {
+            let mut builder =
+                GlyphPathBuilder::new(*cursor_x + glyph.x_offset, baseline - glyph.y_offset, scale);
+            ttf_face.outline_glyph(ttf_parser::GlyphId(glyph.glyph_id), &mut builder);
+            if let Some(path) = builder.finish() {
+                pixmap.fill_path(
+                    &path,
+                    &paint,
+                    FillRule::Winding,
+                    Transform::identity(),
+                    None,
+                );
+            }
+
+            // Spacing is per character, counted off the source text, so a
+            // ligature carries the spacing of everything it replaced.
+            *cursor_x += glyph.x_advance
+                + chars as f32 * self.letter_spacing
+                + spaces as f32 * self.word_spacing;
+        }
+    }
+
+    /// The pre-shaping path, kept for a face rustybuzz will not parse.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_outlines_unshaped(
+        &self,
+        pixmap: &mut Pixmap,
+        ttf_face: &ttf_parser::Face<'_>,
+        face: &FontFace,
+        text: &str,
+        cursor_x: &mut f32,
+        baseline: f32,
+        paint: &Paint<'_>,
+    ) {
+        let scale = self.font_size / ttf_face.units_per_em() as f32;
         for ch in text.chars() {
             let Some(glyph) = ttf_face.glyph_index(ch) else {
                 *cursor_x += face.fallback().metrics(ch, self.font_size).advance_width
@@ -1348,13 +1519,7 @@ impl<'a> RunStyle<'a> {
             let mut builder = GlyphPathBuilder::new(*cursor_x, baseline, scale);
             ttf_face.outline_glyph(glyph, &mut builder);
             if let Some(path) = builder.finish() {
-                pixmap.fill_path(
-                    &path,
-                    &paint,
-                    FillRule::Winding,
-                    Transform::identity(),
-                    None,
-                );
+                pixmap.fill_path(&path, paint, FillRule::Winding, Transform::identity(), None);
             }
 
             *cursor_x += ttf_face
@@ -2065,7 +2230,7 @@ fn render_raster_asset(
 
 fn premultiply_rgba(straight: &[u8]) -> Vec<u8> {
     let mut premultiplied = Vec::with_capacity(straight.len());
-    for pixel in straight.chunks_exact(4) {
+    for pixel in straight.as_chunks::<4>().0 {
         let alpha = pixel[3] as u32;
         for channel in &pixel[..3] {
             // Rounded `channel * alpha / 255`, which stays <= alpha and so is
@@ -2310,6 +2475,30 @@ fn fill_smoothed_rect(
     }
 }
 
+/// The dash pattern a border style strokes with, and the cap it needs.
+///
+/// `solid` — and anything the spec does not define — strokes unbroken, so it
+/// gets no pattern at all rather than a pattern with no gaps.
+///
+/// The proportions match the ones text decorations already dash by, so a
+/// dashed rule and a dashed border on the same document read as the same
+/// dash rather than as two different ones.
+fn border_dash(style: &str, width: f32) -> (Option<StrokeDash>, LineCap) {
+    match style {
+        // Dots are round, and spaced by their own diameter. The "on" length
+        // is nearly zero because a round cap draws the dot itself.
+        "dotted" => (
+            StrokeDash::new(vec![0.01, width * 2.0], 0.0),
+            LineCap::Round,
+        ),
+        "dashed" => (
+            StrokeDash::new(vec![width * 3.0, width * 2.0], 0.0),
+            LineCap::Butt,
+        ),
+        _ => (None, LineCap::Butt),
+    }
+}
+
 fn stroke_rounded_rect(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
     if border.width <= 0.0 || node.bounds.width <= 0.0 || node.bounds.height <= 0.0 {
         return;
@@ -2321,8 +2510,11 @@ fn stroke_rounded_rect(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
     let mut paint = Paint::default();
     paint.set_color(color);
     paint.anti_alias = true;
+    let (dash, line_cap) = border_dash(&border.style, border.width);
     let stroke = Stroke {
         width: border.width,
+        dash,
+        line_cap,
         ..Default::default()
     };
 
@@ -2379,7 +2571,7 @@ fn stroke_sided_border(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
             "outside" => -sw / 2.0,
             _ => sw / 2.0,
         };
-        stroke_line(pixmap, x, y + dy, x + w, y + dy, sw, color);
+        stroke_border_line(pixmap, x, y + dy, x + w, y + dy, sw, color, &border.style);
     }
     if border.widths.right > 0.0 {
         let sw = border.widths.right;
@@ -2388,7 +2580,16 @@ fn stroke_sided_border(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
             "outside" => sw / 2.0,
             _ => -sw / 2.0,
         };
-        stroke_line(pixmap, x + w + dx, y, x + w + dx, y + h, sw, color);
+        stroke_border_line(
+            pixmap,
+            x + w + dx,
+            y,
+            x + w + dx,
+            y + h,
+            sw,
+            color,
+            &border.style,
+        );
     }
     if border.widths.bottom > 0.0 {
         let sw = border.widths.bottom;
@@ -2397,7 +2598,16 @@ fn stroke_sided_border(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
             "outside" => sw / 2.0,
             _ => -sw / 2.0,
         };
-        stroke_line(pixmap, x, y + h + dy, x + w, y + h + dy, sw, color);
+        stroke_border_line(
+            pixmap,
+            x,
+            y + h + dy,
+            x + w,
+            y + h + dy,
+            sw,
+            color,
+            &border.style,
+        );
     }
     if border.widths.left > 0.0 {
         let sw = border.widths.left;
@@ -2406,7 +2616,7 @@ fn stroke_sided_border(pixmap: &mut Pixmap, node: &SceneNode, border: &Border) {
             "outside" => -sw / 2.0,
             _ => sw / 2.0,
         };
-        stroke_line(pixmap, x + dx, y, x + dx, y + h, sw, color);
+        stroke_border_line(pixmap, x + dx, y, x + dx, y + h, sw, color, &border.style);
     }
 }
 
@@ -2685,6 +2895,46 @@ fn paint_generic_icon(pixmap: &mut Pixmap, node: &SceneNode, color: Color, strok
         y + h * 0.38,
         stroke_width,
         color,
+    );
+}
+
+/// One side of a border, dashed as its style asks.
+///
+/// Separate from [`stroke_line`] because most of that function's callers are
+/// drawing icon geometry, which no border style has any business dashing.
+#[allow(clippy::too_many_arguments)]
+fn stroke_border_line(
+    pixmap: &mut Pixmap,
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    width: f32,
+    color: Color,
+    style: &str,
+) {
+    let mut builder = PathBuilder::new();
+    builder.move_to(x1, y1);
+    builder.line_to(x2, y2);
+    let Some(path) = builder.finish() else {
+        return;
+    };
+
+    let mut paint = Paint::default();
+    paint.set_color(color);
+    paint.anti_alias = true;
+    let (dash, line_cap) = border_dash(style, width);
+    pixmap.stroke_path(
+        &path,
+        &paint,
+        &Stroke {
+            width,
+            dash,
+            line_cap,
+            ..Default::default()
+        },
+        Transform::identity(),
+        None,
     );
 }
 
@@ -4635,6 +4885,508 @@ mod tests {
     }
 
     /// Renders a document and hands back the pixels.
+    #[test]
+    fn a_hidden_node_keeps_its_space_but_does_not_paint() {
+        // Three 20x20 boxes stacked with no gap in a 40x80 white frame. The
+        // middle one is hidden, so its band reads white — but the third still
+        // paints at y = 40..60, which is where it sits only because the hidden
+        // one still occupies 20..40. That is the whole difference between
+        // `visibility: hidden` and removing the node.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <col w="40" h="80" fill="#ffffff">
+                <rect w="20" h="20" fill="#000000" />
+                <rect w="20" h="20" fill="#000000" visible="false" />
+                <rect w="20" h="20" fill="#000000" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(painted.get_pixel(10, 10).0[0..3], [0, 0, 0], "first paints");
+        assert_eq!(
+            painted.get_pixel(10, 30).0[0..3],
+            [255, 255, 255],
+            "the hidden one does not paint"
+        );
+        assert_eq!(
+            painted.get_pixel(10, 50).0[0..3],
+            [0, 0, 0],
+            "the third still sits below the space the hidden one kept"
+        );
+    }
+
+    #[test]
+    fn hiding_a_container_hides_its_children() {
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <col w="40" h="40" fill="#ffffff">
+                <row w="40" h="40" fill="#ff0000" visible="false">
+                  <rect w="20" h="20" fill="#000000" />
+                </row>
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            painted.get_pixel(10, 10).0[0..3],
+            [255, 255, 255],
+            "the child goes with the container that hid it"
+        );
+    }
+
+    #[test]
+    fn a_child_can_take_itself_back_out_of_a_hidden_container() {
+        // `visibility` is the one CSS visibility value a descendant can undo.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <col w="40" h="40" fill="#ffffff">
+                <row w="40" h="40" fill="#ff0000" visible="false">
+                  <rect w="20" h="20" fill="#000000" visible="true" />
+                </row>
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            painted.get_pixel(10, 10).0[0..3],
+            [0, 0, 0],
+            "the child paints again"
+        );
+        assert_eq!(
+            painted.get_pixel(30, 30).0[0..3],
+            [255, 255, 255],
+            "the container that hid itself still does not"
+        );
+    }
+
+    #[test]
+    fn a_hidden_node_takes_its_border_and_outline_with_it() {
+        // Border and outline are painted after the children, on their own
+        // path, so they need the same gate as the fill.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="60" h="60" fill="#ffffff">
+                <rect abs x="20" y="20" w="20" h="20" fill="#ffffff"
+                      border="2 #00ff00" outline="2 #ff0000" outline-offset="4"
+                      visible="false" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            painted.get_pixel(21, 30).0[0..3],
+            [255, 255, 255],
+            "no border"
+        );
+        assert_eq!(
+            painted.get_pixel(15, 30).0[0..3],
+            [255, 255, 255],
+            "no outline"
+        );
+    }
+
+    #[test]
+    fn reverse_z_paints_the_first_child_on_top() {
+        // Siblings have to overlap for paint order to be visible at all, and
+        // a container here lays its children out in flow, so the two are
+        // stacked with `abs` rather than by nesting them in a `<stack>`.
+        // Document order normally puts the last one on top.
+        let plain = render(
+            r##"
+            <gui version="0.2">
+              <col w="40" h="40" fill="#ffffff">
+                <rect abs x="0" y="0" w="40" h="40" fill="#ff0000" />
+                <rect abs x="0" y="0" w="40" h="40" fill="#0000ff" />
+              </col>
+            </gui>
+            "##,
+        );
+        assert_eq!(
+            plain.get_pixel(20, 20).0[0..3],
+            [0, 0, 255],
+            "the last child normally wins"
+        );
+
+        let reversed = render(
+            r##"
+            <gui version="0.2">
+              <col w="40" h="40" fill="#ffffff" reverse-z="true">
+                <rect abs x="0" y="0" w="40" h="40" fill="#ff0000" />
+                <rect abs x="0" y="0" w="40" h="40" fill="#0000ff" />
+              </col>
+            </gui>
+            "##,
+        );
+        assert_eq!(
+            reversed.get_pixel(20, 20).0[0..3],
+            [255, 0, 0],
+            "reverse-z puts the first child on top"
+        );
+    }
+
+    #[test]
+    fn reverse_z_is_true_by_presence() {
+        // The spec makes it a presence boolean, and the parser normalises a
+        // bare attribute to "true", so the valueless form has to work too.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <col w="40" h="40" fill="#ffffff" reverse-z>
+                <rect abs x="0" y="0" w="40" h="40" fill="#ff0000" />
+                <rect abs x="0" y="0" w="40" h="40" fill="#0000ff" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(painted.get_pixel(20, 20).0[0..3], [255, 0, 0]);
+    }
+
+    #[test]
+    fn reverse_z_does_not_move_anything() {
+        // It is a paint-order property: the boxes stay where layout put them.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <col w="40" h="60" fill="#ffffff" reverse-z="true">
+                <rect w="40" h="20" fill="#ff0000" />
+                <rect w="40" h="20" fill="#0000ff" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            painted.get_pixel(20, 10).0[0..3],
+            [255, 0, 0],
+            "the first child is still first in the column"
+        );
+        assert_eq!(
+            painted.get_pixel(20, 30).0[0..3],
+            [0, 0, 255],
+            "the second is still second"
+        );
+    }
+
+    #[test]
+    fn z_index_still_outranks_reverse_z() {
+        // `reverse-z` only decides between siblings that share a z-index; an
+        // explicit one is the stronger statement and keeps its child on top.
+        let painted = render(
+            r##"
+            <gui version="0.2">
+              <col w="40" h="40" fill="#ffffff" reverse-z="true">
+                <rect abs x="0" y="0" w="40" h="40" fill="#ff0000" />
+                <rect abs x="0" y="0" w="40" h="40" fill="#0000ff" z-index="1" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(
+            painted.get_pixel(20, 20).0[0..3],
+            [0, 0, 255],
+            "the raised child stays on top"
+        );
+    }
+
+    /// How many pixels along a horizontal line carry the border colour.
+    fn painted_run(image: &image::RgbaImage, y: u32, from_x: u32, to_x: u32) -> u32 {
+        (from_x..to_x)
+            .filter(|x| image.get_pixel(*x, y).0[0..3] != [255, 255, 255])
+            .count() as u32
+    }
+
+    #[test]
+    fn a_dashed_border_leaves_gaps_a_solid_one_does_not() {
+        let solid = render(
+            r##"
+            <gui version="0.2">
+              <frame w="80" h="40" fill="#ffffff">
+                <rect abs x="10" y="10" w="60" h="20" fill="#ffffff"
+                      border="2 #000000 solid" />
+              </frame>
+            </gui>
+            "##,
+        );
+        let dashed = render(
+            r##"
+            <gui version="0.2">
+              <frame w="80" h="40" fill="#ffffff">
+                <rect abs x="10" y="10" w="60" h="20" fill="#ffffff"
+                      border="2 #000000 dashed" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        let solid_run = painted_run(&solid, 10, 10, 70);
+        let dashed_run = painted_run(&dashed, 10, 10, 70);
+        assert!(solid_run > 50, "the solid top edge is continuous");
+        assert!(
+            dashed_run < solid_run,
+            "the dashed one paints less of the same edge: {dashed_run} of {solid_run}"
+        );
+        assert!(dashed_run > 0, "but it does paint");
+    }
+
+    #[test]
+    fn a_dotted_border_paints_less_than_a_dashed_one() {
+        let dotted = render(
+            r##"
+            <gui version="0.2">
+              <frame w="80" h="40" fill="#ffffff">
+                <rect abs x="10" y="10" w="60" h="20" fill="#ffffff"
+                      border="2 #000000 dotted" />
+              </frame>
+            </gui>
+            "##,
+        );
+        let dashed = render(
+            r##"
+            <gui version="0.2">
+              <frame w="80" h="40" fill="#ffffff">
+                <rect abs x="10" y="10" w="60" h="20" fill="#ffffff"
+                      border="2 #000000 dashed" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert!(
+            painted_run(&dotted, 10, 10, 70) < painted_run(&dashed, 10, 10, 70),
+            "dots are shorter than dashes at the same spacing"
+        );
+    }
+
+    #[test]
+    fn a_sided_border_dashes_too() {
+        // A border with different widths per side takes the other painting
+        // path, which had to learn the same trick.
+        let solid = render(
+            r##"
+            <gui version="0.2">
+              <frame w="80" h="40" fill="#ffffff">
+                <rect abs x="10" y="10" w="60" h="20" fill="#ffffff"
+                      border="2 0 4 0 #000000 solid" />
+              </frame>
+            </gui>
+            "##,
+        );
+        let dashed = render(
+            r##"
+            <gui version="0.2">
+              <frame w="80" h="40" fill="#ffffff">
+                <rect abs x="10" y="10" w="60" h="20" fill="#ffffff"
+                      border="2 0 4 0 #000000 dashed" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert!(
+            painted_run(&dashed, 10, 10, 70) < painted_run(&solid, 10, 10, 70),
+            "the top edge breaks up on the sided path too"
+        );
+    }
+
+    /// How many pixels in a box are neither the background nor solid ink —
+    /// the partial coverage antialiasing leaves along a glyph's edge.
+    fn soft_pixels(image: &image::RgbaImage, w: u32, h: u32) -> u32 {
+        let mut soft = 0;
+        for y in 0..h.min(image.height()) {
+            for x in 0..w.min(image.width()) {
+                let p = image.get_pixel(x, y).0;
+                let grey = p[0];
+                if p[0] == p[1] && p[1] == p[2] && grey > 8 && grey < 247 {
+                    soft += 1;
+                }
+            }
+        }
+        soft
+    }
+
+    #[test]
+    fn optimize_speed_draws_text_without_antialiasing() {
+        let smooth = render(
+            r##"
+            <gui version="0.2">
+              <col w="120" h="40" fill="#ffffff">
+                <text value="Handgloves" font-size="20" fill="#000000" />
+              </col>
+            </gui>
+            "##,
+        );
+        let fast = render(
+            r##"
+            <gui version="0.2">
+              <col w="120" h="40" fill="#ffffff">
+                <text value="Handgloves" font-size="20" fill="#000000"
+                      text-rendering="optimizeSpeed" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        let smooth_edges = soft_pixels(&smooth, 120, 40);
+        let fast_edges = soft_pixels(&fast, 120, 40);
+        assert!(smooth_edges > 0, "the default smooths its glyph edges");
+        assert!(
+            fast_edges < smooth_edges,
+            "optimizeSpeed leaves harder edges: {fast_edges} against {smooth_edges}"
+        );
+    }
+
+    #[test]
+    fn the_other_text_rendering_values_draw_what_auto_draws() {
+        // `optimizeLegibility` wants a shaper and `geometricPrecision` wants
+        // unrounded advances, which is what layout already computes in. Both
+        // are the default drawing, and this pins that they have not quietly
+        // become something else.
+        let baseline = render(
+            r##"
+            <gui version="0.2">
+              <col w="120" h="40" fill="#ffffff">
+                <text value="Handgloves" font-size="20" fill="#000000" />
+              </col>
+            </gui>
+            "##,
+        );
+
+        for value in ["auto", "optimizeLegibility", "geometricPrecision"] {
+            let painted = render(&format!(
+                r##"
+                <gui version="0.2">
+                  <col w="120" h="40" fill="#ffffff">
+                    <text value="Handgloves" font-size="20" fill="#000000"
+                          text-rendering="{value}" />
+                  </col>
+                </gui>
+                "##
+            ));
+            assert_eq!(
+                painted.as_raw(),
+                baseline.as_raw(),
+                "{value} should draw what auto draws"
+            );
+        }
+    }
+
+    /// The bounding box of everything darker than the background.
+    fn ink_bounds(image: &image::RgbaImage) -> Option<(u32, u32, u32, u32)> {
+        let mut found: Option<(u32, u32, u32, u32)> = None;
+        for y in 0..image.height() {
+            for x in 0..image.width() {
+                if image.get_pixel(x, y).0[0] < 200 {
+                    found = Some(match found {
+                        None => (x, y, x, y),
+                        Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+                    });
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn a_vertical_writing_mode_runs_the_text_down_the_box() {
+        // The same string horizontally and vertically. Horizontally its ink
+        // is wider than it is tall; turned on its side that has to reverse.
+        let across = render(
+            r##"
+            <gui version="0.2">
+              <frame w="120" h="120" fill="#ffffff">
+                <text abs x="10" y="10" value="Handgloves" font-size="14"
+                      fill="#000000" />
+              </frame>
+            </gui>
+            "##,
+        );
+        let down = render(
+            r##"
+            <gui version="0.2">
+              <frame w="120" h="120" fill="#ffffff">
+                <text abs x="10" y="10" value="Handgloves" font-size="14"
+                      fill="#000000" writing-mode="vertical-rl" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        let (ax0, ay0, ax1, ay1) = ink_bounds(&across).expect("horizontal text paints");
+        let (dx0, dy0, dx1, dy1) = ink_bounds(&down).expect("vertical text paints");
+
+        assert!(
+            ax1 - ax0 > ay1 - ay0,
+            "the horizontal run is wider than it is tall"
+        );
+        assert!(
+            dy1 - dy0 > dx1 - dx0,
+            "the vertical run is taller than it is wide"
+        );
+    }
+
+    #[test]
+    fn the_two_vertical_modes_stack_their_lines_from_opposite_edges() {
+        // Two lines, so there is a stacking direction to see. `vertical-rl`
+        // puts the first line on the right of the block, `vertical-lr` on the
+        // left, and the difference is which half of the box carries more ink.
+        let ink_split = |mode: &str| {
+            let painted = render(&format!(
+                r##"
+                <gui version="0.2">
+                  <frame w="140" h="140" fill="#ffffff">
+                    <text abs x="10" y="10" w="60" h="120"
+                          value="Handgloves wave" font-size="14"
+                          fill="#000000" writing-mode="{mode}" />
+                  </frame>
+                </gui>
+                "##
+            ));
+            let (x0, _, x1, _) = ink_bounds(&painted).expect("text paints");
+            (x0 + x1) / 2
+        };
+
+        assert!(
+            ink_split("vertical-rl") > ink_split("vertical-lr"),
+            "rl stacks from the right, lr from the left"
+        );
+    }
+
+    #[test]
+    fn horizontal_tb_is_left_exactly_as_it_was() {
+        let bare = render(
+            r##"
+            <gui version="0.2">
+              <frame w="120" h="60" fill="#ffffff">
+                <text abs x="10" y="10" value="Handgloves" font-size="14"
+                      fill="#000000" />
+              </frame>
+            </gui>
+            "##,
+        );
+        let declared = render(
+            r##"
+            <gui version="0.2">
+              <frame w="120" h="60" fill="#ffffff">
+                <text abs x="10" y="10" value="Handgloves" font-size="14"
+                      fill="#000000" writing-mode="horizontal-tb" />
+              </frame>
+            </gui>
+            "##,
+        );
+
+        assert_eq!(bare.as_raw(), declared.as_raw());
+    }
+
     fn render(xml: &str) -> image::RgbaImage {
         let document = parse_gui_xml(xml).expect("valid gui");
         let layout = compute_taffy_layout(&document).expect("layout computes");

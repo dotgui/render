@@ -37,6 +37,9 @@ struct TextContext {
     list_indent: f32,
     /// Whether `leading-trim` takes the half-leading off the first line.
     leading_trim: bool,
+    /// Whether `writing-mode` turns the block on its side, so lines run down
+    /// the box and stack across it.
+    vertical: bool,
 }
 
 /// Lays the document out using rough per-character width estimates.
@@ -255,6 +258,7 @@ fn style_for_node(node: &GuiNode, metadata: &GuiMetadata, parent_layout: ParentL
     let mut style = Style {
         display: display_for(node, metadata),
         flex_direction: flex_direction_for(node),
+        flex_wrap: flex_wrap_for(node),
         size: size_for(node, metadata),
         // kit stretches every rule on its cross axis, which is what gives a
         // horizontal divider the full width of its column and a vertical one
@@ -357,6 +361,18 @@ fn display_for(node: &GuiNode, metadata: &GuiMetadata) -> Display {
     }
 }
 
+/// Whether a container lets its children run onto another line.
+///
+/// A spec boolean is true by presence, so any value but `false` enables it.
+/// Children keep `flex_shrink: 0`, so a row that wraps breaks where the next
+/// child would not fit rather than squeezing them all onto one line.
+fn flex_wrap_for(node: &GuiNode) -> FlexWrap {
+    match node.attributes.get("wrap") {
+        Some(value) if value.trim() != "false" => FlexWrap::Wrap,
+        _ => FlexWrap::NoWrap,
+    }
+}
+
 fn flex_direction_for(node: &GuiNode) -> FlexDirection {
     // `<stack>` carries its axis in an attribute; every other container tag
     // implies one.
@@ -433,6 +449,24 @@ fn size_for(node: &GuiNode, metadata: &GuiMetadata) -> Size<Dimension> {
         height: dimension_attr(node, metadata, "h"),
     };
 
+    // `text-resize` says which of a text box's axes follow its content,
+    // whatever `w`/`h` were set to. An absent `w` already hugs, so this only
+    // has to act where the two disagree: a box that declares a width and then
+    // asks to hug it.
+    if node.tag == "text" {
+        match text_resize(node, metadata).as_deref() {
+            Some("hug") => {
+                size.width = auto();
+                size.height = auto();
+            }
+            Some("hug-height") => size.height = auto(),
+            // `fixed` and `truncate` both keep the declared box. They differ
+            // in what happens to the text that does not fit, which is the
+            // painter's business rather than the layout's.
+            _ => {}
+        }
+    }
+
     if node.tag == "line" {
         let thickness = length(
             number_attr(node, metadata, "thickness")
@@ -452,6 +486,18 @@ fn size_for(node: &GuiNode, metadata: &GuiMetadata) -> Size<Dimension> {
     }
 
     size
+}
+
+/// A `<text>` node's `text-resize`, if it names one of the spec's values.
+fn text_resize(node: &GuiNode, metadata: &GuiMetadata) -> Option<String> {
+    let value = node
+        .attributes
+        .get("text-resize")
+        .map(|raw| resolve_token(raw, metadata))?;
+    match value.trim() {
+        "hug" | "hug-height" | "fixed" | "truncate" => Some(value.trim().to_owned()),
+        _ => None,
+    }
 }
 
 /// Whether a `<line>` runs down rather than across.
@@ -488,27 +534,43 @@ fn dimension_attr(node: &GuiNode, metadata: &GuiMetadata, name: &str) -> Dimensi
 /// `gap="auto"` means "push the children apart", handled as zero spacing plus
 /// space-between justification.
 fn gap_size(node: &GuiNode, metadata: &GuiMetadata) -> Size<LengthPercentage> {
-    let Some(raw) = node.attributes.get("gap") else {
-        return Size {
-            width: zero(),
-            height: zero(),
-        };
-    };
-
-    let resolved = resolve_token(raw, metadata);
-    let mut values = resolved.split_whitespace().map(|part| {
-        if part == "auto" {
-            return zero();
-        }
-        parse_number(part).map_or(zero(), length)
+    let shorthand = node.attributes.get("gap").map(|raw| {
+        let resolved = resolve_token(raw, metadata);
+        let mut values = resolved.split_whitespace().map(gap_length);
+        let column = values.next().unwrap_or(zero());
+        // One value sets both axes, as the CSS shorthand does.
+        let row = values.next().unwrap_or(column);
+        (column, row)
     });
+    let (column, row) = shorthand.unwrap_or((zero(), zero()));
 
-    let column = values.next().unwrap_or(zero());
-    let row = values.next().unwrap_or(column);
+    // The per-axis properties are the more specific of the two, so either one
+    // overrides the shorthand on its own axis and leaves the other alone.
+    //
+    // Taffy's `Size` names the axes the gap runs *along*: `width` is the gap
+    // between columns and `height` the gap between rows, which is why they
+    // read crossed here.
     Size {
-        width: column,
-        height: row,
+        width: axis_gap(node, metadata, "col-gap").unwrap_or(column),
+        height: axis_gap(node, metadata, "row-gap").unwrap_or(row),
     }
+}
+
+fn axis_gap(node: &GuiNode, metadata: &GuiMetadata, name: &str) -> Option<LengthPercentage> {
+    node.attributes
+        .get(name)
+        .map(|raw| gap_length(&resolve_token(raw, metadata)))
+}
+
+/// One gap value.
+///
+/// `auto` is a distribution instruction rather than a length — it is read as a
+/// `justify-content` further up — so as a length it contributes nothing.
+fn gap_length(value: &str) -> LengthPercentage {
+    if value.trim() == "auto" {
+        return zero();
+    }
+    parse_number(value.trim()).map_or(zero(), length)
 }
 
 /// How a container lines its children up on its cross axis.
@@ -626,7 +688,20 @@ fn text_context(node: &GuiNode, metadata: &GuiMetadata, ordinal: usize) -> Optio
             .attributes
             .get("leading-trim")
             .is_some_and(|value| value != "normal"),
+        vertical: is_vertical_writing(node, metadata),
     })
+}
+
+/// Whether `writing-mode` runs the text down the box rather than across it.
+///
+/// `vertical-rl` and `vertical-lr` differ in which side the first line sits
+/// on, which is a painting question; both turn the block on its side, which
+/// is this one.
+fn is_vertical_writing(node: &GuiNode, metadata: &GuiMetadata) -> bool {
+    node.attributes
+        .get("writing-mode")
+        .map(|value| resolve_token(value, metadata))
+        .is_some_and(|value| value.trim().starts_with("vertical"))
 }
 
 /// Resolves how many lines a `<text>` node may occupy.
@@ -681,9 +756,18 @@ fn measure_text(
             + value.chars().filter(|ch| *ch == ' ').count() as f32 * style.word_spacing
     };
 
+    // A vertical block's lines run down the box, so the length a line has to
+    // fit into is the box's height and everything below is measured against
+    // that. The result is swapped back at the end.
+    let (along, across) = if context.vertical {
+        (known_dimensions.height, available_space.height)
+    } else {
+        (known_dimensions.width, available_space.width)
+    };
+
     // `MinContent` asks how narrow the text can get, which is a zero-width
     // wrap: every word lands on its own line and the widest one wins.
-    let wrap_width = known_dimensions.width.or(match available_space.width {
+    let wrap_width = along.or(match across {
         AvailableSpace::Definite(width) => Some(width),
         AvailableSpace::MinContent => Some(0.0),
         AvailableSpace::MaxContent => None,
@@ -746,11 +830,22 @@ fn measure_text(
         0.0
     };
 
+    // `line_extent` is how far the longest line reaches, `block_extent` how
+    // far the stack of lines reaches across them. Horizontally those are the
+    // width and the height; turned on its side they trade places.
+    let line_extent = text::max_line_width(&lines, &measure) + marker_width + context.list_indent;
+    let block_extent = (height - trim).max(0.0);
+
+    if context.vertical {
+        return Size {
+            width: known_dimensions.width.unwrap_or(block_extent),
+            height: known_dimensions.height.unwrap_or(line_extent),
+        };
+    }
+
     Size {
-        width: known_dimensions.width.unwrap_or_else(|| {
-            text::max_line_width(&lines, &measure) + marker_width + context.list_indent
-        }),
-        height: known_dimensions.height.unwrap_or((height - trim).max(0.0)),
+        width: known_dimensions.width.unwrap_or(line_extent),
+        height: known_dimensions.height.unwrap_or(block_extent),
     }
 }
 
@@ -816,6 +911,262 @@ mod tests {
     fn layout_of(xml: &str) -> LayoutBox {
         let document = parse_gui_xml(xml).expect("valid gui");
         compute_taffy_layout(&document).expect("layout computes")
+    }
+
+    #[test]
+    fn a_grid_can_gap_its_axes_independently() {
+        // Two columns, two rows, 20px cells: 30 between the columns and 6
+        // between the rows.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <grid columns="2" col-gap="30" row-gap="6">
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+              </grid>
+            </gui>
+            "#,
+        );
+
+        let kids = &layout.children;
+        assert_eq!(kids[1].rect.x, 50.0, "20 wide plus a 30 column gap");
+        assert_eq!(kids[2].rect.y, 26.0, "20 tall plus a 6 row gap");
+    }
+
+    #[test]
+    fn a_per_axis_gap_overrides_the_shorthand_on_that_axis_only() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <grid columns="2" gap="10" row-gap="40">
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+              </grid>
+            </gui>
+            "#,
+        );
+
+        let kids = &layout.children;
+        assert_eq!(kids[1].rect.x, 30.0, "the shorthand still sets the columns");
+        assert_eq!(kids[2].rect.y, 60.0, "row-gap replaces it on the rows");
+    }
+
+    #[test]
+    fn text_resize_hug_overrides_a_declared_box() {
+        // The declared 300x80 is what the two disagree about: `hug` says the
+        // box follows the text, so neither number survives.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="Hi" w="300" h="80" font-size="10"
+                      line-height="12" text-resize="hug" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        let text = &layout.children[0];
+        assert!(text.rect.width < 300.0, "the width follows the text");
+        assert_eq!(text.rect.height, 12.0, "and so does the height");
+    }
+
+    #[test]
+    fn text_resize_hug_height_keeps_the_declared_width() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="Hi" w="300" h="80" font-size="10"
+                      line-height="12" text-resize="hug-height" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        let text = &layout.children[0];
+        assert_eq!(text.rect.width, 300.0, "the width is still declared");
+        assert_eq!(text.rect.height, 12.0, "only the height hugs");
+    }
+
+    #[test]
+    fn text_resize_fixed_keeps_both() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="Hi" w="300" h="80" font-size="10"
+                      text-resize="fixed" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        let text = &layout.children[0];
+        assert_eq!((text.rect.width, text.rect.height), (300.0, 80.0));
+    }
+
+    #[test]
+    fn text_resize_truncate_keeps_the_box_like_fixed_does() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="Hi" w="300" h="80" font-size="10"
+                      text-resize="truncate" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        let text = &layout.children[0];
+        assert_eq!((text.rect.width, text.rect.height), (300.0, 80.0));
+    }
+
+    #[test]
+    fn a_vertical_text_box_swaps_the_axes_it_hugs() {
+        // The same string both ways. Horizontally it hugs wide and short;
+        // vertically the two have to trade places, because the lines now run
+        // down the box and stack across it.
+        let across = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="Handgloves" font-size="10" line-height="12" />
+              </col>
+            </gui>
+            "#,
+        );
+        let down = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="Handgloves" font-size="10" line-height="12"
+                      writing-mode="vertical-rl" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        let flat = across.children[0].rect;
+        let turned = down.children[0].rect;
+        assert_eq!(
+            turned.width, flat.height,
+            "the block extent is now the width"
+        );
+        assert_eq!(turned.height, flat.width, "and the line extent the height");
+    }
+
+    #[test]
+    fn a_vertical_block_wraps_against_the_boxs_height() {
+        // A declared height is the length a line has to fit into, so a short
+        // one wraps the text into more than one line — and each extra line
+        // makes the box wider rather than taller.
+        let roomy = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="Handgloves wave" h="200" font-size="10"
+                      line-height="12" writing-mode="vertical-rl" />
+              </col>
+            </gui>
+            "#,
+        );
+        let cramped = layout_of(
+            r#"
+            <gui version="0.2">
+              <col>
+                <text value="Handgloves wave" h="40" font-size="10"
+                      line-height="12" writing-mode="vertical-rl" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        assert!(
+            cramped.children[0].rect.width > roomy.children[0].rect.width,
+            "wrapping into more lines widens a vertical block"
+        );
+    }
+
+    #[test]
+    fn wrap_moves_a_child_that_does_not_fit_onto_the_next_line() {
+        // Three 40px children in a 100px row: two fit, the third does not.
+        //
+        // The row hugs its height on purpose. With a taller declared height
+        // the lines would also be stretched to share the spare room, as CSS
+        // `align-content: stretch` does, and the second line would start
+        // lower than the first line's own height — true, but a second thing
+        // to reason about in a test that is about the break.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <row w="100" wrap gap="10">
+                <rect w="40" h="20" />
+                <rect w="40" h="20" />
+                <rect w="40" h="20" />
+              </row>
+            </gui>
+            "#,
+        );
+
+        let kids = &layout.children;
+        assert_eq!((kids[0].rect.x, kids[0].rect.y), (0.0, 0.0));
+        assert_eq!((kids[1].rect.x, kids[1].rect.y), (50.0, 0.0));
+        assert_eq!(
+            (kids[2].rect.x, kids[2].rect.y),
+            (0.0, 30.0),
+            "the third starts a second line, a gap below the first"
+        );
+    }
+
+    #[test]
+    fn without_wrap_a_row_keeps_every_child_on_one_line() {
+        // The same row, overflowing rather than wrapping: children declare a
+        // size, so they do not shrink to fit either.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <row w="100" h="60" gap="10">
+                <rect w="40" h="20" />
+                <rect w="40" h="20" />
+                <rect w="40" h="20" />
+              </row>
+            </gui>
+            "#,
+        );
+
+        let kids = &layout.children;
+        assert_eq!((kids[2].rect.x, kids[2].rect.y), (100.0, 0.0));
+        assert_eq!(kids[2].rect.width, 40.0, "and it is not squeezed");
+    }
+
+    #[test]
+    fn a_wrapping_column_breaks_into_a_second_track() {
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <col w="100" h="50" wrap gap="10">
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+                <rect w="20" h="20" />
+              </col>
+            </gui>
+            "#,
+        );
+
+        let kids = &layout.children;
+        assert_eq!((kids[0].rect.x, kids[0].rect.y), (0.0, 0.0));
+        assert_eq!((kids[1].rect.x, kids[1].rect.y), (0.0, 30.0));
+        assert_eq!(
+            kids[2].rect.y, 0.0,
+            "the third starts a new column rather than overflowing the height"
+        );
+        assert!(kids[2].rect.x > 0.0, "and it sits beside the first two");
     }
 
     #[test]

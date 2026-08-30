@@ -203,6 +203,7 @@ dependencies = [
  "image",
  "resvg",
  "roxmltree 0.20.0",
+ "rustybuzz",
  "serde",
  "serde_json",
  "sha2",

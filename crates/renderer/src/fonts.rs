@@ -187,6 +187,15 @@ impl FontFace {
     }
 
     pub fn text_width(&self, value: &str, font_size: f32, axes: &FontAxes) -> f32 {
+        // Shaping is the accurate answer: it applies the face's own kerning
+        // and substitutions, which summing per-glyph advances cannot see.
+        // Painting shapes the same run, so the two agree by construction.
+        if let Some(glyphs) = self.shape(value, font_size, axes) {
+            return glyphs.iter().map(|glyph| glyph.x_advance).sum();
+        }
+
+        // A face rustybuzz will not parse still has to measure, so the old
+        // per-glyph sum stays as the fallback rather than returning zero.
         if let Some(width) = self.variable_text_width(value, font_size, axes) {
             return width;
         }
@@ -351,6 +360,103 @@ impl FontFace {
                 .sum(),
         )
     }
+}
+
+/// One glyph, positioned by the shaper.
+///
+/// `cluster` is the byte offset into the string the glyph came from. It is not
+/// one-to-one with characters — a ligature carries the offset of the first
+/// character it replaced — which is exactly why anything that needs to line up
+/// with the source text has to read this rather than count characters.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShapedGlyph {
+    pub glyph_id: u16,
+    pub x_advance: f32,
+    pub x_offset: f32,
+    pub y_offset: f32,
+    pub cluster: usize,
+}
+
+impl FontFace {
+    /// Shapes a run: the glyphs to draw, and how far each one moves the pen.
+    ///
+    /// This is where kerning and ligatures come from. Summing per-character
+    /// advances — which is what this renderer did before — ignores both: the
+    /// pair kerning that tucks "AV" together, and the substitutions a face
+    /// asks for. Shaping applies the face's own GPOS and GSUB tables, which is
+    /// what a browser does through HarfBuzz; `rustybuzz` is that same
+    /// algorithm ported to Rust.
+    ///
+    /// Measurement and painting both come through here, so they cannot
+    /// disagree about how wide a run is — a box sized by one and drawn by the
+    /// other is the failure this placement exists to prevent.
+    pub fn shape(&self, text: &str, font_size: f32, axes: &FontAxes) -> Option<Vec<ShapedGlyph>> {
+        if text.is_empty() {
+            return Some(Vec::new());
+        }
+
+        let mut face = rustybuzz::Face::from_slice(&self.bytes, self.collection_index)?;
+        for (tag, amount) in axes.effective(self.weight) {
+            // rustybuzz and ttf-parser tag types are distinct wrappers over the
+            // same four bytes.
+            face.set_variation(rustybuzz::ttf_parser::Tag(tag.0), amount);
+        }
+
+        let scale = font_size / face.units_per_em() as f32;
+
+        let mut buffer = rustybuzz::UnicodeBuffer::new();
+        buffer.push_str(text);
+        buffer.guess_segment_properties();
+        let shaped = rustybuzz::shape(&face, &[], buffer);
+
+        let infos = shaped.glyph_infos();
+        let positions = shaped.glyph_positions();
+        Some(
+            infos
+                .iter()
+                .zip(positions.iter())
+                .map(|(info, position)| ShapedGlyph {
+                    glyph_id: info.glyph_id as u16,
+                    x_advance: position.x_advance as f32 * scale,
+                    x_offset: position.x_offset as f32 * scale,
+                    y_offset: position.y_offset as f32 * scale,
+                    cluster: info.cluster as usize,
+                })
+                .collect(),
+        )
+    }
+}
+
+/// How many characters, and how many spaces, each shaped glyph stands for.
+///
+/// `letter-spacing` and `word-spacing` are defined per *character*, and
+/// shaping breaks the one-glyph-per-character assumption in both directions:
+/// a ligature is one glyph covering several characters, and a decomposed mark
+/// is several glyphs sharing one. So the spacing owed by a run is worked out
+/// from the source text and attributed to the first glyph of each cluster —
+/// which keeps the total identical to counting the string directly, however
+/// the face chose to render it.
+pub fn cluster_char_counts(glyphs: &[ShapedGlyph], text: &str) -> Vec<(usize, usize)> {
+    glyphs
+        .iter()
+        .enumerate()
+        .map(|(index, glyph)| {
+            // A glyph sharing its cluster with the one before it is part of
+            // the same character; the spacing was already counted there.
+            if index > 0 && glyphs[index - 1].cluster == glyph.cluster {
+                return (0, 0);
+            }
+            let end = glyphs[index + 1..]
+                .iter()
+                .find(|next| next.cluster != glyph.cluster)
+                .map_or(text.len(), |next| next.cluster);
+            let span = text.get(glyph.cluster..end).unwrap_or("");
+            (
+                span.chars().count(),
+                span.chars().filter(|ch| *ch == ' ').count(),
+            )
+        })
+        .collect()
 }
 
 impl FontStore {
@@ -972,6 +1078,153 @@ pub(crate) fn normal_line_height_from_metrics(
 
 #[cfg(test)]
 mod tests {
+
+    /// A face loaded straight from disk, for testing the shaper against a
+    /// font that is known to carry kerning pairs.
+    fn dejavu() -> Option<FontFace> {
+        let path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+        let bytes = std::fs::read(path).ok()?;
+        let fallback = Font::from_bytes(bytes.clone(), FontSettings::default()).ok()?;
+        Some(FontFace {
+            fallback,
+            bytes: Rc::new(bytes),
+            weight: 400.0,
+            collection_index: 0,
+        })
+    }
+
+    #[test]
+    #[ignore = "reports the kerning gap; run with --ignored to see the numbers"]
+    fn report_the_kerning_gap() {
+        let Some(face) = dejavu() else {
+            return;
+        };
+        let axes = FontAxes::default();
+        let samples = [
+            "Settings",
+            "Account",
+            "Notifications",
+            "Privacy and security",
+            "Version 12.4.1",
+            "Save changes",
+            "AV Wave Yacht",
+            "Handgloves 12345 WAVE",
+            "The quick brown fox jumps over the lazy dog",
+        ];
+
+        let mut worst: f32 = 0.0;
+        let mut total_shaped = 0.0;
+        let mut total_summed = 0.0;
+        for sample in samples {
+            let shaped: f32 = face
+                .shape(sample, 16.0, &axes)
+                .expect("shapes")
+                .iter()
+                .map(|glyph| glyph.x_advance)
+                .sum();
+            let summed = face
+                .variable_text_width(sample, 16.0, &axes)
+                .expect("the face measures");
+            let delta = (summed - shaped) / summed * 100.0;
+            total_shaped += shaped;
+            total_summed += summed;
+            worst = worst.max(delta.abs());
+            println!("{delta:+6.2}%  {shaped:8.2} shaped  {summed:8.2} summed   {sample}");
+        }
+        let overall = (total_summed - total_shaped) / total_summed * 100.0;
+        println!("\noverall {overall:+.2}%, worst line {worst:.2}%");
+    }
+
+    #[test]
+    fn spacing_attributed_per_cluster_totals_what_the_string_says() {
+        // This is the invariant that keeps layout and painting together.
+        // Measurement counts letter/word spacing off the source string;
+        // painting attributes it per shaped cluster. However the face groups
+        // the glyphs, the two totals have to be the same number, or a box is
+        // sized to one width and drawn to another.
+        let Some(face) = dejavu() else {
+            return;
+        };
+        let axes = FontAxes::default();
+
+        for sample in [
+            "AV Wave",
+            "office affair", // ligature candidates
+            "a b c",         // several spaces
+            "",              // nothing at all
+            "Ω≈ç√",          // outside latin
+            "  leading and trailing  ",
+        ] {
+            let glyphs = face.shape(sample, 16.0, &axes).expect("shapes");
+            let spans = cluster_char_counts(&glyphs, sample);
+
+            let chars: usize = spans.iter().map(|(chars, _)| chars).sum();
+            let spaces: usize = spans.iter().map(|(_, spaces)| spaces).sum();
+
+            assert_eq!(
+                chars,
+                sample.chars().count(),
+                "every character is accounted for exactly once in {sample:?}"
+            );
+            assert_eq!(
+                spaces,
+                sample.chars().filter(|ch| *ch == ' ').count(),
+                "and so is every space in {sample:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shaping_kerns_a_pair_that_summing_advances_does_not() {
+        let Some(face) = dejavu() else {
+            eprintln!("DejaVuSans not installed; skipping");
+            return;
+        };
+        let axes = FontAxes::default();
+
+        // "AV" is the canonical kerning pair: the face asks for the V to tuck
+        // under the A. Summing each glyph's own advance cannot know that.
+        let shaped: f32 = face
+            .shape("AV", 100.0, &axes)
+            .expect("shapes")
+            .iter()
+            .map(|glyph| glyph.x_advance)
+            .sum();
+        // Deliberately the pre-shaping path: `text_width` now shapes, so
+        // comparing against it would compare shaping with itself.
+        let summed = face
+            .variable_text_width("AV", 100.0, &axes)
+            .expect("the face measures");
+
+        assert!(
+            shaped < summed,
+            "kerning should pull the pair together: shaped {shaped} vs summed {summed}"
+        );
+    }
+
+    #[test]
+    fn shaping_and_summing_agree_where_there_is_no_kerning_pair() {
+        let Some(face) = dejavu() else {
+            return;
+        };
+        let axes = FontAxes::default();
+
+        // "nn" has no kerning pair, so the two methods must land together.
+        let shaped: f32 = face
+            .shape("nn", 100.0, &axes)
+            .expect("shapes")
+            .iter()
+            .map(|glyph| glyph.x_advance)
+            .sum();
+        let summed = face
+            .variable_text_width("nn", 100.0, &axes)
+            .expect("the face measures");
+
+        assert!(
+            (shaped - summed).abs() < 0.01,
+            "no pair to kern, so they should match: {shaped} vs {summed}"
+        );
+    }
     /// `normal` reproduces the reference renderer, measured rather than assumed.
     ///
     /// Every row is a line height read out of kit in a headless Chromium: a

@@ -40,6 +40,7 @@ pub const SHARED: &[&str] = &[
     "max-width",
     "min-height",
     "max-height",
+    "visible",
 ];
 
 /// Attributes honoured per element, beyond [`SHARED`].
@@ -47,6 +48,11 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "frame",
         &[
+            "border-width",
+            "border-color",
+            "border-style",
+            "border-align",
+            "name",
             "w",
             "h",
             "x",
@@ -69,6 +75,13 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "stack",
         &[
+            "border-width",
+            "border-color",
+            "border-style",
+            "border-align",
+            "name",
+            "wrap",
+            "reverse-z",
             "w",
             "h",
             "x",
@@ -103,6 +116,13 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "row",
         &[
+            "border-width",
+            "border-color",
+            "border-style",
+            "border-align",
+            "name",
+            "wrap",
+            "reverse-z",
             "w",
             "h",
             "x",
@@ -132,6 +152,13 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "col",
         &[
+            "border-width",
+            "border-color",
+            "border-style",
+            "border-align",
+            "name",
+            "wrap",
+            "reverse-z",
             "w",
             "h",
             "x",
@@ -161,6 +188,13 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "grid",
         &[
+            "border-width",
+            "border-color",
+            "border-style",
+            "border-align",
+            "name",
+            "row-gap",
+            "col-gap",
             "w",
             "h",
             "x",
@@ -190,6 +224,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "group",
         &[
+            "name",
             "w",
             "h",
             "x",
@@ -206,6 +241,14 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "text",
         &[
+            "writing-mode",
+            "text-resize",
+            "text-rendering",
+            "font-postscript",
+            "font-style-name",
+            "direction",
+            "name",
+            "text-case",
             "w",
             "h",
             "x",
@@ -252,6 +295,11 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "img",
         &[
+            "border-width",
+            "border-color",
+            "border-style",
+            "border-align",
+            "name",
             "w",
             "h",
             "x",
@@ -268,6 +316,11 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "rect",
         &[
+            "border-width",
+            "border-color",
+            "border-style",
+            "border-align",
+            "name",
             "w",
             "h",
             "x",
@@ -284,6 +337,11 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "ellipse",
         &[
+            "border-width",
+            "border-color",
+            "border-style",
+            "border-align",
+            "name",
             "w",
             "h",
             "x",
@@ -298,6 +356,7 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "line",
         &[
+            "name",
             "w",
             "h",
             "x",
@@ -385,6 +444,23 @@ mod tests {
             ("text", "decoration-style"),
             ("text", "text-underline-offset"),
             ("text", "text-decoration-skip-ink"),
+            ("rect", "visible"),
+            ("row", "reverse-z"),
+            ("text", "text-case"),
+            ("row", "wrap"),
+            ("grid", "row-gap"),
+            ("grid", "col-gap"),
+            ("group", "name"),
+            ("rect", "border-width"),
+            ("rect", "border-color"),
+            ("rect", "border-style"),
+            ("rect", "border-align"),
+            ("text", "direction"),
+            ("text", "font-postscript"),
+            ("text", "font-style-name"),
+            ("text", "text-rendering"),
+            ("text", "text-resize"),
+            ("text", "writing-mode"),
         ] {
             assert!(
                 is_supported(tag, attribute, true),
@@ -392,11 +468,12 @@ mod tests {
             );
         }
 
-        // And that known gaps stay declared as gaps.
+        // And that the known gaps stay declared as gaps.
         for (tag, attribute) in [
             ("frame", "border-image"),
+            ("text", "font-feature"),
             ("rect", "fill-rule"),
-            ("row", "wrap"),
+            ("rect", "constraint-h"),
         ] {
             assert!(
                 !is_supported(tag, attribute, true),

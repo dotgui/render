@@ -1,0 +1,27 @@
+<gui version="0.2">
+  <col w="240" fill="#ffffff" p="12" gap="14">
+
+    <!-- Each axis set on its own: wide between the columns, tight between
+         the rows. -->
+    <grid columns="3" col-gap="24" row-gap="4">
+      <rect w="40" h="20" fill="#0d99ff" />
+      <rect w="40" h="20" fill="#0d99ff" />
+      <rect w="40" h="20" fill="#0d99ff" />
+      <rect w="40" h="20" fill="#0d99ff" />
+      <rect w="40" h="20" fill="#0d99ff" />
+      <rect w="40" h="20" fill="#0d99ff" />
+    </grid>
+
+    <!-- The shorthand sets both, then one axis is overridden and the other
+         keeps the shorthand's value. -->
+    <grid columns="3" gap="8" row-gap="28">
+      <rect w="40" h="20" fill="#f2b8b5" />
+      <rect w="40" h="20" fill="#f2b8b5" />
+      <rect w="40" h="20" fill="#f2b8b5" />
+      <rect w="40" h="20" fill="#f2b8b5" />
+      <rect w="40" h="20" fill="#f2b8b5" />
+      <rect w="40" h="20" fill="#f2b8b5" />
+    </grid>
+
+  </col>
+</gui>

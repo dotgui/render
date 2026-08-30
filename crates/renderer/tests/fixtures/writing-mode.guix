@@ -1,0 +1,18 @@
+<gui version="0.2">
+  <row w="280" h="180" fill="#ffffff" p="12" gap="12">
+
+    <!-- The default, for comparison: lines run across and stack down. -->
+    <text value="Handgloves wave twice" w="80" font-size="13"
+          line-height="16" fill="#111111" />
+
+    <!-- Turned on its side, stacking from the right edge. Its box measures
+         the other way round: the line length is now its height. -->
+    <text value="Handgloves wave twice" h="150" font-size="13"
+          line-height="16" fill="#111111" writing-mode="vertical-rl" />
+
+    <!-- The same, stacking from the left edge instead. -->
+    <text value="Handgloves wave twice" h="150" font-size="13"
+          line-height="16" fill="#111111" writing-mode="vertical-lr" />
+
+  </row>
+</gui>
