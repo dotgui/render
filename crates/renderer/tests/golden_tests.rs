@@ -228,3 +228,4 @@ golden_test!(
     "line-height-normal.guix",
     "line-height-normal"
 );
+golden_test!(golden_text_case, "text-case.guix", "text-case");

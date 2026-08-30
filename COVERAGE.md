@@ -22,8 +22,8 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `border-image` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `constraint-h` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `constraint-v` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `fill-rule` | `<rect>`, `<ellipse>` |
 | `font-feature` | `<text>` |
-| `writing-mode` | `<text>` |
 
 ## Implemented
 
@@ -54,7 +54,6 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `direction` | `<stack>`, `<text>`, `<line>` |
 | `effect-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<rect>`, `<ellipse>` |
 | `fill` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
-| `fill-rule` | `<rect>`, `<ellipse>` |
 | `fill-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
 | `filter` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `fit` | `<img>` |
@@ -141,6 +140,7 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `word-break` | `<text>` |
 | `word-spacing` | `<text>` |
 | `wrap` | `<stack>`, `<row>`, `<col>` |
+| `writing-mode` | `<text>` |
 | `x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `z-index` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
