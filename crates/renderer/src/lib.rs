@@ -35,7 +35,7 @@ pub use paint::{
 pub use parser::{parse_gui_xml, ParseError};
 pub use scene::{
     build_scene, Border, BorderWidths, Effect, Fill, ImageMask, Outline, PaintContent, Scene,
-    SceneNode, ShapeFillRule, TextSegment, Transform2D,
+    SceneNode, TextSegment, Transform2D,
 };
 pub use taffy_layout::{compute_taffy_layout, compute_taffy_layout_with_text, TaffyLayoutError};
 pub use text_style::{DecorationLine, DecorationStyle, TextDecoration};

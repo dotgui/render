@@ -316,7 +316,6 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "rect",
         &[
-            "fill-rule",
             "border-width",
             "border-color",
             "border-style",
@@ -338,7 +337,6 @@ pub const BY_ELEMENT: &[(&str, &[&str])] = &[
     (
         "ellipse",
         &[
-            "fill-rule",
             "border-width",
             "border-color",
             "border-style",
@@ -457,7 +455,6 @@ mod tests {
             ("rect", "border-color"),
             ("rect", "border-style"),
             ("rect", "border-align"),
-            ("ellipse", "fill-rule"),
             ("text", "direction"),
             ("text", "font-postscript"),
             ("text", "font-style-name"),
@@ -472,7 +469,12 @@ mod tests {
         }
 
         // And that the known gaps stay declared as gaps.
-        for (tag, attribute) in [("frame", "border-image"), ("text", "font-feature")] {
+        for (tag, attribute) in [
+            ("frame", "border-image"),
+            ("text", "font-feature"),
+            ("rect", "fill-rule"),
+            ("rect", "constraint-h"),
+        ] {
             assert!(
                 !is_supported(tag, attribute, true),
                 "<{tag}> {attribute} is declared but the renderer does not read it"
