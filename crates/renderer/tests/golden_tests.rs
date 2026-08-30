@@ -126,8 +126,10 @@ fn run_golden_test(gui_filename: &str, golden_name: &str) {
 
     let differing = generated_img
         .as_raw()
-        .chunks_exact(4)
-        .zip(golden_img.as_raw().chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(golden_img.as_raw().as_chunks::<4>().0)
         .filter(|(rendered, golden)| {
             rendered
                 .iter()
