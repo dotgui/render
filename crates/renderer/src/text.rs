@@ -114,7 +114,6 @@ pub(crate) fn wrap_runs(
 
     let mut lines: Vec<Line> = Vec::new();
     let mut current: Line = Vec::new();
-    let mut current_width = 0.0_f32;
     // Whitespace at a run boundary belongs between the runs, not inside either,
     // so `<segment value="Total: "/><segment value="$12"/>` keeps its space.
     let mut pending_space = false;
@@ -122,7 +121,6 @@ pub(crate) fn wrap_runs(
     for chunk in chunks {
         if chunk.hard_break_before {
             lines.push(std::mem::take(&mut current));
-            current_width = 0.0;
             pending_space = false;
         }
 
@@ -137,12 +135,7 @@ pub(crate) fn wrap_runs(
                 piece.leading_space
             };
 
-            let piece_width = measure(piece.text, chunk.style);
-            let mut space_width = if current.is_empty() || !separated {
-                0.0
-            } else {
-                measure(" ", chunk.style)
-            };
+            let mut spaced = !current.is_empty() && separated;
 
             // The indent takes room from the first line, so that line fills
             // less before it has to break.
@@ -154,16 +147,22 @@ pub(crate) fn wrap_runs(
                 }
             });
 
+            // The line is measured as it would be drawn, with the piece joined
+            // on, rather than as a sum of pieces measured apart. Shaping kerns
+            // across the joins, so the sum runs wider than the line — and
+            // layout sizes a hugging box to the line. Judged by the sum, the
+            // last piece would not fit the box made for it.
             let overflows = line_width.is_some_and(|line_width| {
-                !current.is_empty() && current_width + space_width + piece_width > line_width + 0.5
+                !current.is_empty()
+                    && joined_width(&current, piece.text, spaced, chunk.style, measure)
+                        > line_width + 0.5
             });
 
             if overflows {
                 // The separating space is dropped, as it would be at the start
                 // of a line in HTML. A piece broken off mid-word never had one.
                 lines.push(std::mem::take(&mut current));
-                current_width = 0.0;
-                space_width = 0.0;
+                spaced = false;
             }
 
             // `break-word` splits a word that will not fit on a line of its
@@ -171,24 +170,23 @@ pub(crate) fn wrap_runs(
             // or by being the first thing on this one.
             let must_split = options.word_break == WordBreak::BreakWord
                 && current.is_empty()
-                && line_width.is_some_and(|line_width| piece_width > line_width);
+                && line_width
+                    .is_some_and(|line_width| measure(piece.text, chunk.style) > line_width);
 
             if must_split {
                 split_across_lines(
                     &mut lines,
                     &mut current,
-                    &mut current_width,
                     piece.text,
                     chunk.style,
                     line_width.unwrap_or(f32::MAX),
                     measure,
                 );
             } else {
-                if space_width > 0.0 {
+                if spaced {
                     push_piece(&mut current, " ", chunk.style);
                 }
                 push_piece(&mut current, piece.text, chunk.style);
-                current_width += space_width + piece_width;
             }
             pending_space = false;
         }
@@ -212,11 +210,9 @@ pub(crate) fn wrap_runs(
 ///
 /// The tail is left on `current` rather than pushed, so whatever follows the
 /// word can still share its last line.
-#[allow(clippy::too_many_arguments)]
 fn split_across_lines(
     lines: &mut Vec<Line>,
     current: &mut Line,
-    current_width: &mut f32,
     text: &str,
     style: usize,
     line_width: f32,
@@ -241,7 +237,27 @@ fn split_across_lines(
     if start < text.len() {
         push_piece(current, &text[start..], style);
     }
-    *current_width = width;
+}
+
+/// Width of `line` once `text` is appended to it, measured the way the line
+/// will be drawn: the joined run as one string, so kerning across the join
+/// counts.
+fn joined_width(
+    line: &Line,
+    text: &str,
+    spaced: bool,
+    style: usize,
+    measure: &dyn Fn(&str, usize) -> f32,
+) -> f32 {
+    let separator = if spaced { " " } else { "" };
+    match line.split_last() {
+        // `push_piece` merges into a run of the same style, so that is the
+        // string painting will shape.
+        Some((last, rest)) if last.style == style => {
+            line_width(rest, measure) + measure(&format!("{}{separator}{text}", last.text), style)
+        }
+        _ => line_width(line, measure) + measure(&format!("{separator}{text}"), style),
+    }
 }
 
 /// Appends text to a line, merging into the previous run when the style matches
@@ -335,7 +351,7 @@ pub(crate) fn max_line_width(lines: &[Line], measure: &dyn Fn(&str, usize) -> f3
 }
 
 /// Rendered width of one line, summed across its runs.
-pub(crate) fn line_width(line: &Line, measure: &dyn Fn(&str, usize) -> f32) -> f32 {
+pub(crate) fn line_width(line: &[Run], measure: &dyn Fn(&str, usize) -> f32) -> f32 {
     line.iter()
         .map(|run| measure(&run.text, run.style))
         .sum::<f32>()
@@ -692,5 +708,71 @@ mod tests {
         apply_line_limit_and_ellipsis(&mut lines, Some(1), true, 10.0, &measure_run);
 
         assert_eq!(lines_of(&lines), vec!["fits"]);
+    }
+
+    /// A shaped measure: ten units a character, less a little for every
+    /// neighbouring pair, the way kerning tightens a string. A whole line is
+    /// then narrower than its words measured apart and added up.
+    fn measure_kerned(value: &str, _style: usize) -> f32 {
+        let chars = value.chars().count() as f32;
+        chars * 10.0 - (chars - 1.0).max(0.0) * 0.3
+    }
+
+    #[test]
+    fn text_wrapped_at_its_own_width_stays_on_one_line() {
+        // Layout sizes a hugging box to the unwrapped line, and painting then
+        // wraps into that box. If the two disagree by more than the slack, the
+        // last piece moves to a line the box has no room for and is never
+        // drawn: "Deploy feature/cache-headers" painted as "Deploy
+        // feature/cache-".
+        for text in [
+            "Deploy feature/cache-headers",
+            "Atlas API / feature/cache-headers",
+            "TUESDAY, 27 AUGUST",
+            "RECENT DESTINATIONS",
+        ] {
+            let runs = plain(text);
+            let options = WrapOptions::default();
+            let unwrapped = wrap_runs(&runs, None, &measure_kerned, options);
+            let width = max_line_width(&unwrapped, &measure_kerned);
+
+            let wrapped = wrap_runs(&runs, Some(width), &measure_kerned, options);
+            assert_eq!(lines_of(&wrapped), vec![text], "at {width}");
+        }
+    }
+
+    #[test]
+    fn styled_runs_wrapped_at_their_own_width_stay_on_one_line() {
+        let runs = vec![
+            Run {
+                text: "Total due ".to_owned(),
+                style: 0,
+            },
+            Run {
+                text: "AED 254.40 incl. service-charge".to_owned(),
+                style: 1,
+            },
+        ];
+        let options = WrapOptions::default();
+        let unwrapped = wrap_runs(&runs, None, &measure_kerned, options);
+        let width = max_line_width(&unwrapped, &measure_kerned);
+
+        let wrapped = wrap_runs(&runs, Some(width), &measure_kerned, options);
+        assert_eq!(wrapped.len(), 1, "{:?} at {width}", lines_of(&wrapped));
+    }
+
+    #[test]
+    fn a_kerned_line_still_breaks_when_it_does_not_fit() {
+        // Measuring the line whole must not make everything fit: one unit
+        // short of the full width, the last word still has to move down.
+        let text = "Deploy feature/cache-headers";
+        let full = measure_kerned(text, 0);
+        let lines = lines_of(&wrap_runs(
+            &plain(text),
+            Some(full - 1.0),
+            &measure_kerned,
+            WrapOptions::default(),
+        ));
+        assert_eq!(lines, vec!["Deploy feature/cache-", "headers"]);
     }
 }

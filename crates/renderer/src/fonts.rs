@@ -558,10 +558,29 @@ impl FontStore {
         style: Option<&str>,
     ) -> Option<&FontFace> {
         let family = family?;
-        let weight = weight.unwrap_or("400");
-        let style = style.unwrap_or("normal");
+        let wanted = FontFaceKey::new(family, weight.unwrap_or("400"), style.unwrap_or("normal"));
+        if let Some(face) = self.fonts.get(&wanted) {
+            return Some(face);
+        }
+
+        // A weight the document never declared still draws with the family,
+        // as it does in the browser kit renders through: kit requests only the
+        // declared weights, sets the undeclared one on the element, and CSS
+        // font matching picks the nearest declared face. Falling back to the
+        // host font instead drew the wrong typeface.
+        let declared: Vec<u16> = self
+            .fonts
+            .keys()
+            .filter(|key| key.family == wanted.family && key.style == wanted.style)
+            .filter_map(|key| key.weight.parse().ok())
+            .collect();
+        let desired = wanted.weight.parse().unwrap_or(400);
+        let weight = matching_weight(desired, &declared)?;
         self.fonts
-            .get(&FontFaceKey::new(family, weight, style))
+            .get(&FontFaceKey {
+                weight: weight.to_string(),
+                ..wanted
+            })
             .map(Rc::as_ref)
     }
 
@@ -761,6 +780,33 @@ fn nearest_face<'a>(
             (face_weight.parse::<i32>().unwrap_or(400) - target).abs()
         })
         .map(|(_, url)| url)
+}
+
+/// The declared weight CSS font matching would draw `desired` with.
+///
+/// CSS Fonts 4, section 5.2: a weight between 400 and 500 looks upward as far
+/// as 500, then downward, then above 500; a lighter weight looks downward
+/// first and a heavier one upward first. So 550 takes 600 over 500, and 450
+/// takes 500 over 400.
+fn matching_weight(desired: u16, declared: &[u16]) -> Option<u16> {
+    let below = || declared.iter().copied().filter(|w| *w < desired).max();
+    let above = |from: u16| declared.iter().copied().filter(|w| *w >= from).min();
+
+    if declared.contains(&desired) {
+        return Some(desired);
+    }
+    if (400..=500).contains(&desired) {
+        let up_to_500 = declared
+            .iter()
+            .copied()
+            .filter(|w| *w > desired && *w <= 500)
+            .min();
+        return up_to_500.or_else(below).or_else(|| above(500));
+    }
+    if desired < 400 {
+        return below().or_else(|| above(desired));
+    }
+    above(desired).or_else(below)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -1078,6 +1124,61 @@ pub(crate) fn normal_line_height_from_metrics(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_undeclared_weight_matches_the_way_css_does() {
+        let geist = [400, 500, 600, 700];
+        // Above 500 looks upward first: quarry's 550 label takes SemiBold.
+        assert_eq!(matching_weight(550, &geist), Some(600));
+        assert_eq!(matching_weight(650, &geist), Some(700));
+        // Between 400 and 500 looks upward only as far as 500.
+        assert_eq!(matching_weight(450, &geist), Some(500));
+        assert_eq!(matching_weight(450, &[400, 600]), Some(400));
+        assert_eq!(matching_weight(450, &[600, 700]), Some(600));
+        // Below 400 looks downward first.
+        assert_eq!(matching_weight(350, &[300, 400]), Some(300));
+        assert_eq!(matching_weight(350, &[400, 700]), Some(400));
+        // Past either end, the nearest face in the only direction left.
+        assert_eq!(matching_weight(900, &geist), Some(700));
+        assert_eq!(matching_weight(100, &geist), Some(400));
+        // A declared weight is itself, and nothing declared matches nothing.
+        assert_eq!(matching_weight(500, &geist), Some(500));
+        assert_eq!(matching_weight(550, &[]), None);
+    }
+
+    #[test]
+    fn the_store_draws_an_undeclared_weight_with_the_nearest_declared_face() {
+        let Some(bytes) = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+        ]
+        .iter()
+        .find_map(|path| std::fs::read(path).ok()) else {
+            eprintln!("no test font installed; skipping");
+            return;
+        };
+
+        // Each declared weight is its own instance, as `from_document` builds
+        // them, so which one came back is visible in its weight.
+        let mut store = FontStore::default();
+        for weight in ["400", "500", "600", "700"] {
+            let face = FontFace::new(bytes.clone(), weight, 0).expect("the font loads");
+            store
+                .fonts
+                .insert(FontFaceKey::new("Geist", weight, "normal"), Rc::new(face));
+        }
+
+        let weight_of = |weight: &str, style: &str| {
+            store
+                .get(Some("Geist"), Some(weight), Some(style))
+                .map(|face| face.weight)
+        };
+        assert_eq!(weight_of("550", "normal"), Some(600.0));
+        assert_eq!(weight_of("600", "normal"), Some(600.0));
+        // Matching stays within the family and style asked for.
+        assert_eq!(weight_of("550", "italic"), None);
+        assert!(store.get(Some("Inter"), Some("550"), None).is_none());
+    }
 
     /// A face loaded straight from disk, for testing the shaper against a
     /// font that is known to carry kerning pairs.
