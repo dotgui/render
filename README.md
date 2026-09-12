@@ -954,6 +954,12 @@ change shows the working tree. The two renders can be compared:
 | Difference | `5` | pixels that differ beyond a tolerance, in red |
 | Live kit | `6` | kit rendering into the page, to inspect its DOM |
 
+Zoom is shared. Pinch, or scroll with ⌘/Ctrl held, to zoom around the
+cursor; side by side, the other pane zooms to the same point, so the same
+detail is magnified in both. `+` and `-` zoom about the middle of the view,
+and `0` goes back to fit. The area in view is kept when switching views, so a
+detail zoomed into side by side can be flipped or diffed where it is.
+
 Anything either renderer reported, such as a font it could not resolve or an
 image it could not load, is listed under the images.
 

@@ -87,6 +87,7 @@
   .segmented kbd { opacity: 0.55; font: 10px ui-monospace, monospace; margin-left: 4px; }
   .control { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
   .control input[type=range] { width: 120px; }
+  .zoom-level { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 5ch; }
 
   .stats { display: flex; gap: 16px; padding: 8px 16px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
   .stat { display: flex; align-items: baseline; gap: 6px; }
@@ -112,7 +113,9 @@
     background: color-mix(in srgb, var(--sunken) 88%, transparent);
     backdrop-filter: blur(6px);
   }
-  .canvas-wrap { padding: 16px; display: flex; justify-content: center; }
+  /* max-content, so a frame wider than its pane widens the scroll area instead
+     of overflowing to the left, where nothing can scroll to it. */
+  .canvas-wrap { padding: 16px; display: flex; justify-content: center; width: max-content; min-width: 100%; }
   .frame {
     position: relative;
     background-color: var(--checker);
@@ -199,6 +202,7 @@
     <button data-zoom="2">200%</button>
     <button data-zoom="4">400%</button>
   </div>
+  <span class="zoom-level" id="zoom-level" title="Pinch or ⌘/Ctrl + scroll to zoom around the cursor; + − 0 on the keyboard"></span>
   <label class="control" id="onion-control" hidden>kit opacity
     <input type="range" id="onion" min="0" max="100" value="50">
   </label>
@@ -242,12 +246,16 @@ const state = {
   native: null,   // { ok, png, ms, notes, error, image }
   kit: null,
   mode: stored('mode', 'side'),
-  zoom: stored('zoom', 'fit'),
+  zoom: parseZoom(stored('zoom', 'fit')),
   flipShowsKit: false,
   swipe: 0.5,
   onion: 50,
   threshold: 24,
   diff: null,     // { differing, total, width, height } for the pair and threshold it was computed at
+}
+
+function parseZoom(value) {
+  return value === 'fit' ? 'fit' : Number(value) || 'fit'
 }
 
 function stored(key, fallback) {
@@ -330,7 +338,7 @@ const bothReady = () => ready(state.native) && ready(state.kit)
 
 function paint() {
   for (const button of $('modes').children) button.setAttribute('aria-pressed', button.dataset.mode === state.mode)
-  for (const button of $('zooms').children) button.setAttribute('aria-pressed', button.dataset.zoom === state.zoom)
+  paintZoomControls()
   $('onion-control').hidden = state.mode !== 'onion'
   $('threshold-control').hidden = state.mode !== 'diff'
   $('flip-hint').hidden = state.mode !== 'flip'
@@ -340,21 +348,28 @@ function paint() {
   paintStats()
   paintNotes()
 
+  // The area in view survives a repaint — a new render arriving, a flip, a
+  // change of view — so a detail zoomed into stays under the eye. A different
+  // document starts from the top.
+  const view = state.viewOf === state.bytes ? captureView() : null
+
   const stage = $('stage')
   stage.className = 'stage'
   stage.replaceChildren()
 
   if (state.mode === 'live') return paintLive(stage)
-  if (state.mode === 'side') return paintSide(stage)
+  if (state.mode === 'side') paintSide(stage)
+  else if (!bothReady()) stage.append(waiting())
+  else if (state.mode === 'flip') paintFlip(stage)
+  else if (state.mode === 'swipe') paintSwipe(stage)
+  else if (state.mode === 'onion') paintOnion(stage)
+  else if (state.mode === 'diff') paintDiff(stage)
 
-  if (!bothReady()) {
-    stage.append(waiting())
-    return
+  if (stage.querySelector('.frame')) {
+    if (view) restoreView(view)
+    state.viewOf = state.bytes
   }
-  if (state.mode === 'flip') paintFlip(stage)
-  if (state.mode === 'swipe') paintSwipe(stage)
-  if (state.mode === 'onion') paintOnion(stage)
-  if (state.mode === 'diff') paintDiff(stage)
+  paintZoomControls()
 }
 
 /** A message for a view that needs both renders. */
@@ -382,7 +397,7 @@ function pairSize() {
 }
 
 function zoomFor(container, width) {
-  if (state.zoom !== 'fit') return Number(state.zoom)
+  if (state.zoom !== 'fit') return state.zoom
   const available = container.clientWidth - 32
   return Math.min(1, available / width)
 }
@@ -395,18 +410,108 @@ function frame(container, layers) {
   wrap.className = 'canvas-wrap' + (zoom > 1 ? ' zoomed' : '')
   const box = document.createElement('div')
   box.className = 'frame'
-  box.style.width = `${width * zoom}px`
-  box.style.height = `${height * zoom}px`
-  for (const layer of layers) {
-    // A cloned image may not have decoded yet, so its size travels with it.
-    const w = Number(layer.dataset.width ?? layer.width) * zoom
-    const h = Number(layer.dataset.height ?? layer.height) * zoom
-    layer.style.width = `${w}px`
-    layer.style.height = `${h}px`
-    box.append(layer)
-  }
+  box.dataset.width = width
+  box.dataset.height = height
+  box.append(...layers)
+  sizeFrame(box, zoom)
   wrap.append(box)
   return { wrap, box, zoom }
+}
+
+/** Scales a frame and its layers in place, without rebuilding anything. */
+function sizeFrame(box, zoom) {
+  box.dataset.zoom = zoom
+  box.style.width = `${box.dataset.width * zoom}px`
+  box.style.height = `${box.dataset.height * zoom}px`
+  box.parentElement?.classList.toggle('zoomed', zoom > 1)
+  for (const layer of box.querySelectorAll(':scope > img, :scope > canvas')) {
+    // A cloned image may not have decoded yet, so its size travels with it.
+    layer.style.width = `${Number(layer.dataset.width ?? layer.width) * zoom}px`
+    layer.style.height = `${Number(layer.dataset.height ?? layer.height) * zoom}px`
+  }
+  box.relayout?.()
+}
+
+// ---------------------------------------------------------------- zoom
+
+/**
+ * The scrolling boxes that show a frame: both panes side by side, the stage
+ * otherwise. Every one shows the pair at the same size, so the same scroll
+ * offset is the same area of the document in each.
+ */
+function scrollers() {
+  const stage = $('stage')
+  const candidates = stage.classList.contains('split') ? [...stage.querySelectorAll('.pane')] : [stage]
+  return candidates.filter((scroller) => scroller.querySelector('.frame'))
+}
+
+const zoomOf = (scroller) => Number(scroller.querySelector('.frame').dataset.zoom)
+
+/**
+ * The document point at a spot in a scroller, in unscaled pixels. `x` and `y`
+ * are relative to the scroller's visible top-left.
+ */
+function documentPoint(scroller, x, y) {
+  const box = scroller.querySelector('.frame')
+  const zoom = zoomOf(scroller)
+  return {
+    u: (scroller.scrollLeft + x - box.offsetLeft) / zoom,
+    v: (scroller.scrollTop + y - box.offsetTop) / zoom,
+  }
+}
+
+/** Scrolls every scroller so document point (u, v) sits at (x, y). */
+function scrollPointTo({ u, v }, x, y) {
+  for (const scroller of scrollers()) {
+    const box = scroller.querySelector('.frame')
+    const zoom = zoomOf(scroller)
+    scroller.scrollLeft = u * zoom + box.offsetLeft - x
+    scroller.scrollTop = v * zoom + box.offsetTop - y
+  }
+}
+
+const viewCentre = (scroller) => ({ x: scroller.clientWidth / 2, y: scroller.clientHeight / 2 })
+
+function captureView() {
+  const [scroller] = scrollers()
+  if (!scroller) return null
+  const { x, y } = viewCentre(scroller)
+  return documentPoint(scroller, x, y)
+}
+
+function restoreView(point) {
+  const [scroller] = scrollers()
+  if (!scroller) return
+  const { x, y } = viewCentre(scroller)
+  scrollPointTo(point, x, y)
+}
+
+const MIN_ZOOM = 0.05
+const MAX_ZOOM = 32
+
+/**
+ * Zooms every frame to `zoom`, keeping the document point under (x, y) of
+ * `anchor` where it is. Side by side, the other pane follows to the same
+ * point, so the same detail is magnified in both.
+ */
+function zoomTo(zoom, anchor = scrollers()[0], at = anchor && viewCentre(anchor), point) {
+  if (!anchor) return
+  zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom))
+  point ??= documentPoint(anchor, at.x, at.y)
+  for (const box of $('stage').querySelectorAll('.frame')) sizeFrame(box, zoom)
+  scrollPointTo(point, at.x, at.y)
+  state.zoom = zoom
+  store('zoom', zoom)
+  paintZoomControls()
+}
+
+function paintZoomControls() {
+  for (const button of $('zooms').children) {
+    button.setAttribute('aria-pressed', String(button.dataset.zoom) === String(state.zoom))
+  }
+  const [scroller] = scrollers()
+  $('zoom-level').hidden = state.mode === 'live' || !scroller
+  if (scroller) $('zoom-level').textContent = `${Math.round(zoomOf(scroller) * 100)}%`
 }
 
 function clone(image) {
@@ -484,25 +589,24 @@ function paintFlip(stage) {
 
 function flip() {
   state.flipShowsKit = !state.flipShowsKit
-  const scroll = [$('stage').scrollTop, $('stage').scrollLeft]
   paint()
-  ;[$('stage').scrollTop, $('stage').scrollLeft] = scroll
 }
 
 function paintSwipe(stage) {
   const native = clone(state.native.image)
   const kit = clone(state.kit.image)
-  const { wrap, box, zoom } = frame(stage, [kit, native])
+  const { wrap, box } = frame(stage, [kit, native])
   const handle = document.createElement('div')
   handle.className = 'swipe-handle'
   box.append(handle, tag('native'), tag('kit'))
 
-  const width = pairSize().width * zoom
   const place = () => {
+    const width = parseFloat(box.style.width)
     const x = state.swipe * width
     native.style.clipPath = `inset(0 ${width - x}px 0 0)`
     handle.style.left = `${x}px`
   }
+  box.relayout = place
   place()
 
   const move = (event) => {
@@ -698,11 +802,50 @@ function setMode(mode) {
 
 $('zooms').addEventListener('click', (event) => {
   const zoom = event.target.closest('button')?.dataset.zoom
-  if (!zoom) return
-  state.zoom = zoom
-  store('zoom', zoom)
-  paint()
+  if (zoom) setZoom(zoom)
 })
+
+/** A preset: a number zooms about the middle of the view; fit re-measures. */
+function setZoom(zoom) {
+  if (zoom === 'fit') {
+    state.zoom = 'fit'
+    store('zoom', 'fit')
+    paint()
+  } else {
+    zoomTo(Number(zoom))
+  }
+}
+
+const currentZoom = () => {
+  const [scroller] = scrollers()
+  return scroller ? zoomOf(scroller) : 1
+}
+
+// A trackpad pinch arrives as a wheel event with ctrlKey set; a mouse wheel
+// zooms while ⌘ or Ctrl is held. Plain scrolling still pans, in both panes.
+$('stage').addEventListener('wheel', (event) => {
+  if (!(event.ctrlKey || event.metaKey)) return
+  const stage = $('stage')
+  const anchor = stage.classList.contains('split') ? event.target.closest('.pane') : stage
+  if (!anchor?.querySelector('.frame')) return
+  event.preventDefault()
+  const lines = event.deltaMode === 1 ? 16 : 1
+  const delta = Math.max(-50, Math.min(50, event.deltaY * lines))
+  const rect = anchor.getBoundingClientRect()
+  const at = { x: event.clientX - rect.left, y: event.clientY - rect.top }
+
+  // One gesture keeps the point it started on. While the frame is still
+  // smaller than the pane the scroll clamps at zero, so reading the point back
+  // after each step would let it drift away from the cursor.
+  const now = performance.now()
+  const gesture = state.gesture
+  const continuing = gesture && gesture.anchor === anchor && now - gesture.time < 300 &&
+    Math.abs(gesture.at.x - at.x) < 4 && Math.abs(gesture.at.y - at.y) < 4
+  const point = continuing ? gesture.point : documentPoint(anchor, at.x, at.y)
+  state.gesture = { anchor, at, point, time: now }
+
+  zoomTo(currentZoom() * Math.exp(-delta * 0.01), anchor, at, point)
+}, { passive: false })
 
 $('onion').addEventListener('input', () => {
   state.onion = Number($('onion').value)
@@ -724,6 +867,9 @@ document.addEventListener('keydown', (event) => {
   if (/^[1-6]$/.test(event.key)) setMode(modes[Number(event.key) - 1])
   else if (event.key === ' ' && state.mode === 'flip') { event.preventDefault(); flip() }
   else if (event.key === 'r' && state.bytes) renderBoth()
+  else if (event.key === '+' || event.key === '=') zoomTo(currentZoom() * 1.5)
+  else if (event.key === '-' || event.key === '_') zoomTo(currentZoom() / 1.5)
+  else if (event.key === '0') setZoom('fit')
 })
 
 let dragDepth = 0
