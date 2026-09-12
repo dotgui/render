@@ -205,6 +205,14 @@ Needs [bun](https://bun.sh), a Chromium-based browser, and a `dotgui/kit`
 checkout beside this one (or `DOTGUI_KIT` pointing at it) with its render
 bundle built. See [Comparing Against Kit](#comparing-against-kit).
 
+Look at one document through both renderers, in a local page:
+
+```bash
+bun run tools/viewer/server.ts   # then open http://localhost:4173
+```
+
+Same requirements as the comparison. See [The viewer](#the-viewer).
+
 ## Appearance
 
 `<appearance>` carries a node's complete paint: ordered stacks of `<fill>`,
@@ -920,6 +928,38 @@ dotgui/kit#11 with the one-line fix, so it belongs upstream rather than here.
 That is the fourth divergence this tool has attributed to the reference rather
 than to us, which is the point of the note in front of this section: kit is the
 reference but not the arbiter.
+
+#### The viewer
+
+The harness ranks geometry, and some divergences move none: a label that loses
+its last word is the same height with or without it. Those are found by
+looking, and `tools/viewer` is a page for looking.
+
+```bash
+bun run tools/viewer/server.ts   # then open http://localhost:4173
+```
+
+Drop in a `.gui` or `.guix`, or pick a document from this repository, and it is
+rendered by both renderers, through the same paths the harness uses:
+`--example render_png` natively and `tools/kit-rasterize.ts` for kit. The native
+example is rebuilt before each render, so **Re-render** (or `R`) after a Rust
+change shows the working tree. The two renders can be compared:
+
+| view | key | |
+|---|---|---|
+| Side by side | `1` | scrolling one side scrolls the other |
+| Flip | `2` | one at a time; `Space` or a click swaps them in place |
+| Swipe | `3` | drag the divider across |
+| Onion | `4` | kit over native at an adjustable opacity |
+| Difference | `5` | pixels that differ beyond a tolerance, in red |
+| Live kit | `6` | kit rendering into the page, to inspect its DOM |
+
+Anything either renderer reported, such as a font it could not resolve or an
+image it could not load, is listed under the images.
+
+It does not use the WASM build, even though the renders are shown in a
+browser. That build cannot fetch Google fonts or remote images, which most
+documents use, so it would compare kit against a handicapped renderer.
 
 ## Backlog
 
