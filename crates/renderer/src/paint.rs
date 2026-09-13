@@ -136,10 +136,25 @@ fn paint_node(
         return;
     }
 
-    let Some(mut layer) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+    // The layer covers only the part of the canvas the subtree can paint, not
+    // the whole canvas: on a long page a full-canvas layer is tens of millions
+    // of pixels to clear, filter and resample back, for a node that may be a
+    // seven-pixel icon. Nothing is lost by cutting it to the canvas, because a
+    // full-canvas layer ended there too.
+    let Some(region) = layer_region(node, pixmap) else {
+        return;
+    };
+    let Some(mut layer) = Pixmap::new(region.width, region.height) else {
         paint_node_direct(pixmap, node, font, asset_cache, fonts);
         return;
     };
+    // Painting reads positions only from `bounds`; everything else a node
+    // carries is relative to them. So the subtree, moved by the region's
+    // corner, paints into the small layer exactly as it would into the canvas.
+    let original = node;
+    let mut local = node.clone();
+    translate_subtree(&mut local, -(region.x as f32), -(region.y as f32));
+    let node = &local;
 
     // Backdrop effects read what is behind the node, and inside a layer that
     // is nothing. Copying the canvas in first would then be blended twice, so
@@ -174,13 +189,15 @@ fn paint_node(
     // It is applied to the layer rather than handed to `draw_pixmap`, because
     // a clip mask there would be in canvas space: a node that both masks and
     // transforms would have its mask left behind by the transform.
-    if let Some(mask) = node_mask(pixmap.width(), pixmap.height(), node, asset_cache) {
+    if let Some(mask) = node_mask(layer.width(), layer.height(), node, asset_cache) {
         mask_layer(&mut layer, &mask);
     }
 
+    // The transform is in canvas space, so it applies after the layer is put
+    // back at the region's corner — which is what drawing it there does.
     pixmap.draw_pixmap(
-        0,
-        0,
+        region.x,
+        region.y,
         layer.as_ref(),
         &PixmapPaint {
             blend_mode: node
@@ -196,10 +213,240 @@ fn paint_node(
             quality: tiny_skia::FilterQuality::Bicubic,
         },
         node.transform
-            .map(|transform| node_matrix(node, transform))
+            .map(|transform| node_matrix(original, transform))
             .unwrap_or_default(),
         None,
     );
+}
+
+/// The part of the canvas a node's layer has to cover: everything its subtree
+/// can paint, before the node's own transform, snapped out to whole pixels and
+/// cut to the canvas. `None` when none of it lands on the canvas.
+fn layer_region(node: &SceneNode, canvas: &Pixmap) -> Option<Region> {
+    let mut extent = paint_extent(node);
+    // A transformed layer is resampled, and the filter reads a few pixels past
+    // what it draws. Past a layer's edge it repeats the edge, so the edge has
+    // to be transparent for the result to match a layer with no edge nearby.
+    if node
+        .transform
+        .is_some_and(|transform| !transform.is_identity())
+    {
+        extent = extent.grown(LAYER_FILTER_MARGIN, LAYER_FILTER_MARGIN);
+    }
+    let left = extent.left.floor().max(0.0);
+    let top = extent.top.floor().max(0.0);
+    let right = extent.right.ceil().min(canvas.width() as f32);
+    let bottom = extent.bottom.ceil().min(canvas.height() as f32);
+    if !(right > left && bottom > top) {
+        return None;
+    }
+    Some(Region {
+        x: left as i32,
+        y: top as i32,
+        width: (right - left) as u32,
+        height: (bottom - top) as u32,
+    })
+}
+
+/// Transparent pixels kept around a resampled layer's content.
+const LAYER_FILTER_MARGIN: f32 = 8.0;
+
+/// A box in canvas pixels, by its edges.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Extent {
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+}
+
+impl Extent {
+    fn of(bounds: crate::LayoutRect) -> Self {
+        Self {
+            left: bounds.x,
+            top: bounds.y,
+            right: bounds.x + bounds.width,
+            bottom: bounds.y + bounds.height,
+        }
+    }
+
+    fn grown(self, horizontal: f32, vertical: f32) -> Self {
+        Self {
+            left: self.left - horizontal,
+            top: self.top - vertical,
+            right: self.right + horizontal,
+            bottom: self.bottom + vertical,
+        }
+    }
+
+    fn union(self, other: Self) -> Self {
+        Self {
+            left: self.left.min(other.left),
+            top: self.top.min(other.top),
+            right: self.right.max(other.right),
+            bottom: self.bottom.max(other.bottom),
+        }
+    }
+
+    /// The box `transform` carries these edges to.
+    fn transformed(self, transform: Transform) -> Self {
+        let mut corners = [
+            tiny_skia::Point::from_xy(self.left, self.top),
+            tiny_skia::Point::from_xy(self.right, self.top),
+            tiny_skia::Point::from_xy(self.left, self.bottom),
+            tiny_skia::Point::from_xy(self.right, self.bottom),
+        ];
+        transform.map_points(&mut corners);
+        corners.iter().fold(
+            Self {
+                left: f32::INFINITY,
+                top: f32::INFINITY,
+                right: f32::NEG_INFINITY,
+                bottom: f32::NEG_INFINITY,
+            },
+            |extent, point| Self {
+                left: extent.left.min(point.x),
+                top: extent.top.min(point.y),
+                right: extent.right.max(point.x),
+                bottom: extent.bottom.max(point.y),
+            },
+        )
+    }
+}
+
+/// Everything a subtree can put on the canvas, before the node's own
+/// transform.
+///
+/// This decides how much of a layer survives, so it errs wide wherever paint
+/// can leave the box: strokes and outlines outside it, shadows and blurs by
+/// their full reach, and text, which can run past its box to the right and by
+/// a line or two below it.
+fn paint_extent(node: &SceneNode) -> Extent {
+    let mut own = Extent::of(node.bounds);
+
+    // Anti-aliasing, and strokes centred on or outside the edge.
+    let stroke = node
+        .borders
+        .iter()
+        .map(|border| {
+            let sides = &border.widths;
+            border
+                .width
+                .max(sides.top)
+                .max(sides.right)
+                .max(sides.bottom)
+                .max(sides.left)
+        })
+        .fold(0.0_f32, f32::max);
+    let outline = node
+        .outline
+        .as_ref()
+        .map_or(0.0, |outline| outline.offset.max(0.0) + outline.width);
+    let edge = 2.0 + stroke.max(outline);
+    own = own.grown(edge, edge);
+
+    for effect in &node.effects {
+        let reach = match effect.kind.as_str() {
+            // `radius` is twice the shadow's sigma.
+            "drop-shadow" | "glass" => {
+                blur::reach(effect.radius / 2.0) as f32
+                    + effect.spread.max(0.0)
+                    + effect.x.abs().max(effect.y.abs())
+            }
+            _ => 0.0,
+        };
+        own = own.grown(reach, reach);
+    }
+
+    if let PaintContent::Text { segments, .. } = &node.content {
+        let line = segments
+            .iter()
+            .map(|segment| {
+                segment
+                    .line_height
+                    .unwrap_or(0.0)
+                    .max(segment.font_size * 1.5)
+                    + segment.baseline_shift.abs()
+            })
+            .fold(0.0_f32, f32::max);
+        // A line that does not wrap runs out of its box to the right, as far
+        // as it is long; the painter stops a line below the box's bottom edge.
+        own = own.grown(line, line * 2.0);
+        own.right = f32::INFINITY;
+        if segments.iter().any(|segment| segment.letter_spacing < 0.0) {
+            own.left = f32::NEG_INFINITY;
+        }
+    }
+
+    let mut children: Option<Extent> = None;
+    for child in &node.children {
+        let mut extent = paint_extent(child);
+        if let Some(transform) = child.transform.filter(|it| !it.is_identity()) {
+            extent = extent.transformed(node_matrix(child, transform));
+        }
+        children = Some(children.map_or(extent, |it| it.union(extent)));
+    }
+    if let Some(mut children) = children {
+        // A clipping node holds its children inside its own box.
+        let clip = Extent::of(node.bounds);
+        if node.clip_x {
+            children.left = children.left.max(clip.left);
+            children.right = children.right.min(clip.right);
+        }
+        if node.clip_y {
+            children.top = children.top.max(clip.top);
+            children.bottom = children.bottom.min(clip.bottom);
+        }
+        if children.right > children.left && children.bottom > children.top {
+            own = own.union(children);
+        }
+    }
+
+    // Blurs of the finished subtree spread all of it.
+    let mut sigma = node
+        .effects
+        .iter()
+        .filter(|effect| effect.kind == "layer-blur")
+        .map(|effect| effect.radius)
+        .sum::<f32>();
+    if let Some(filter) = node.filter.as_deref() {
+        sigma += filter_blur_sigma(filter);
+    }
+    if sigma > 0.0 {
+        let reach = blur::reach(sigma) as f32;
+        own = own.grown(reach, reach);
+    }
+
+    own
+}
+
+/// The total sigma of the `blur()` functions in a CSS filter, which apply one
+/// after another and so reach as far as their sum.
+fn filter_blur_sigma(filter: &str) -> f32 {
+    filter
+        .match_indices("blur(")
+        .filter_map(|(start, _)| {
+            let argument = &filter[start + 5..];
+            let end = argument.find(')')?;
+            argument[..end]
+                .trim()
+                .trim_end_matches("px")
+                .parse::<f32>()
+                .ok()
+        })
+        .map(f32::abs)
+        .sum()
+}
+
+/// Moves a subtree by `dx`, `dy`. `bounds` is the only position a scene node
+/// carries; every other geometry — shadows, masks, clip shapes, a transform's
+/// origin — is relative to it.
+fn translate_subtree(node: &mut SceneNode, dx: f32, dy: f32) {
+    node.bounds.x += dx;
+    node.bounds.y += dy;
+    for child in &mut node.children {
+        translate_subtree(child, dx, dy);
+    }
 }
 
 /// Multiplies a mask into a layer's alpha.
@@ -5714,5 +5961,88 @@ mod tests {
         let bytes = std::fs::read(&path).expect("png readable");
         let _ = std::fs::remove_file(&path);
         assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn a_layer_covers_what_its_subtree_paints_not_the_whole_canvas() {
+        // A seven-pixel rotated square on a tall page: the layer it needs is a
+        // few pixels across, not the page.
+        let document = parse_gui_xml(
+            r##"<gui version="0.2">
+              <col w="400" h="12000" p="20">
+                <rect w="7" h="7" rotation="45" fill="#9747ff" />
+              </col>
+            </gui>"##,
+        )
+        .unwrap();
+        let layout = compute_taffy_layout(&document).unwrap();
+        let scene = build_scene(&document, &layout);
+        let canvas = Pixmap::new(400, 12000).unwrap();
+        let square = &scene.root.children[0];
+
+        let region = layer_region(square, &canvas).expect("it lands on the canvas");
+        assert!(
+            region.width < 40 && region.height < 40,
+            "{}×{}",
+            region.width,
+            region.height
+        );
+    }
+
+    #[test]
+    fn a_layer_still_holds_a_shadow_that_reaches_past_its_box() {
+        // Opacity puts the card through a layer; its shadow falls well outside
+        // the card and has to survive the layer being cut to size.
+        let faded = render(
+            &SHADOW_CARD
+                .replace(
+                    r##"<rect w="40" h="20" fill="#ffffff">"##,
+                    r##"<rect w="40" h="20" fill="#ffffff" opacity="0.99">"##,
+                )
+                .replace("EXTRA", ""),
+        );
+        let solid = render(&SHADOW_CARD.replace("EXTRA", ""));
+
+        let below_card = faded.get_pixel(40, 47);
+        assert!(below_card[0] < 250, "the shadow is painted: {below_card:?}");
+        // A 1% fade moves a pixel a few levels; a shadow cut off at the layer's
+        // edge would move it by a hundred or more.
+        for (x, y, pixel) in solid.enumerate_pixels() {
+            let other = faded.get_pixel(x, y);
+            for channel in 0..3 {
+                assert!(
+                    (pixel[channel] as i16 - other[channel] as i16).abs() <= 8,
+                    "({x}, {y}): {pixel:?} against {other:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_rotated_node_draws_the_same_far_down_a_page_as_at_its_top() {
+        let at = |top: f32| {
+            render(&format!(
+                r##"<gui version="0.2">
+                  <col w="60" h="{height}" fill="#262626" pt="{top}" pl="20.3">
+                    <rect w="7" h="7" rotation="45" fill="#9747ff" />
+                  </col>
+                </gui>"##,
+                height = top + 40.0,
+            ))
+        };
+        let near = at(20.5);
+        let far = at(12020.5);
+        for y in 15..35 {
+            for x in 15..35 {
+                let a = near.get_pixel(x, y);
+                let b = far.get_pixel(x, y + 12000);
+                for channel in 0..4 {
+                    assert!(
+                        (a[channel] as i16 - b[channel] as i16).abs() <= 1,
+                        "({x}, {y}): {a:?} against {b:?}"
+                    );
+                }
+            }
+        }
     }
 }
