@@ -242,6 +242,9 @@ cargo run -q -p dotgui-renderer --example render_png -- --version
 From WASM, `renderer_version()` and `supported_spec_version()` answer the same
 questions.
 
+[VERSIONING.md](VERSIONING.md) has the full rules and the checklists for
+implementing a new spec version and for a renderer-only release.
+
 ## Packages, Libraries and Slots
 
 Spec 0.3 ([RFC-0042], [RFC-0043], [RFC-0044]) changes what a `.gui` holds and
