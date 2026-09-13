@@ -17,6 +17,7 @@ mod issues;
 mod layout;
 mod model;
 mod package;
+mod page;
 mod paint;
 mod parser;
 mod scale;
@@ -37,9 +38,12 @@ pub use package::{
     read_gui_input, read_gui_package, read_gui_package_xml, GuiInput, GuiPackage, PackageDocument,
     PackageError, PackagePage, LIBRARY_FILENAME,
 };
+pub use page::Page;
 pub use paint::{
-    paint_scene_to_png, paint_scene_to_png_bytes, paint_scene_to_png_with_assets,
-    paint_scene_to_png_with_assets_and_fonts, paint_scene_to_rgba, PaintError,
+    paint_scene_region_to_png_bytes, paint_scene_region_to_rgba, paint_scene_to_png,
+    paint_scene_to_png_bytes, paint_scene_to_png_with_assets,
+    paint_scene_to_png_with_assets_and_fonts, paint_scene_to_rgba, scene_pixel_size, PaintError,
+    PixelRect,
 };
 pub use parser::{
     normalize_presence_attrs, parse_gui_xml, parse_gui_xml_with, parse_library,
