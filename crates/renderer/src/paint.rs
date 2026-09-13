@@ -62,6 +62,39 @@ pub fn paint_scene_to_png_bytes(
     asset_cache: Option<&AssetCache>,
     fonts: Option<&FontStore>,
 ) -> Result<Vec<u8>, PaintError> {
+    paint_scene_to_pixmap(scene, asset_cache, fonts)?
+        .encode_png()
+        .map_err(|err| PaintError::Png(err.to_string()))
+}
+
+/// The painted scene as straight (not premultiplied) RGBA, row by row — the
+/// layout of a browser's `ImageData`, so a host can put it on a canvas without
+/// encoding a PNG only to decode it again.
+pub fn paint_scene_to_rgba(
+    scene: &Scene,
+    asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
+) -> Result<(u32, u32, Vec<u8>), PaintError> {
+    let pixmap = paint_scene_to_pixmap(scene, asset_cache, fonts)?;
+    let (width, height) = (pixmap.width(), pixmap.height());
+    let mut data = pixmap.take();
+    for pixel in data.chunks_exact_mut(4) {
+        let alpha = pixel[3];
+        if alpha != 0 && alpha != 255 {
+            for channel in &mut pixel[..3] {
+                *channel = ((u16::from(*channel) * 255 + u16::from(alpha) / 2) / u16::from(alpha))
+                    .min(255) as u8;
+            }
+        }
+    }
+    Ok((width, height, data))
+}
+
+fn paint_scene_to_pixmap(
+    scene: &Scene,
+    asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
+) -> Result<Pixmap, PaintError> {
     let width = scene.root.bounds.width.ceil();
     let height = scene.root.bounds.height.ceil();
     if width <= 0.0 || height <= 0.0 || !width.is_finite() || !height.is_finite() {
@@ -71,11 +104,8 @@ pub fn paint_scene_to_png_bytes(
     let width = width as u32;
     let height = height as u32;
     let mut pixmap = Pixmap::new(width, height).ok_or(PaintError::Allocation { width, height })?;
-    let font = load_default_font();
-    paint_node(&mut pixmap, &scene.root, font.as_ref(), asset_cache, fonts);
-    pixmap
-        .encode_png()
-        .map_err(|err| PaintError::Png(err.to_string()))
+    paint_node(&mut pixmap, &scene.root, default_font(), asset_cache, fonts);
+    Ok(pixmap)
 }
 
 fn paint_scene(
@@ -671,13 +701,33 @@ fn paint_backdrop_effects(pixmap: &mut Pixmap, node: &SceneNode) {
                 // 180% — the lift that makes frosted glass read as glass
                 // rather than as fog. Applying it only to `glass` left every
                 // backdrop-blurred panel flat.
-                let mut backdrop = pixmap.clone();
+                //
+                // Only the part of the backdrop the mask can let through is
+                // copied: the node's box, grown by twice the blur's reach.
+                // Unlike a shadow, the backdrop is not transparent at the
+                // copy's edges, so the edge clamp reads the wrong pixels there
+                // — but each pass carries that error at most one reach inward,
+                // and the second reach keeps it clear of the node.
+                let Some(bounds) = tiny_skia::Rect::from_xywh(
+                    node.bounds.x,
+                    node.bounds.y,
+                    node.bounds.width,
+                    node.bounds.height,
+                ) else {
+                    continue;
+                };
+                let Some(region) = blur_region(bounds, effect.radius, 2, pixmap) else {
+                    continue;
+                };
+                let Some(mut backdrop) = copy_region(pixmap, &region) else {
+                    continue;
+                };
                 blur::blur(&mut backdrop, effect.radius);
                 saturate(&mut backdrop, effect.saturation / 100.0);
 
                 pixmap.draw_pixmap(
-                    0,
-                    0,
+                    region.x,
+                    region.y,
                     backdrop.as_ref(),
                     &PixmapPaint::default(),
                     Transform::identity(),
@@ -702,26 +752,26 @@ fn paint_drop_shadows(pixmap: &mut Pixmap, node: &SceneNode) {
         let Some(path) = node_shape_path(node, effect.spread, effect.x, effect.y) else {
             continue;
         };
-        let Some(mut shadow) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+        // CSS states shadow blur as a radius; the Gaussian sigma is half it.
+        let sigma = effect.radius / 2.0;
+        // Only the shape and the distance its blur can travel are painted and
+        // blurred, not the whole canvas: the same pixels, a fraction of the work.
+        let Some(region) = blur_region(path.bounds(), sigma, 1, pixmap) else {
+            continue;
+        };
+        let Some(mut shadow) = Pixmap::new(region.width, region.height) else {
             continue;
         };
 
         let mut paint = Paint::default();
         paint.set_color(color);
         paint.anti_alias = true;
-        shadow.fill_path(
-            &path,
-            &paint,
-            FillRule::Winding,
-            Transform::identity(),
-            None,
-        );
-        // CSS states shadow blur as a radius; the Gaussian sigma is half it.
-        blur::blur(&mut shadow, effect.radius / 2.0);
+        shadow.fill_path(&path, &paint, FillRule::Winding, region.to_local(), None);
+        blur::blur(&mut shadow, sigma);
 
         pixmap.draw_pixmap(
-            0,
-            0,
+            region.x,
+            region.y,
             shadow.as_ref(),
             &PixmapPaint::default(),
             Transform::identity(),
@@ -743,7 +793,23 @@ fn paint_inner_shadows(pixmap: &mut Pixmap, node: &SceneNode) {
         let Some(mask) = create_clip_mask(pixmap.width(), pixmap.height(), node) else {
             continue;
         };
-        let Some(mut shadow) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+        let sigma = effect.radius / 2.0;
+        // The mask keeps only what falls inside the node, so the node's box
+        // plus the blur's reach is all that can show. The flood colour runs to
+        // the region's edges, which the edge clamp repeats exactly as it would
+        // repeat the flood beyond them on a full canvas.
+        let Some(bounds) = tiny_skia::Rect::from_xywh(
+            node.bounds.x,
+            node.bounds.y,
+            node.bounds.width,
+            node.bounds.height,
+        ) else {
+            continue;
+        };
+        let Some(region) = blur_region(bounds, sigma, 1, pixmap) else {
+            continue;
+        };
+        let Some(mut shadow) = Pixmap::new(region.width, region.height) else {
             continue;
         };
 
@@ -756,20 +822,81 @@ fn paint_inner_shadows(pixmap: &mut Pixmap, node: &SceneNode) {
             cut.set_color(Color::TRANSPARENT);
             cut.blend_mode = tiny_skia::BlendMode::Clear;
             cut.anti_alias = true;
-            shadow.fill_path(&hole, &cut, FillRule::Winding, Transform::identity(), None);
+            shadow.fill_path(&hole, &cut, FillRule::Winding, region.to_local(), None);
         }
 
-        blur::blur(&mut shadow, effect.radius / 2.0);
+        blur::blur(&mut shadow, sigma);
 
         pixmap.draw_pixmap(
-            0,
-            0,
+            region.x,
+            region.y,
             shadow.as_ref(),
             &PixmapPaint::default(),
             Transform::identity(),
             Some(&mask),
         );
     }
+}
+
+/// A whole-pixel area of the canvas, for effects that paint off to one side.
+struct Region {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+impl Region {
+    /// Moves canvas coordinates into the region's own pixmap.
+    fn to_local(&self) -> Transform {
+        Transform::from_translate(-self.x as f32, -self.y as f32)
+    }
+}
+
+/// The part of the canvas a blurred shape can reach: its bounds grown by
+/// `reaches` times the blur's [`reach`](blur::reach), snapped out to whole
+/// pixels so the shape
+/// rasterises on the same grid it would on the canvas, and cut to the canvas.
+///
+/// Cutting to the canvas is what keeps this exact at its edges: there the
+/// region's edge is the canvas's edge, and the blur clamps at both the same.
+fn blur_region(
+    bounds: tiny_skia::Rect,
+    sigma: f32,
+    reaches: u32,
+    canvas: &Pixmap,
+) -> Option<Region> {
+    let reach = (blur::reach(sigma) * reaches) as f32;
+    let left = (bounds.left() - reach).floor().max(0.0);
+    let top = (bounds.top() - reach).floor().max(0.0);
+    let right = (bounds.right() + reach).ceil().min(canvas.width() as f32);
+    let bottom = (bounds.bottom() + reach).ceil().min(canvas.height() as f32);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    Some(Region {
+        x: left as i32,
+        y: top as i32,
+        width: (right - left) as u32,
+        height: (bottom - top) as u32,
+    })
+}
+
+/// A copy of one region of the canvas, as its own pixmap.
+fn copy_region(canvas: &Pixmap, region: &Region) -> Option<Pixmap> {
+    let mut copy = Pixmap::new(region.width, region.height)?;
+    copy.draw_pixmap(
+        -region.x,
+        -region.y,
+        canvas.as_ref(),
+        &PixmapPaint {
+            blend_mode: BlendMode::Source,
+            ..PixmapPaint::default()
+        },
+        Transform::identity(),
+        None,
+    );
+    Some(copy)
 }
 
 fn effect_color(effect: &Effect, node: &SceneNode) -> Option<Color> {
@@ -1673,6 +1800,14 @@ fn paint_text(
 
         line_top += line_height - trim;
     }
+}
+
+/// The face undeclared text falls back to, read from disk once per process
+/// rather than once per paint: it is a system UI font, several megabytes, and
+/// parsing it cost more than painting a small screen.
+fn default_font() -> Option<&'static Font> {
+    static DEFAULT_FONT: std::sync::OnceLock<Option<Font>> = std::sync::OnceLock::new();
+    DEFAULT_FONT.get_or_init(load_default_font).as_ref()
 }
 
 fn load_default_font() -> Option<Font> {

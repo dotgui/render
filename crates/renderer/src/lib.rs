@@ -18,21 +18,25 @@ mod model;
 mod package;
 mod paint;
 mod parser;
+mod scale;
 mod scene;
 mod taffy_layout;
 mod text;
 mod text_style;
 
 pub use assets::{AssetCache, AssetError, ResolvedAsset};
-pub use fonts::{FontAxes, FontError, FontFace, FontStore};
+pub use fonts::{
+    font_urls_in_stylesheet, google_stylesheet_urls, missing_system_font_files, FontAxes,
+    FontError, FontFace, FontStore,
+};
 pub use layout::{ApproxTextMeasurer, LayoutBox, LayoutRect, TextMeasurer};
 pub use model::{FontInfo, GuiDocument, GuiMetadata, GuiNode};
 pub use package::{read_gui_package, read_gui_package_xml, GuiPackage, PackageError};
 pub use paint::{
     paint_scene_to_png, paint_scene_to_png_bytes, paint_scene_to_png_with_assets,
-    paint_scene_to_png_with_assets_and_fonts, PaintError,
+    paint_scene_to_png_with_assets_and_fonts, paint_scene_to_rgba, PaintError,
 };
-pub use parser::{parse_gui_xml, ParseError};
+pub use parser::{normalize_presence_attrs, parse_gui_xml, ParseError};
 pub use scene::{
     build_scene, Border, BorderWidths, Effect, Fill, ImageMask, Outline, PaintContent, Scene,
     SceneNode, TextSegment, Transform2D,
