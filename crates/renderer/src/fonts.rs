@@ -1,7 +1,11 @@
 use crate::{AssetCache, AssetError, FontInfo, GuiDocument, TextMeasurer};
 use fontdue::{Font, FontSettings};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, path::PathBuf, rc::Rc};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 use thiserror::Error;
 use ttf_parser::{Face, Tag};
 
@@ -24,7 +28,7 @@ pub struct FontStore {
 }
 
 pub struct FontFace {
-    fallback: Font,
+    fallback: Rc<Font>,
     bytes: Rc<Vec<u8>>,
     weight: f32,
     collection_index: u32,
@@ -165,21 +169,21 @@ fn font_stretch_percentage(value: &str) -> Option<f32> {
 }
 
 impl FontFace {
+    #[cfg(test)]
     fn new(bytes: Vec<u8>, weight: &str, collection_index: u32) -> Result<Self, String> {
-        let fallback = Font::from_bytes(
-            bytes.clone(),
-            FontSettings {
-                collection_index,
-                ..FontSettings::default()
-            },
-        )
-        .map_err(|err| err.to_string())?;
-        Ok(Self {
-            fallback,
-            bytes: Rc::new(bytes),
+        let parsed = ParsedFont::new(bytes, collection_index)?;
+        Ok(Self::instance(&parsed, weight))
+    }
+
+    /// A face at `weight` over bytes already parsed, so the weights of one
+    /// variable file share a single parse.
+    fn instance(parsed: &ParsedFont, weight: &str) -> Self {
+        Self {
+            fallback: Rc::clone(&parsed.fallback),
+            bytes: Rc::clone(&parsed.bytes),
             weight: normalize_weight(weight).parse().unwrap_or(400.0),
-            collection_index,
-        })
+            collection_index: parsed.collection_index,
+        }
     }
 
     pub fn fallback(&self) -> &Font {
@@ -463,6 +467,9 @@ impl FontStore {
     pub fn from_document(document: &GuiDocument, cache: &AssetCache) -> Result<Self, FontError> {
         let mut store = Self::default();
         let mut loaded_fonts = BTreeMap::<(String, String), Rc<FontFace>>::new();
+        // Parsing is the expensive part — fontdue reads every glyph up front —
+        // and it does not depend on weight, so each file is parsed once.
+        let mut parsed_files = BTreeMap::<String, ParsedFont>::new();
         // Scanning the host's font directories is expensive, so it happens once
         // per family instead of once per declared weight/style combination.
         let mut system_faces = BTreeMap::<String, Vec<SystemFace>>::new();
@@ -488,7 +495,7 @@ impl FontStore {
                             .cloned()
                             .map(FontSource::Google),
                         "system" => {
-                            let resolved = resolve_system_family(family, &mut system_faces);
+                            let resolved = resolve_system_family(family, &mut system_faces, cache);
                             if let Some((matched_family, face)) = resolved {
                                 if matched_family != *family {
                                     store.warnings.push(format!(
@@ -519,14 +526,19 @@ impl FontStore {
                     let font = if let Some(font) = loaded_fonts.get(&loaded_key) {
                         Rc::clone(font)
                     } else {
-                        let (bytes, collection_index) = source.load(cache)?;
-                        let font =
-                            Rc::new(FontFace::new(bytes, weight, collection_index).map_err(
-                                |message| FontError::Load {
-                                    family: family.clone(),
-                                    message,
-                                },
-                            )?);
+                        let parsed = match parsed_files.entry(source.cache_key()) {
+                            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                            std::collections::btree_map::Entry::Vacant(entry) => {
+                                let (bytes, collection_index) = source.load(cache)?;
+                                entry.insert(ParsedFont::new(bytes, collection_index).map_err(
+                                    |message| FontError::Load {
+                                        family: family.clone(),
+                                        message,
+                                    },
+                                )?)
+                            }
+                        };
+                        let font = Rc::new(FontFace::instance(parsed, weight));
                         loaded_fonts.insert(loaded_key, Rc::clone(&font));
                         font
                     };
@@ -762,6 +774,27 @@ fn parse_font_face_css(css: &str) -> BTreeMap<(String, String), String> {
     faces
 }
 
+/// The Google Fonts stylesheet each `source="google"` family resolves through.
+///
+/// A host that cannot let the renderer fetch — a browser running the WASM
+/// build — fetches these itself and hands the bytes over under the same URL.
+pub fn google_stylesheet_urls(document: &GuiDocument) -> Vec<String> {
+    document
+        .metadata
+        .fonts
+        .iter()
+        .filter(|(_, info)| info.source == "google")
+        .filter_map(|(family, info)| {
+            google_css_url(family, &declared_weights(info), &declared_styles(info))
+        })
+        .collect()
+}
+
+/// The font files a Google Fonts stylesheet points at.
+pub fn font_urls_in_stylesheet(css: &str) -> Vec<String> {
+    parse_font_face_css(css).into_values().collect()
+}
+
 /// Picks the closest published face when the exact weight is not available.
 fn nearest_face<'a>(
     faces: &'a BTreeMap<(String, String), String>,
@@ -878,13 +911,39 @@ impl FontSource {
         match self {
             FontSource::Google(url) => Ok((cache.resolve(url)?.bytes, 0)),
             FontSource::System(face) => {
-                let bytes = std::fs::read(&face.path).map_err(|err| FontError::Load {
-                    family: face.path.display().to_string(),
-                    message: err.to_string(),
-                })?;
+                let bytes =
+                    read_system_font(&face.path, cache).map_err(|message| FontError::Load {
+                        family: face.path.display().to_string(),
+                        message,
+                    })?;
                 Ok((bytes, face.index))
             }
         }
+    }
+}
+
+/// One font file, read and parsed, shared by every weight drawn from it.
+struct ParsedFont {
+    fallback: Rc<Font>,
+    bytes: Rc<Vec<u8>>,
+    collection_index: u32,
+}
+
+impl ParsedFont {
+    fn new(bytes: Vec<u8>, collection_index: u32) -> Result<Self, String> {
+        let fallback = Font::from_bytes(
+            bytes.as_slice(),
+            FontSettings {
+                collection_index,
+                ..FontSettings::default()
+            },
+        )
+        .map_err(|err| err.to_string())?;
+        Ok(Self {
+            fallback: Rc::new(fallback),
+            bytes: Rc::new(bytes),
+            collection_index,
+        })
     }
 }
 
@@ -921,11 +980,12 @@ const SYSTEM_UI_FALLBACKS: &[&str] = &[
 fn resolve_system_family(
     family: &str,
     cache: &mut BTreeMap<String, Vec<SystemFace>>,
+    assets: &AssetCache,
 ) -> Option<(String, Vec<SystemFace>)> {
     for candidate in std::iter::once(family).chain(SYSTEM_UI_FALLBACKS.iter().copied()) {
         let faces = cache
             .entry(candidate.to_owned())
-            .or_insert_with(|| system_font_candidates(candidate));
+            .or_insert_with(|| system_font_candidates(candidate, assets));
         if !faces.is_empty() {
             return Some((candidate.to_owned(), faces.clone()));
         }
@@ -997,43 +1057,112 @@ fn family_slug(family: &str) -> String {
         .replace([' ', '-', '_', '.'], "")
 }
 
-/// Every face on the host that could serve `family`, in no particular order.
-fn system_font_candidates(family: &str) -> Vec<SystemFace> {
+/// The files on the host that might hold `family`: its aliases, then every
+/// font file whose name contains the family's.
+fn system_font_paths(family: &str, assets: &AssetCache) -> Vec<PathBuf> {
     let slug = family_slug(family);
+    let listed = assets.host_font_files();
+    let exists = |path: &Path| match listed {
+        Some(files) => files.iter().any(|file| file == path),
+        None => path.is_file(),
+    };
+
     let mut paths: Vec<PathBuf> = aliased_font_files(&slug)
         .iter()
         .map(PathBuf::from)
-        .filter(|path| path.is_file())
+        .filter(|path| exists(path))
         .collect();
 
-    for dir in system_font_dirs() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+    let files: Vec<PathBuf> = match listed {
+        Some(files) => files.to_vec(),
+        None => system_font_dirs()
+            .iter()
+            .filter_map(|dir| std::fs::read_dir(dir).ok())
+            .flat_map(|entries| entries.filter_map(Result::ok).map(|entry| entry.path()))
+            .filter(|path| path.is_file())
+            .collect(),
+    };
+
+    for path in files {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        for entry in entries.filter_map(Result::ok) {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            let lowercase = name.to_ascii_lowercase();
-            if !(lowercase.ends_with(".ttf")
-                || lowercase.ends_with(".otf")
-                || lowercase.ends_with(".ttc"))
-            {
-                continue;
-            }
-            if family_slug(name).contains(&slug) && !paths.contains(&path) {
-                paths.push(path);
-            }
+        let lowercase = name.to_ascii_lowercase();
+        if !(lowercase.ends_with(".ttf")
+            || lowercase.ends_with(".otf")
+            || lowercase.ends_with(".ttc"))
+        {
+            continue;
+        }
+        if family_slug(name).contains(&slug) && !paths.contains(&path) {
+            paths.push(path);
         }
     }
 
+    paths
+}
+
+/// A system font file's bytes: from disk, or from the host when it listed its
+/// files instead.
+fn read_system_font(path: &Path, assets: &AssetCache) -> Result<Vec<u8>, String> {
+    match assets.host_font_files() {
+        Some(_) => assets
+            .package_asset(&path.to_string_lossy())
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| "the host has not supplied this file".to_owned()),
+        None => std::fs::read(path).map_err(|err| err.to_string()),
+    }
+}
+
+/// The system font files a document needs whose bytes the host has not
+/// supplied yet, for a host that listed its files with
+/// [`AssetCache::with_host_font_files`].
+///
+/// Fallback depends on what a file holds — a filename can match without the
+/// family inside it matching — so each family's chain stops at the first
+/// candidate still waiting on bytes. A host fetches what this returns and asks
+/// again until it comes back empty. Without a host listing, fonts are read from
+/// disk and nothing is ever missing.
+pub fn missing_system_font_files(document: &GuiDocument, assets: &AssetCache) -> Vec<String> {
+    if assets.host_font_files().is_none() {
+        return Vec::new();
+    }
+
+    let mut missing = Vec::new();
+    for (family, _) in document
+        .metadata
+        .fonts
+        .iter()
+        .filter(|(_, info)| info.source == "system")
+    {
+        for candidate in std::iter::once(family.as_str()).chain(SYSTEM_UI_FALLBACKS.iter().copied())
+        {
+            let paths = system_font_paths(candidate, assets);
+            let waiting: Vec<String> = paths
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .filter(|key| !assets.has_package_asset(key))
+                .collect();
+            if !waiting.is_empty() {
+                missing.extend(waiting);
+                break;
+            }
+            if !system_font_candidates(candidate, assets).is_empty() {
+                break;
+            }
+        }
+    }
+    missing.sort();
+    missing.dedup();
+    missing
+}
+
+/// Every face on the host that could serve `family`, in no particular order.
+fn system_font_candidates(family: &str, assets: &AssetCache) -> Vec<SystemFace> {
+    let slug = family_slug(family);
     let mut candidates = Vec::new();
-    for path in paths {
-        let Ok(bytes) = std::fs::read(&path) else {
+    for path in system_font_paths(family, assets) {
+        let Ok(bytes) = read_system_font(&path, assets) else {
             continue;
         };
         let aliased = aliased_font_files(&slug)
@@ -1187,7 +1316,7 @@ mod tests {
         let bytes = std::fs::read(path).ok()?;
         let fallback = Font::from_bytes(bytes.clone(), FontSettings::default()).ok()?;
         Some(FontFace {
-            fallback,
+            fallback: Rc::new(fallback),
             bytes: Rc::new(bytes),
             weight: 400.0,
             collection_index: 0,
@@ -1657,7 +1786,7 @@ mod tests {
     #[test]
     #[cfg_attr(not(target_os = "macos"), ignore = "searches macOS font directories")]
     fn resolves_a_system_font_by_name() {
-        let candidates = system_font_candidates("Georgia");
+        let candidates = system_font_candidates("Georgia", &AssetCache::new("."));
         assert!(
             !candidates.is_empty(),
             "Georgia should be discoverable in the macOS font directories"
@@ -1666,11 +1795,57 @@ mod tests {
     }
 
     #[test]
+    fn a_host_listing_asks_for_files_instead_of_reading_disk() {
+        let document = crate::parse_gui_xml(
+            r#"<gui version="0.2"><fonts><font family="SF Pro Display" source="system" weights="400" styles="normal" /></fonts><col w="10" h="10" /></gui>"#,
+        )
+        .unwrap();
+        // A listing that names the alias files but supplies no bytes: whatever
+        // is on this machine's disk must not be read.
+        let listed = AssetCache::new(".").with_host_font_files(vec![
+            PathBuf::from("/System/Library/Fonts/SFNS.ttf"),
+            PathBuf::from("/System/Library/Fonts/SFNSItalic.ttf"),
+            PathBuf::from("/System/Library/Fonts/Supplemental/Georgia.ttf"),
+        ]);
+
+        assert_eq!(
+            missing_system_font_files(&document, &listed),
+            vec![
+                "/System/Library/Fonts/SFNS.ttf".to_owned(),
+                "/System/Library/Fonts/SFNSItalic.ttf".to_owned(),
+            ]
+        );
+        assert!(system_font_candidates("SF Pro Display", &listed).is_empty());
+
+        // Natively nothing is ever missing: fonts come off disk.
+        assert!(missing_system_font_files(&document, &AssetCache::new(".")).is_empty());
+    }
+
+    #[test]
+    #[cfg_attr(not(target_os = "macos"), ignore = "reads macOS font files")]
+    fn a_host_listing_resolves_from_supplied_bytes() {
+        let document = crate::parse_gui_xml(
+            r#"<gui version="0.2"><fonts><font family="SF Pro Display" source="system" weights="600" styles="normal" /></fonts><col w="10" h="10" /></gui>"#,
+        )
+        .unwrap();
+        let path = "/System/Library/Fonts/SFNS.ttf";
+        let mut assets = AssetCache::new(".").with_host_font_files(vec![PathBuf::from(path)]);
+        assets.insert_package_asset(path, std::fs::read(path).unwrap());
+
+        assert!(missing_system_font_files(&document, &assets).is_empty());
+        let store = FontStore::from_document(&document, &assets).unwrap();
+        assert!(store.warnings().is_empty(), "{:?}", store.warnings());
+        assert!(store
+            .get(Some("SF Pro Display"), Some("600"), Some("normal"))
+            .is_some());
+    }
+
+    #[test]
     #[cfg_attr(not(target_os = "macos"), ignore = "searches macOS font directories")]
     fn resolves_the_apple_ui_family_through_its_alias() {
         // "SF Pro Display" is stored as `.SF NS` in SFNS.ttf, so it is only
         // reachable through the alias table.
-        let candidates = system_font_candidates("SF Pro Display");
+        let candidates = system_font_candidates("SF Pro Display", &AssetCache::new("."));
         assert!(
             !candidates.is_empty(),
             "SF Pro Display should resolve to the system UI font"

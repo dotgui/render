@@ -11,6 +11,20 @@ use tiny_skia::Pixmap;
 ///
 /// `sigma` is the Gaussian standard deviation. CSS gives shadows a *blur
 /// radius*, which is twice sigma — a `box-shadow` of `16px` is `sigma = 8`.
+/// How far [`blur`] can carry a pixel from where it started, in whole pixels,
+/// along either axis: three box passes, none wider than `d + 1`.
+///
+/// A region whose content sits at least this far inside its edges blurs to the
+/// same pixels on its own as it would as part of a larger canvas, because the
+/// edge clamp only ever repeats pixels the blur has not reached.
+pub(crate) fn reach(sigma: f32) -> u32 {
+    if sigma <= 0.0 {
+        return 0;
+    }
+    let d = (sigma * 3.0 * (2.0 * std::f32::consts::PI).sqrt() / 4.0 + 0.5).floor() as u32;
+    3 * (d + 1) + 1
+}
+
 pub(crate) fn blur(pixmap: &mut Pixmap, sigma: f32) {
     if sigma <= 0.0 {
         return;

@@ -80,7 +80,10 @@ pub fn parse_gui_xml(xml: &str) -> Result<GuiDocument, ParseError> {
     })
 }
 
-fn normalize_presence_attrs(xml: &str) -> String {
+/// Gives presence attributes a value — `<frame clip>` becomes
+/// `<frame clip="true">` — so the markup is well-formed XML. `.gui` allows the
+/// bare form; XML parsers, this crate's and a browser's, do not.
+pub fn normalize_presence_attrs(xml: &str) -> String {
     let mut out = String::with_capacity(xml.len());
     let mut cursor = 0;
 
