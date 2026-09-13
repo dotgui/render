@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>gui canvas</title>
+<style>
+  :root {
+    --bg: #eceae4; --panel: #fbfaf7; --ink: #1d1c1a; --muted: #77736a; --line: #dedad1;
+    --accent: #2f7bff; --field: #ffffff; --error: #c2412d;
+    font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, sans-serif; color: var(--ink);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: grid; grid-template-rows: auto 1fr; background: var(--bg); }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 14px; margin: 0; font-weight: 650; }
+  header .stats { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+  select, input, textarea, button { font: inherit; color: inherit; }
+  select, input[type="text"] { background: var(--field); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; min-width: 0; }
+  button { background: var(--field); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; cursor: pointer; }
+  main { display: grid; grid-template-columns: 1fr 340px; min-height: 0; }
+  .stage { overflow: auto; display: grid; place-items: start center; padding: 32px; }
+  .stage gui-canvas { box-shadow: 0 1px 2px #0000000f, 0 8px 32px #00000014; }
+  aside { background: var(--panel); border-left: 1px solid var(--line); display: grid; grid-template-rows: 1fr auto; min-height: 0; }
+  .inspector { overflow: auto; padding: 14px 16px; }
+  .inspector h2, .source h2 { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+  .empty { color: var(--muted); padding: 24px 0; }
+  .crumbs { display: flex; flex-wrap: wrap; gap: 2px; margin-bottom: 12px; }
+  .crumbs button { border: 0; background: none; padding: 2px 4px; color: var(--muted); font-family: ui-monospace, monospace; font-size: 12px; }
+  .crumbs button:last-child { color: var(--accent); font-weight: 600; }
+  .crumbs span { color: var(--line); }
+  .field { display: grid; grid-template-columns: 64px 1fr; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .field label { color: var(--muted); }
+  .color { display: grid; grid-template-columns: 28px 1fr 1fr; gap: 6px; }
+  .color input[type="color"] { width: 28px; height: 28px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: none; }
+  .attrs { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 6px; align-items: center; margin-top: 4px; }
+  .attrs code { font-size: 12px; color: var(--muted); }
+  .attrs button { padding: 2px 6px; color: var(--muted); }
+  .add { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px; margin-top: 8px; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
+  .source { border-top: 1px solid var(--line); padding: 12px 16px 16px; }
+  .source textarea { width: 100%; height: 240px; resize: vertical; font: 11.5px/1.5 ui-monospace, monospace; background: var(--field); border: 1px solid var(--line); border-radius: 6px; padding: 8px; white-space: pre; }
+  @media (max-width: 900px) {
+    body { height: auto; }
+    main { grid-template-columns: 1fr; }
+    aside { border-left: 0; border-top: 1px solid var(--line); }
+    .stage { padding: 16px; }
+    header .stats { margin-left: 0; flex-basis: 100%; }
+    header { flex-wrap: wrap; }
+  }
+  .error { color: var(--error); font-size: 12px; min-height: 16px; margin-top: 6px; white-space: pre-wrap; }
+</style>
+<script type="module" src="/gui-canvas.js"></script>
+</head>
+<body>
+<header>
+  <h1>gui canvas</h1>
+  <select id="picker"><option value="">Inline sample</option></select>
+  <span class="stats" id="stats">loading renderer…</span>
+</header>
+<main>
+  <div class="stage">
+    <gui-canvas id="gui">
+      <script type="application/gui">
+<gui version="0.2" name="Upgrade card">
+  <tokens>
+    <color name="bg" value="#F4F1EA" />
+    <color name="card" value="#FFFFFF" />
+    <color name="ink" value="#1C1B19" />
+    <color name="muted" value="#6B675E" />
+    <color name="line" value="#E7E2D8" />
+    <color name="primary" value="#2F5BEA" />
+    <color name="on-primary" value="#FFFFFF" />
+    <color name="accent" value="#E8572A" />
+    <color name="success" value="#1F8A52" />
+  </tokens>
+  <styles>
+    <text-style name="Eyebrow" font-family="Inter" font-size="12" font-weight="600" line-height="16" letter-spacing="0.8" />
+    <text-style name="Title" font-family="Inter" font-size="24" font-weight="700" line-height="30" />
+    <text-style name="Body" font-family="Inter" font-size="15" font-weight="400" line-height="22" />
+    <text-style name="Price" font-family="Inter" font-size="32" font-weight="700" line-height="36" />
+    <text-style name="Button" font-family="Inter" font-size="15" font-weight="600" line-height="20" />
+  </styles>
+  <fonts>
+    <font family="Inter" source="google" weights="400 600 700" styles="normal" />
+  </fonts>
+  <col w="400" p="32" fill="$bg">
+    <col w="fill" p="24" gap="16" fill="$card" radius="20" border="1 $line">
+      <text text-style="Eyebrow" value="PRO PLAN" color="$accent" />
+      <text text-style="Title" value="Design without limits" color="$ink" w="fill" />
+      <text text-style="Body" value="Unlimited screens, shared libraries, and exports in every format." color="$muted" w="fill" />
+      <row gap="6" align="bottom-left">
+        <text text-style="Price" value="$12" color="$ink" />
+        <text text-style="Body" value="/ month" color="$muted" />
+      </row>
+      <row w="fill" h="48" radius="12" fill="$primary" align="middle-center">
+        <text text-style="Button" value="Upgrade now" color="$on-primary" />
+      </row>
+    </col>
+  </col>
+</gui>
+      </script>
+    </gui-canvas>
+  </div>
+  <aside>
+    <section class="inspector" id="inspector"></section>
+    <section class="source">
+      <h2>Source</h2>
+      <textarea id="source" spellcheck="false"></textarea>
+      <div class="error" id="error"></div>
+    </section>
+  </aside>
+</main>
+
+<script type="module">
+  const gui = document.getElementById('gui')
+  const inspector = document.getElementById('inspector')
+  const sourceArea = document.getElementById('source')
+  const errorLine = document.getElementById('error')
+  const stats = document.getElementById('stats')
+  const picker = document.getElementById('picker')
+  window.gui = gui // so gui.apply([...]) can be tried from the console
+
+  const COLOR_ATTRS = ['fill', 'color']
+  const esc = (text) => String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
+
+  // ── Document picker ──────────────────────────────────────────────────────
+  const inlineSource = gui.querySelector('script[type="application/gui"]').textContent
+  for (const name of await (await fetch('/examples')).json()) {
+    picker.append(new Option(name.replace(/\.guix?$/, ''), name))
+  }
+  picker.addEventListener('change', async () => {
+    errorLine.textContent = ''
+    if (picker.value) await gui.load(`/examples/${encodeURIComponent(picker.value)}`)
+    else gui.source = inlineSource
+    gui.select(null)
+  })
+
+  // ── Canvas → page ────────────────────────────────────────────────────────
+  gui.addEventListener('render', ({ detail }) => {
+    const ready = detail.wallMs == null ? '' : `on screen in ${detail.wallMs.toFixed(0)} ms · `
+    stats.textContent = `${ready}render ${detail.ms.toFixed(0)} ms · ${detail.width}×${detail.height} @${detail.density}x` +
+      (detail.complete ? '' : ' · loading images…') +
+      (detail.warnings.length ? ` · ${detail.warnings.length} warning(s)` : '')
+    const steps = Object.entries(detail.timings ?? {}).map(([step, ms]) => `${step}: ${ms.toFixed(0)} ms`)
+    stats.title = [...steps, ...detail.warnings].join('\n')
+    errorLine.textContent = ''
+    if (document.activeElement !== sourceArea) sourceArea.value = gui.source
+    if (!inspector.contains(document.activeElement)) drawInspector()
+  })
+  gui.addEventListener('error', ({ detail }) => { errorLine.textContent = detail.message })
+  gui.addEventListener('select', drawInspector)
+
+  // ── Source → canvas ──────────────────────────────────────────────────────
+  let typing
+  sourceArea.addEventListener('input', () => {
+    clearTimeout(typing)
+    typing = setTimeout(() => { gui.source = sourceArea.value }, 200)
+  })
+
+  // ── Inspector ────────────────────────────────────────────────────────────
+  function tokens(kind) {
+    return [...(gui.document?.querySelectorAll(`tokens > ${kind}`) ?? [])].map((t) => [t.getAttribute('name'), t.getAttribute('value')])
+  }
+
+  function hexFor(value) {
+    const resolved = value?.startsWith('$') ? Object.fromEntries(tokens('color'))[value.slice(1)] : value
+    return /^#[0-9a-f]{6}/i.test(resolved ?? '') ? resolved.slice(0, 7) : '#000000'
+  }
+
+  function drawInspector() {
+    const id = gui.selected
+    const element = gui.element(id)
+    if (!element) {
+      inspector.innerHTML = `<h2>Inspector</h2><div class="empty">Click anything on the canvas to select it.</div>`
+      return
+    }
+
+    const chain = []
+    for (let path = id; path; path = path.includes('.') ? path.slice(0, path.lastIndexOf('.')) : '') chain.unshift(path)
+    const crumbs = chain.map((path) => `<button data-select="${path}">${gui.element(path).localName}</button>`).join('<span>›</span>')
+
+    const colorTokens = tokens('color')
+    const colorField = (attr) => {
+      const value = element.getAttribute(attr) ?? ''
+      const options = colorTokens.map(([name]) => `<option value="$${esc(name)}" ${value === '$' + name ? 'selected' : ''}>$${esc(name)}</option>`).join('')
+      return `<div class="field"><label>${attr}</label><div class="color">
+        <input type="color" data-attr="${attr}" value="${hexFor(value)}" />
+        <input type="text" data-attr="${attr}" value="${esc(value)}" placeholder="none" />
+        <select data-attr="${attr}"><option value="">token…</option>${options}</select>
+      </div></div>`
+    }
+
+    const isText = element.localName === 'text'
+    const textValue = element.getAttribute('value') ?? element.textContent
+    const shown = new Set(['value', ...COLOR_ATTRS])
+    const rest = [...element.attributes].filter((a) => !shown.has(a.name))
+
+    inspector.innerHTML = `
+      <h2>Inspector</h2>
+      <div class="crumbs">${crumbs}</div>
+      ${isText ? `<div class="field"><label>text</label><input type="text" data-text value="${esc(textValue)}" /></div>` : ''}
+      ${COLOR_ATTRS.filter((attr) => attr === 'fill' || isText).map(colorField).join('')}
+      <hr />
+      <h2>Attributes</h2>
+      <div class="attrs">
+        ${rest.map((a) => `<code>${esc(a.name)}</code><input type="text" data-attr="${esc(a.name)}" value="${esc(a.value)}" /><button data-remove="${esc(a.name)}" title="Remove">×</button>`).join('')}
+      </div>
+      <form class="add"><input name="name" placeholder="attribute" /><input name="value" placeholder="value" /><button>Add</button></form>`
+  }
+
+  const set = (attr, value) => gui.apply([{ op: 'set', node: gui.selected, attr, value: value === '' ? null : value }])
+
+  inspector.addEventListener('input', (event) => {
+    const target = event.target
+    if (target.matches('[data-text]')) gui.apply([{ op: 'text', node: gui.selected, value: target.value }])
+    else if (target.matches('input[data-attr]')) set(target.dataset.attr, target.value)
+  })
+  inspector.addEventListener('change', (event) => {
+    const target = event.target
+    if (target.matches('select[data-attr]') && target.value) {
+      set(target.dataset.attr, target.value)
+      drawInspector()
+    }
+  })
+  inspector.addEventListener('click', (event) => {
+    const target = event.target.closest('button')
+    if (!target) return
+    if (target.dataset.select) gui.select(target.dataset.select)
+    if (target.dataset.remove) { set(target.dataset.remove, ''); drawInspector() }
+  })
+  inspector.addEventListener('submit', (event) => {
+    event.preventDefault()
+    const form = new FormData(event.target)
+    if (form.get('name')) { set(form.get('name'), form.get('value')); drawInspector() }
+  })
+  inspector.addEventListener('focusout', () => setTimeout(() => {
+    if (!inspector.contains(document.activeElement)) drawInspector()
+  }))
+
+  drawInspector()
+</script>
+</body>
+</html>
