@@ -1,0 +1,6 @@
+<gui version="0.2" name="Hello world">
+  <col w="240" p="24" gap="8" fill="#FFFFFF">
+    <text value="Hello, world" font-size="20" font-weight="700" color="#1C1B19" />
+    <text value="A single document need not be called design.guix." font-size="13" color="#6B675E" w="fill" />
+  </col>
+</gui>

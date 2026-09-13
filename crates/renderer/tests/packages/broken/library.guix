@@ -1,0 +1,15 @@
+<gui version="0.3" name="Declarations only">
+  <tokens>
+    <color name="primary" value="#2F5BEA" />
+  </tokens>
+  <components>
+    <component id="comp-toolbar" name="Toolbar">
+      <row w="fill" p="8" gap="8">
+        <row slot="items" slot-accept="comp-tool" gap="8" />
+      </row>
+    </component>
+    <component id="comp-tool" name="Tool">
+      <rect w="24" h="24" radius="6" fill="$primary" />
+    </component>
+  </components>
+</gui>

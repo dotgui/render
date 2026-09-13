@@ -1,0 +1,9 @@
+<gui version="0.3" name="Breaks slot-accept">
+  <col w="200" p="16">
+    <instance component="comp-toolbar">
+      <slot name="items">
+        <text value="not a tool" />
+      </slot>
+    </instance>
+  </col>
+</gui>

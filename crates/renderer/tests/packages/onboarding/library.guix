@@ -1,0 +1,131 @@
+<gui version="0.3" name="Onboarding library">
+  <tokens>
+    <color name="bg" value="#F4F1EA" />
+    <color name="surface" value="#FFFFFF" />
+    <color name="ink" value="#1C1B19" />
+    <color name="muted" value="#6B675E" />
+    <color name="line" value="#E7E2D8" />
+    <color name="primary" value="#2F5BEA" />
+    <color name="on-primary" value="#FFFFFF" />
+    <color name="accent" value="#E8572A" />
+  </tokens>
+  <fonts>
+    <font family="Inter" source="google" weights="400 500 600 700" styles="normal" />
+  </fonts>
+  <styles>
+    <text-style name="Title" font-family="Inter" font-size="28" font-weight="700" line-height="34" />
+    <text-style name="Body" font-family="Inter" font-size="15" font-weight="400" line-height="22" />
+    <text-style name="Label" font-family="Inter" font-size="15" font-weight="600" line-height="20" />
+    <text-style name="Caption" font-family="Inter" font-size="12" font-weight="500" line-height="16" />
+  </styles>
+  <components>
+    <component-set id="compset-button" name="Button">
+      <variant id="comp-button-primary" name="Button/Primary">
+        <props>
+          <prop name="label" type="string" target="label" />
+        </props>
+        <row h="48" p="0 20" radius="12" fill="$primary" align="middle-center">
+          <text id="label" text-style="Label" value="Continue" color="$on-primary" />
+        </row>
+      </variant>
+      <variant id="comp-button-secondary" name="Button/Secondary">
+        <props>
+          <prop name="label" type="string" target="label" />
+        </props>
+        <row h="48" p="0 20" radius="12" fill="$surface" border="1 $line" align="middle-center">
+          <text id="label" text-style="Label" value="Cancel" color="$ink" />
+        </row>
+      </variant>
+    </component-set>
+
+    <component-set id="compset-tab" name="Tab">
+      <variant id="comp-tab" name="Tab/Default">
+        <props>
+          <prop name="label" type="string" target="label" />
+        </props>
+        <col w="fill" gap="4" align="top-center">
+          <rect w="24" h="24" radius="6" fill="$line" />
+          <text id="label" text-style="Caption" value="Tab" color="$muted" />
+        </col>
+      </variant>
+      <variant id="comp-tab-active" name="Tab/Active">
+        <props>
+          <prop name="label" type="string" target="label" />
+        </props>
+        <col w="fill" gap="4" align="top-center">
+          <rect w="24" h="24" radius="6" fill="$primary" />
+          <text id="label" text-style="Caption" value="Tab" color="$primary" />
+        </col>
+      </variant>
+    </component-set>
+
+    <component id="comp-card" name="Card">
+      <props>
+        <prop name="heading" type="string" target="heading" />
+      </props>
+      <col w="fill" p="16" gap="8" radius="16" fill="$surface" border="1 $line">
+        <text id="heading" text-style="Label" value="Card" color="$ink" />
+        <col slot="content" w="fill" gap="6" />
+      </col>
+    </component>
+
+    <!-- The scaffold every screen shares: only its middle differs. -->
+    <component id="comp-screen" name="Screen">
+      <props>
+        <prop name="title" type="string" target="title" />
+      </props>
+      <col w="390" h="844" fill="$bg">
+        <row w="fill" h="44" p="0 24" align="middle-left">
+          <text text-style="Label" value="9:41" color="$ink" />
+        </row>
+        <col w="fill" p="16 24 0">
+          <text id="title" text-style="Title" value="Title" color="$ink" w="fill" />
+        </col>
+        <col slot="body" w="fill" h="fill" p="24" gap="16" />
+        <col slot="actions" w="fill" p="0 24 16" gap="12">
+          <instance component="comp-button-primary" label="Continue" w="fill" />
+        </col>
+        <row slot="tabs" slot-accept="compset-tab" slot-min="2" slot-max="5" w="fill" p="8 16 24" gap="8" fill="$surface" border="1 $line" />
+      </col>
+    </component>
+  </components>
+
+  <!-- Local to this file: the library's own page, a style guide for the above. -->
+  <col w="900" p="48" gap="32" fill="$bg">
+    <text text-style="Title" value="Onboarding library" color="$ink" />
+    <col gap="12">
+      <text text-style="Label" value="Colour" color="$muted" />
+      <row gap="12">
+        <rect w="64" h="64" radius="12" fill="$bg" border="1 $line" />
+        <rect w="64" h="64" radius="12" fill="$surface" border="1 $line" />
+        <rect w="64" h="64" radius="12" fill="$ink" />
+        <rect w="64" h="64" radius="12" fill="$muted" />
+        <rect w="64" h="64" radius="12" fill="$primary" />
+        <rect w="64" h="64" radius="12" fill="$accent" />
+      </row>
+    </col>
+    <col gap="12">
+      <text text-style="Label" value="Buttons" color="$muted" />
+      <row gap="12">
+        <instance component="comp-button-primary" label="Primary" />
+        <instance component="comp-button-secondary" label="Secondary" />
+      </row>
+    </col>
+    <col gap="12">
+      <text text-style="Label" value="Tabs" color="$muted" />
+      <row w="360" gap="8">
+        <instance component="comp-tab-active" label="Home" />
+        <instance component="comp-tab" label="Search" />
+        <instance component="comp-tab" label="Profile" />
+      </row>
+    </col>
+    <col w="360" gap="12">
+      <text text-style="Label" value="Card" color="$muted" />
+      <instance component="comp-card" heading="Card with content">
+        <slot name="content">
+          <text text-style="Body" value="Anything can go in a card's content slot." color="$muted" w="fill" />
+        </slot>
+      </instance>
+    </col>
+  </col>
+</gui>

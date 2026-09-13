@@ -25,12 +25,14 @@
 
 use dotgui_renderer::{
     build_scene, compute_taffy_layout_with_text, paint_scene_to_png_bytes, parse_gui_xml,
-    read_gui_package, AssetCache, FontStore,
+    read_gui_package, AssetCache, FontStore, GuiDocument,
 };
 use std::{
     fs,
     path::{Path, PathBuf},
 };
+
+mod common;
 
 /// Per-channel difference written off as encoder/antialiasing jitter.
 const CHANNEL_TOLERANCE: u8 = 2;
@@ -41,6 +43,24 @@ const MAX_DIFFERING_FRACTION: f64 = 0.001;
 fn run_golden_test(gui_filename: &str, golden_name: &str) {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root_dir = manifest_dir.parent().unwrap().parent().unwrap();
+
+    // `package#document` names one page of a package directory under
+    // `tests/packages`, resolved against that package's library.
+    if let Some((package, page)) = gui_filename.split_once('#') {
+        let bytes = common::zip_dir(&manifest_dir.join("tests").join("packages").join(package));
+        let package = read_gui_package(&bytes).expect("fixture package opens");
+        let document = package
+            .pages()
+            .into_iter()
+            .find(|candidate| candidate.name == page)
+            .unwrap_or_else(|| panic!("{package:?} has no page {page}"))
+            .document
+            .unwrap_or_else(|err| panic!("{gui_filename} did not parse: {err}"));
+        let cache =
+            AssetCache::new(root_dir.join(".gui-render/cache")).with_package_assets(package.assets);
+        return compare_with_golden(&manifest_dir, &document, &cache, golden_name);
+    }
+
     // Example packages and the hand-written fixtures are both valid inputs:
     // the fixtures are the only full-page reference for features no example
     // uses, which is most of what has been added recently.
@@ -78,7 +98,16 @@ fn run_golden_test(gui_filename: &str, golden_name: &str) {
     let document = parse_gui_xml(&xml).expect("failed to parse gui xml");
     let cache =
         AssetCache::new(root_dir.join(".gui-render/cache")).with_package_assets(package_assets);
-    let fonts = FontStore::from_document(&document, &cache)
+    compare_with_golden(&manifest_dir, &document, &cache, golden_name);
+}
+
+fn compare_with_golden(
+    manifest_dir: &Path,
+    document: &GuiDocument,
+    cache: &AssetCache,
+    golden_name: &str,
+) {
+    let fonts = FontStore::from_document(document, cache)
         .unwrap_or_else(|err| panic!("{golden_name} declares fonts that did not resolve: {err}"));
     assert!(
         document.metadata.fonts.is_empty() || !fonts.is_empty(),
@@ -89,9 +118,9 @@ fn run_golden_test(gui_filename: &str, golden_name: &str) {
     check_font_fingerprints(&goldens_dir, golden_name, &fonts);
 
     let layout =
-        compute_taffy_layout_with_text(&document, &fonts).expect("failed to compute layout");
-    let scene = build_scene(&document, &layout);
-    let generated_png = paint_scene_to_png_bytes(&scene, Some(&cache), Some(&fonts))
+        compute_taffy_layout_with_text(document, &fonts).expect("failed to compute layout");
+    let scene = build_scene(document, &layout);
+    let generated_png = paint_scene_to_png_bytes(&scene, Some(cache), Some(&fonts))
         .expect("failed to paint scene to png bytes");
 
     let golden_path = goldens_dir.join(format!("{golden_name}.png"));
@@ -235,3 +264,26 @@ golden_test!(
     "line-height-normal"
 );
 golden_test!(golden_text_case, "text-case.guix", "text-case");
+
+// Spec 0.3: slots, and the pages of a package that shares a library.
+golden_test!(golden_slots, "slots.guix", "slots");
+golden_test!(
+    golden_onboarding_welcome,
+    "onboarding#01-welcome.guix",
+    "onboarding-01-welcome"
+);
+golden_test!(
+    golden_onboarding_signup,
+    "onboarding#02-signup.guix",
+    "onboarding-02-signup"
+);
+golden_test!(
+    golden_onboarding_done,
+    "onboarding#03-done.guix",
+    "onboarding-03-done"
+);
+golden_test!(
+    golden_onboarding_library,
+    "onboarding#library.guix",
+    "onboarding-library"
+);

@@ -1,0 +1,37 @@
+<gui version="0.3" name="Sign up">
+  <!-- Screen-specific declarations stay local; the library is untouched. -->
+  <tokens>
+    <color name="field" value="#FAF8F3" />
+  </tokens>
+  <components>
+    <component id="comp-field" name="Field">
+      <props>
+        <prop name="label" type="string" target="label" />
+        <prop name="placeholder" type="string" target="placeholder" />
+      </props>
+      <col w="fill" gap="6">
+        <text id="label" text-style="Caption" value="Label" color="$muted" />
+        <row w="fill" h="48" p="0 14" radius="10" fill="$field" border="1 $line" align="middle-left">
+          <text id="placeholder" text-style="Body" value="Placeholder" color="$muted" />
+        </row>
+      </col>
+    </component>
+  </components>
+  <col w="390" h="844">
+    <instance component="comp-screen" title="Create your account">
+      <slot name="body">
+        <instance component="comp-field" label="Email" placeholder="you@example.com" />
+        <instance component="comp-field" label="Password" placeholder="At least 8 characters" />
+        <instance component="comp-card" heading="Why we ask">
+          <slot name="content">
+            <text text-style="Body" value="Your email is how friends find your trips." color="$muted" w="fill" />
+          </slot>
+        </instance>
+      </slot>
+      <slot name="actions">
+        <instance component="comp-button-primary" label="Create account" w="fill" />
+        <instance component="comp-button-secondary" label="I already have an account" w="fill" />
+      </slot>
+    </instance>
+  </col>
+</gui>

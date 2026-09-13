@@ -14,12 +14,18 @@
 //! UPDATE_SNAPSHOTS=1 cargo test -p dotgui-renderer --test layout_snapshots
 //! ```
 
-use dotgui_renderer::{compute_taffy_layout, parse_gui_xml, read_gui_package_xml, LayoutBox};
+use dotgui_renderer::{
+    compute_taffy_layout, parse_gui_xml, read_gui_package, read_gui_package_xml, GuiDocument,
+    LayoutBox,
+};
 use std::{
     fmt::Write as _,
     fs,
     path::{Path, PathBuf},
 };
+
+mod common;
+use common::zip_dir;
 
 #[test]
 fn layout_matches_committed_snapshots() {
@@ -63,18 +69,26 @@ fn layout_matches_committed_snapshots() {
         fs::create_dir_all(&snapshots_dir).expect("snapshots dir is creatable");
     }
 
-    let mut failures = Vec::new();
-    for path in &example_paths {
-        let name = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .expect("example has a usable file name");
+    let mut snapshots: Vec<(String, String)> = example_paths
+        .iter()
+        .map(|path| {
+            let name = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .expect("example has a usable file name");
+            (name.to_owned(), snapshot_for(path))
+        })
+        .collect();
+    snapshots.extend(package_snapshots(
+        &manifest_dir.join("tests").join("packages"),
+    ));
 
-        let rendered = snapshot_for(path);
+    let mut failures = Vec::new();
+    for (name, rendered) in &snapshots {
         let snapshot_path = snapshots_dir.join(format!("{name}.txt"));
 
         if updating {
-            fs::write(&snapshot_path, &rendered).expect("snapshot is writable");
+            fs::write(&snapshot_path, rendered).expect("snapshot is writable");
             continue;
         }
 
@@ -86,10 +100,10 @@ fn layout_matches_committed_snapshots() {
             )
         });
 
-        if expected != rendered {
+        if expected != *rendered {
             failures.push(format!(
                 "{name}\n{}",
-                first_difference(&expected, &rendered)
+                first_difference(&expected, rendered)
             ));
         }
     }
@@ -117,12 +131,53 @@ fn snapshot_for(path: &Path) -> String {
     };
     let document =
         parse_gui_xml(&xml).unwrap_or_else(|err| panic!("{} did not parse: {err}", path.display()));
-    let layout = compute_taffy_layout(&document)
-        .unwrap_or_else(|err| panic!("{} did not lay out: {err}", path.display()));
+    layout_text(&document, &path.display().to_string())
+}
+
+fn layout_text(document: &GuiDocument, name: &str) -> String {
+    let layout = compute_taffy_layout(document)
+        .unwrap_or_else(|err| panic!("{name} did not lay out: {err}"));
 
     let mut out = String::new();
+    for warning in &document.warnings {
+        let _ = writeln!(out, "warning: {warning}");
+    }
     write_node(&mut out, &layout, 0);
     out
+}
+
+/// One snapshot per page of every package directory under `dir`.
+fn package_snapshots(dir: &Path) -> Vec<(String, String)> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut packages: Vec<PathBuf> = entries
+        .map(|entry| entry.expect("package entry is readable").path())
+        .filter(|path| path.is_dir())
+        .collect();
+    packages.sort();
+
+    let mut snapshots = Vec::new();
+    for package_dir in packages {
+        let package_name = package_dir
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let package = read_gui_package(&zip_dir(&package_dir))
+            .unwrap_or_else(|err| panic!("{package_name} did not open as a package: {err}"));
+
+        for page in package.pages() {
+            let stem = page.name.trim_end_matches(".guix");
+            let name = format!("{package_name}.{stem}");
+            let text = match &page.document {
+                Ok(document) => layout_text(document, &name),
+                Err(err) => format!("error: {err}\n"),
+            };
+            snapshots.push((name, text));
+        }
+    }
+    snapshots
 }
 
 /// One line per node: indented tag, position, and size.
