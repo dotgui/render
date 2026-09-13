@@ -13,6 +13,7 @@ mod filter;
 mod fonts;
 mod gradient;
 mod grid;
+mod issues;
 mod layout;
 mod model;
 mod package;
@@ -23,6 +24,7 @@ mod scene;
 mod taffy_layout;
 mod text;
 mod text_style;
+mod validate;
 
 pub use assets::{AssetCache, AssetError, ResolvedAsset};
 pub use fonts::{
@@ -31,12 +33,18 @@ pub use fonts::{
 };
 pub use layout::{ApproxTextMeasurer, LayoutBox, LayoutRect, TextMeasurer};
 pub use model::{FontInfo, GuiDocument, GuiMetadata, GuiNode};
-pub use package::{read_gui_package, read_gui_package_xml, GuiPackage, PackageError};
+pub use package::{
+    read_gui_input, read_gui_package, read_gui_package_xml, GuiInput, GuiPackage, PackageDocument,
+    PackageError, PackagePage, LIBRARY_FILENAME,
+};
 pub use paint::{
     paint_scene_to_png, paint_scene_to_png_bytes, paint_scene_to_png_with_assets,
     paint_scene_to_png_with_assets_and_fonts, paint_scene_to_rgba, PaintError,
 };
-pub use parser::{normalize_presence_attrs, parse_gui_xml, ParseError};
+pub use parser::{
+    normalize_presence_attrs, parse_gui_xml, parse_gui_xml_with, parse_library,
+    parse_standalone_xml, DocumentForm, Library, ParseError, ParseOptions, SUPPORTED_VERSION,
+};
 pub use scene::{
     build_scene, Border, BorderWidths, Effect, Fill, ImageMask, Outline, PaintContent, Scene,
     SceneNode, TextSegment, Transform2D,

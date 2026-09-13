@@ -65,7 +65,11 @@ fn run_golden_test(gui_filename: &str, golden_name: &str) {
         || bytes.starts_with(b"PK\x03\x04")
     {
         let package = read_gui_package(&bytes).expect("failed to open packaged assets");
-        (package.xml, package.assets)
+        let xml = package
+            .single_document()
+            .and_then(|document| document.xml().map(ToOwned::to_owned))
+            .expect("golden packages hold one document");
+        (xml, package.assets)
     } else {
         let xml = String::from_utf8(bytes).expect("invalid utf8 xml");
         (xml, Default::default())

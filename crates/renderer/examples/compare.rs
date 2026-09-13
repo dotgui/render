@@ -179,8 +179,13 @@ fn layout_native(input: &Path) -> Result<NativeLayout, String> {
 
     let (xml, assets) =
         if input.extension().is_some_and(|ext| ext == "gui") || bytes.starts_with(b"PK\x03\x04") {
+            // kit renders one document, so only single-document packages compare.
             let package = read_gui_package(&bytes).map_err(|err| err.to_string())?;
-            (package.xml, package.assets)
+            let xml = package
+                .single_document()
+                .and_then(|document| document.xml().map(ToOwned::to_owned))
+                .map_err(|err| err.to_string())?;
+            (xml, package.assets)
         } else {
             let xml = String::from_utf8(bytes).map_err(|err| err.to_string())?;
             (xml, Default::default())
