@@ -56,6 +56,7 @@
 <header>
   <h1>gui canvas</h1>
   <select id="picker"><option value="">Inline sample</option></select>
+  <select id="pages" hidden title="Page"></select>
   <span class="stats" id="stats">loading renderer…</span>
 </header>
 <main>
@@ -119,6 +120,7 @@
   const errorLine = document.getElementById('error')
   const stats = document.getElementById('stats')
   const picker = document.getElementById('picker')
+  const pagePicker = document.getElementById('pages')
   window.gui = gui // so gui.apply([...]) can be tried from the console
 
   const COLOR_ATTRS = ['fill', 'color']
@@ -132,8 +134,20 @@
   picker.addEventListener('change', async () => {
     errorLine.textContent = ''
     if (picker.value) await gui.load(`/examples/${encodeURIComponent(picker.value)}`)
-    else gui.source = inlineSource
+    else await gui.loadMarkup(inlineSource)
     gui.select(null)
+  })
+
+  // ── Page picker, for a package of several documents ──────────────────────
+  gui.addEventListener('pages', ({ detail: { pages, page } }) => {
+    pagePicker.replaceChildren(...pages.map(({ name, library }) =>
+      new Option(library ? `Library — ${name}` : name.replace(/\.guix$/, ''), name)))
+    pagePicker.value = page ?? ''
+    pagePicker.hidden = pages.length < 2
+  })
+  pagePicker.addEventListener('change', () => {
+    errorLine.textContent = ''
+    gui.page = pagePicker.value
   })
 
   // ── Canvas → page ────────────────────────────────────────────────────────

@@ -222,6 +222,7 @@ dependencies = [
  "dotgui-renderer",
  "serde_json",
  "wasm-bindgen",
+ "zip",
 ]
 
 [[package]]
