@@ -6,6 +6,7 @@
 
 mod assets;
 mod blur;
+mod changes;
 mod clip_path;
 mod components;
 pub mod coverage;
@@ -28,6 +29,7 @@ mod text_style;
 mod validate;
 
 pub use assets::{AssetCache, AssetError, ResolvedAsset};
+pub use changes::{scene_changes, SceneChanges};
 pub use fonts::{
     font_urls_in_stylesheet, google_stylesheet_urls, missing_system_font_files, FontAxes,
     FontError, FontFace, FontStore,

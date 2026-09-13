@@ -228,7 +228,7 @@ const REGION_EDGE_MARGIN: u32 = 4;
 
 /// How far outside a region the pixels a backdrop blur reads can lie: each
 /// blur reads twice its reach, and one backdrop can sit on another.
-fn backdrop_margin(node: &SceneNode) -> u32 {
+pub(crate) fn backdrop_margin(node: &SceneNode) -> u32 {
     let own = node
         .effects
         .iter()
@@ -478,19 +478,19 @@ fn snap_region(extent: Extent, limit: Extent) -> Option<Region> {
 }
 
 /// Transparent pixels kept around a resampled layer's content.
-const LAYER_FILTER_MARGIN: f32 = 8.0;
+pub(crate) const LAYER_FILTER_MARGIN: f32 = 8.0;
 
 /// A box in canvas pixels, by its edges.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Extent {
-    left: f32,
-    top: f32,
-    right: f32,
-    bottom: f32,
+pub(crate) struct Extent {
+    pub(crate) left: f32,
+    pub(crate) top: f32,
+    pub(crate) right: f32,
+    pub(crate) bottom: f32,
 }
 
 impl Extent {
-    fn of(bounds: crate::LayoutRect) -> Self {
+    pub(crate) fn of(bounds: crate::LayoutRect) -> Self {
         Self {
             left: bounds.x,
             top: bounds.y,
@@ -499,7 +499,7 @@ impl Extent {
         }
     }
 
-    fn grown(self, horizontal: f32, vertical: f32) -> Self {
+    pub(crate) fn grown(self, horizontal: f32, vertical: f32) -> Self {
         Self {
             left: self.left - horizontal,
             top: self.top - vertical,
@@ -517,7 +517,7 @@ impl Extent {
         }
     }
 
-    fn intersection(self, other: Self) -> Self {
+    pub(crate) fn intersection(self, other: Self) -> Self {
         Self {
             left: self.left.max(other.left),
             top: self.top.max(other.top),
@@ -528,7 +528,7 @@ impl Extent {
 
     /// Whether the two share any area. An extent that lost its numbers to a
     /// transform counts as overlapping, so doubt paints rather than culls.
-    fn overlaps(self, other: Self) -> bool {
+    pub(crate) fn overlaps(self, other: Self) -> bool {
         let inside = self.left < other.right
             && self.right > other.left
             && self.top < other.bottom
@@ -539,7 +539,7 @@ impl Extent {
         inside || !known
     }
 
-    fn union(self, other: Self) -> Self {
+    pub(crate) fn union(self, other: Self) -> Self {
         Self {
             left: self.left.min(other.left),
             top: self.top.min(other.top),
@@ -549,7 +549,7 @@ impl Extent {
     }
 
     /// The box `transform` carries these edges to.
-    fn transformed(self, transform: Transform) -> Self {
+    pub(crate) fn transformed(self, transform: Transform) -> Self {
         let mut corners = [
             tiny_skia::Point::from_xy(self.left, self.top),
             tiny_skia::Point::from_xy(self.right, self.top),
@@ -581,7 +581,7 @@ impl Extent {
 /// can leave the box: strokes and outlines outside it, shadows and blurs by
 /// their full reach, and text, which can run past its box to the right and by
 /// a line or two below it.
-fn paint_extent(node: &SceneNode) -> Extent {
+pub(crate) fn paint_extent(node: &SceneNode) -> Extent {
     let mut own = Extent::of(node.bounds);
 
     // Anti-aliasing, and strokes centred on or outside the edge.
@@ -618,7 +618,17 @@ fn paint_extent(node: &SceneNode) -> Extent {
         own = own.grown(reach, reach);
     }
 
-    if let PaintContent::Text { segments, .. } = &node.content {
+    if let PaintContent::Text {
+        segments,
+        truncate,
+        white_space,
+        text_wrap,
+        word_break,
+        paragraph_indent,
+        list_indent,
+        ..
+    } = &node.content
+    {
         let line = segments
             .iter()
             .map(|segment| {
@@ -627,15 +637,35 @@ fn paint_extent(node: &SceneNode) -> Extent {
                     .unwrap_or(0.0)
                     .max(segment.font_size * 1.5)
                     + segment.baseline_shift.abs()
+                    + segment.decoration.as_ref().map_or(0.0, |decoration| {
+                        decoration.offset.unwrap_or(0.0).abs() + decoration.thickness.unwrap_or(0.0)
+                    })
             })
             .fold(0.0_f32, f32::max);
-        // A line that does not wrap runs out of its box to the right, as far
-        // as it is long; the painter stops a line below the box's bottom edge.
-        own = own.grown(line, line * 2.0);
-        own.right += TEXT_RUN_OFF;
-        if segments.iter().any(|segment| segment.letter_spacing < 0.0) {
-            own.left -= TEXT_RUN_OFF;
-        }
+        let em = segments
+            .iter()
+            .map(|segment| segment.font_size)
+            .fold(0.0_f32, f32::max);
+        let indent = paragraph_indent.abs() + list_indent.abs();
+
+        // Text wraps inside its box, and the painter stops a line or so below
+        // the box's bottom. What can run out to the right is what cannot
+        // wrap: the longest word, or the longest line when lines do not wrap.
+        let overflow = if *truncate {
+            0.0
+        } else {
+            let wraps = !matches!(white_space.as_deref(), Some("nowrap" | "pre"))
+                && text_wrap.as_deref() != Some("nowrap");
+            let breaks_anywhere = matches!(
+                word_break.as_deref(),
+                Some("break-all" | "break-word" | "anywhere")
+            );
+            (longest_unbroken_run(segments, wraps, breaks_anywhere) - node.bounds.width).max(0.0)
+        };
+        own.left -= line.max(em) + indent;
+        own.top -= line;
+        own.right += line.max(em) + indent + overflow;
+        own.bottom += line * 2.0;
     }
 
     let mut children: Option<Extent> = None;
@@ -672,14 +702,42 @@ fn paint_extent(node: &SceneNode) -> Extent {
     own
 }
 
-/// How far right of its box a line of text is assumed to be able to run. A
-/// line that does not wrap has no other limit, and a finite one keeps the
-/// arithmetic of transforms and intersections away from infinities.
-const TEXT_RUN_OFF: f32 = 1.0e6;
+/// The widest a glyph is assumed to be, in ems. Latin and CJK faces keep
+/// their advances within about one em; this leaves room for the wide ones.
+const WIDEST_GLYPH_EMS: f32 = 1.5;
+
+/// An upper bound on the width of the longest stretch of a text node that
+/// cannot wrap: a word, or a whole line when lines do not wrap, or a single
+/// glyph when words break anywhere.
+fn longest_unbroken_run(segments: &[TextSegment], wraps: bool, breaks_anywhere: bool) -> f32 {
+    let (mut longest, mut run) = (0.0_f32, 0.0_f32);
+    for segment in segments {
+        let glyph = segment.font_size * WIDEST_GLYPH_EMS + segment.letter_spacing.max(0.0);
+        for ch in segment.value.chars() {
+            let breaks = ch == '\n' || (wraps && ch.is_whitespace());
+            if breaks {
+                longest = longest.max(run);
+                run = 0.0;
+                continue;
+            }
+            if breaks_anywhere {
+                longest = longest.max(glyph);
+                continue;
+            }
+            run += glyph
+                + if ch.is_whitespace() {
+                    segment.word_spacing.max(0.0)
+                } else {
+                    0.0
+                };
+        }
+    }
+    longest.max(run)
+}
 
 /// The sigma a node's layer is blurred by once painted: its `layer-blur`
 /// effects and a filter's `blur()` functions, one after another.
-fn layer_blur_sigma(node: &SceneNode) -> f32 {
+pub(crate) fn layer_blur_sigma(node: &SceneNode) -> f32 {
     let effects = node
         .effects
         .iter()
@@ -744,7 +802,7 @@ fn mask_layer(layer: &mut Pixmap, mask: &tiny_skia::Mask) {
 /// The origin is stored relative to the node's own box, and the layer this
 /// matrix is applied to is the whole canvas, so the node's position has to be
 /// added back or every node would pivot near the canvas corner.
-fn node_matrix(node: &SceneNode, transform: Transform2D) -> Transform {
+pub(crate) fn node_matrix(node: &SceneNode, transform: Transform2D) -> Transform {
     let pivot_x = node.bounds.x + transform.origin_x;
     let pivot_y = node.bounds.y + transform.origin_y;
     let skew_x = transform.skew_x.to_radians().tan();

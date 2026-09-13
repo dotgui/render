@@ -12,9 +12,9 @@
 
 use crate::{
     build_scene, compute_taffy_layout_with_text, paint_scene_region_to_png_bytes,
-    paint_scene_region_to_rgba, paint_scene_to_png_bytes, paint_scene_to_rgba, scene_pixel_size,
-    AssetCache, FontStore, GuiDocument, LayoutBox, LayoutRect, PaintError, PixelRect, Scene,
-    TaffyLayoutError,
+    paint_scene_region_to_rgba, paint_scene_to_png_bytes, paint_scene_to_rgba, scene_changes,
+    scene_pixel_size, AssetCache, FontStore, GuiDocument, LayoutBox, LayoutRect, PaintError,
+    PixelRect, Scene, SceneChanges, TaffyLayoutError,
 };
 use std::sync::{Arc, Mutex};
 
@@ -129,6 +129,16 @@ impl Page {
         fonts: Option<&FontStore>,
     ) -> Result<Vec<u8>, PaintError> {
         paint_scene_region_to_png_bytes(&self.scene_at(scale), region, assets, fonts)
+    }
+}
+
+impl Page {
+    /// What paints differently on this page than on `earlier`, the same page
+    /// before an edit, as areas in document pixels. Painting those areas of
+    /// this page over a paint of `earlier` at any scale gives a paint of this
+    /// page — with each area's pixels from [`PixelRect::covering`].
+    pub fn changes_since(&self, earlier: &Page) -> SceneChanges {
+        scene_changes(&earlier.scene, &self.scene)
     }
 }
 
@@ -401,5 +411,23 @@ mod tests {
             page.paint_area(huge, 500.0, None, None),
             Err(PaintError::TooLarge { .. })
         ));
+    }
+
+    #[test]
+    fn a_page_reports_what_an_edit_changed() {
+        let before = card();
+        let after = Page::new(
+            parse_gui_xml(&CARD.replace("#00ff00", "#ff00ff")).unwrap(),
+            &FontStore::default(),
+        )
+        .unwrap();
+        let SceneChanges::Areas(areas) = after.changes_since(&before) else {
+            panic!("expected areas");
+        };
+        assert_eq!(areas.len(), 1);
+        let badge = after.element_bounds("id", "badge").unwrap();
+        assert!(areas[0].x <= badge.x && areas[0].width >= badge.width);
+        assert!(areas[0].width < 60.0, "only the badge: {:?}", areas[0]);
+        assert_eq!(before.changes_since(&before), SceneChanges::Nothing);
     }
 }
