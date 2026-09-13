@@ -10,7 +10,8 @@ use crate::{
     TextSegment, Transform2D,
 };
 use fontdue::{Font, FontSettings};
-use std::{fs, path::Path};
+use serde::{Deserialize, Serialize};
+use std::{cell::Cell, fs, path::Path};
 use thiserror::Error;
 use tiny_skia::{
     BlendMode, Color, FillRule, LineCap, Paint, PathBuilder, Pixmap, PixmapPaint, PixmapRef, Rect,
@@ -75,7 +76,147 @@ pub fn paint_scene_to_rgba(
     asset_cache: Option<&AssetCache>,
     fonts: Option<&FontStore>,
 ) -> Result<(u32, u32, Vec<u8>), PaintError> {
-    let pixmap = paint_scene_to_pixmap(scene, asset_cache, fonts)?;
+    Ok(straight_rgba(paint_scene_to_pixmap(
+        scene,
+        asset_cache,
+        fonts,
+    )?))
+}
+
+/// A whole-pixel rectangle of a painted page, in the pixels the scene paints
+/// at: a scene scaled by 2 is twice as many of them each way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PixelRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The size, in pixels, a full paint of `scene` has: the page's box rounded
+/// up. A region anywhere inside it paints the same pixels a full paint would.
+pub fn scene_pixel_size(scene: &Scene) -> (u32, u32) {
+    (
+        scene.root.bounds.width.ceil().max(0.0) as u32,
+        scene.root.bounds.height.ceil().max(0.0) as u32,
+    )
+}
+
+/// One rectangle of the page, painted on its own: the same pixels as that
+/// rectangle of [`paint_scene_to_rgba`], at a fraction of the cost when the
+/// rectangle is small — which is what a zoomed-in view, a screenshot of one
+/// area, or a repaint after an edit needs.
+///
+/// Parts of the rectangle outside the page are transparent.
+pub fn paint_scene_region_to_rgba(
+    scene: &Scene,
+    region: PixelRect,
+    asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
+) -> Result<(u32, u32, Vec<u8>), PaintError> {
+    Ok(straight_rgba(paint_scene_region_to_pixmap(
+        scene,
+        region,
+        asset_cache,
+        fonts,
+    )?))
+}
+
+/// [`paint_scene_region_to_rgba`], encoded as a PNG.
+pub fn paint_scene_region_to_png_bytes(
+    scene: &Scene,
+    region: PixelRect,
+    asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
+) -> Result<Vec<u8>, PaintError> {
+    paint_scene_region_to_pixmap(scene, region, asset_cache, fonts)?
+        .encode_png()
+        .map_err(|err| PaintError::Png(err.to_string()))
+}
+
+fn paint_scene_region_to_pixmap(
+    scene: &Scene,
+    region: PixelRect,
+    asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
+) -> Result<Pixmap, PaintError> {
+    let (page_width, page_height) = scene_pixel_size(scene);
+    if page_width == 0 || page_height == 0 {
+        return Err(PaintError::InvalidSize {
+            width: scene.root.bounds.width,
+            height: scene.root.bounds.height,
+        });
+    }
+    let mut out = Pixmap::new(region.width, region.height).ok_or(PaintError::Allocation {
+        width: region.width,
+        height: region.height,
+    })?;
+
+    // A backdrop blur reads what is already painted around it, so the pixels
+    // it reads have to be painted too: the region grows by as far as backdrop
+    // blurs can reach, and is cut back afterwards. Everything else that looks
+    // past the region's edge — a shadow, a layer's blur, a rotated layer —
+    // measures itself against the page instead, and needs no margin.
+    let margin = i64::from(REGION_EDGE_MARGIN + backdrop_margin(&scene.root));
+    let left = (i64::from(region.x) - margin).max(0);
+    let top = (i64::from(region.y) - margin).max(0);
+    let right = (i64::from(region.x) + i64::from(region.width) + margin).min(i64::from(page_width));
+    let bottom =
+        (i64::from(region.y) + i64::from(region.height) + margin).min(i64::from(page_height));
+    if right <= left || bottom <= top {
+        return Ok(out);
+    }
+    let (width, height) = ((right - left) as u32, (bottom - top) as u32);
+    let mut painted = Pixmap::new(width, height).ok_or(PaintError::Allocation { width, height })?;
+
+    let mut root = scene.root.clone();
+    translate_subtree(&mut root, -(left as f32), -(top as f32));
+    let page = Extent {
+        left: -(left as f32),
+        top: -(top as f32),
+        right: page_width as f32 - left as f32,
+        bottom: page_height as f32 - top as f32,
+    };
+    with_page(page, || {
+        paint_node(&mut painted, &root, default_font(), asset_cache, fonts)
+    });
+
+    out.draw_pixmap(
+        (left - i64::from(region.x)) as i32,
+        (top - i64::from(region.y)) as i32,
+        painted.as_ref(),
+        &PixmapPaint {
+            blend_mode: BlendMode::Source,
+            ..PixmapPaint::default()
+        },
+        Transform::identity(),
+        None,
+    );
+    Ok(out)
+}
+
+/// Pixels painted past a region's edge and then cut away.
+///
+/// The rasteriser clips a shape that crosses the canvas's edge, and a clipped
+/// shape's anti-aliased edge pixels come out a little different from the same
+/// shape drawn whole. On a full page those pixels are the page's edge; in a
+/// region they would be seams, so the region is painted a little wider.
+const REGION_EDGE_MARGIN: u32 = 4;
+
+/// How far outside a region the pixels a backdrop blur reads can lie: each
+/// blur reads twice its reach, and one backdrop can sit on another.
+fn backdrop_margin(node: &SceneNode) -> u32 {
+    let own = node
+        .effects
+        .iter()
+        .filter(|effect| matches!(effect.kind.as_str(), "background-blur" | "glass"))
+        .map(|effect| 2 * blur::reach(effect.radius) + 1)
+        .sum::<u32>();
+    own + node.children.iter().map(backdrop_margin).sum::<u32>()
+}
+
+/// Straight (not premultiplied) RGBA from a pixmap.
+fn straight_rgba(pixmap: Pixmap) -> (u32, u32, Vec<u8>) {
     let (width, height) = (pixmap.width(), pixmap.height());
     let mut data = pixmap.take();
     for pixel in data.as_chunks_mut::<4>().0 {
@@ -87,7 +228,38 @@ pub fn paint_scene_to_rgba(
             }
         }
     }
-    Ok((width, height, data))
+    (width, height, data)
+}
+
+thread_local! {
+    /// Where the page lies in the canvas being painted, when the canvas is not
+    /// the page: a region of it, or a node's layer.
+    static PAGE: Cell<Option<Extent>> = const { Cell::new(None) };
+}
+
+/// Runs `paint` with `page` as the page's box in the canvas it paints into.
+fn with_page<R>(page: Extent, paint: impl FnOnce() -> R) -> R {
+    let outer = PAGE.replace(Some(page));
+    let result = paint();
+    PAGE.set(outer);
+    result
+}
+
+/// The page's box, in `canvas`'s pixels. Work that has to stop where the page
+/// stops — a blur that clamps at an edge, a layer a transform will move —
+/// measures against this, not against the canvas, so a region of the page
+/// paints exactly as that part of the whole page would.
+fn page_extent(canvas: &Pixmap) -> Extent {
+    PAGE.get().unwrap_or_else(|| canvas_extent(canvas))
+}
+
+fn canvas_extent(canvas: &Pixmap) -> Extent {
+    Extent {
+        left: 0.0,
+        top: 0.0,
+        right: canvas.width() as f32,
+        bottom: canvas.height() as f32,
+    }
 }
 
 fn paint_scene_to_pixmap(
@@ -131,6 +303,20 @@ fn paint_node(
     asset_cache: Option<&AssetCache>,
     fonts: Option<&FontStore>,
 ) {
+    // A subtree that paints nothing onto this canvas is not walked at all,
+    // which is what makes a small region of a long page cheap: text off to one
+    // side is never shaped.
+    let extent = paint_extent(node);
+    let reach = match node.transform.filter(|transform| !transform.is_identity()) {
+        Some(transform) => extent
+            .grown(LAYER_FILTER_MARGIN, LAYER_FILTER_MARGIN)
+            .transformed(node_matrix(node, transform)),
+        None => extent,
+    };
+    if !reach.overlaps(canvas_extent(pixmap)) {
+        return;
+    }
+
     if !needs_layer(node) {
         paint_node_direct(pixmap, node, font, asset_cache, fonts);
         return;
@@ -139,9 +325,8 @@ fn paint_node(
     // The layer covers only the part of the canvas the subtree can paint, not
     // the whole canvas: on a long page a full-canvas layer is tens of millions
     // of pixels to clear, filter and resample back, for a node that may be a
-    // seven-pixel icon. Nothing is lost by cutting it to the canvas, because a
-    // full-canvas layer ended there too.
-    let Some(region) = layer_region(node, pixmap) else {
+    // seven-pixel icon.
+    let Some(region) = layer_region(node, extent, pixmap) else {
         return;
     };
     let Some(mut layer) = Pixmap::new(region.width, region.height) else {
@@ -153,13 +338,17 @@ fn paint_node(
     // corner, paints into the small layer exactly as it would into the canvas.
     let original = node;
     let mut local = node.clone();
-    translate_subtree(&mut local, -(region.x as f32), -(region.y as f32));
+    let (dx, dy) = (-(region.x as f32), -(region.y as f32));
+    translate_subtree(&mut local, dx, dy);
     let node = &local;
 
     // Backdrop effects read what is behind the node, and inside a layer that
     // is nothing. Copying the canvas in first would then be blended twice, so
     // a node that both isolates and blurs its backdrop is a known gap.
-    paint_node_direct(&mut layer, node, font, asset_cache, fonts);
+    let page = page_extent(pixmap).moved(dx, dy);
+    with_page(page, || {
+        paint_node_direct(&mut layer, node, font, asset_cache, fonts)
+    });
 
     // `layer-blur` blurs the finished subtree, which is what makes it the
     // opposite of `background-blur`: one softens the node, the other softens
@@ -220,23 +409,40 @@ fn paint_node(
 }
 
 /// The part of the canvas a node's layer has to cover: everything its subtree
-/// can paint, before the node's own transform, snapped out to whole pixels and
-/// cut to the canvas. `None` when none of it lands on the canvas.
-fn layer_region(node: &SceneNode, canvas: &Pixmap) -> Option<Region> {
-    let mut extent = paint_extent(node);
-    // A transformed layer is resampled, and the filter reads a few pixels past
-    // what it draws. Past a layer's edge it repeats the edge, so the edge has
-    // to be transparent for the result to match a layer with no edge nearby.
-    if node
+/// can paint, before the node's own transform, snapped out to whole pixels.
+/// `None` when none of it can show.
+///
+/// A transformed layer is cut to the page, because the transform can carry
+/// any of it onto the canvas. Any other layer is cut to the canvas, grown by
+/// the reach of the layer's own blur: nothing further out can change a pixel
+/// that lands on it.
+fn layer_region(node: &SceneNode, extent: Extent, canvas: &Pixmap) -> Option<Region> {
+    let page = page_extent(canvas);
+    let transformed = node
         .transform
-        .is_some_and(|transform| !transform.is_identity())
-    {
-        extent = extent.grown(LAYER_FILTER_MARGIN, LAYER_FILTER_MARGIN);
-    }
-    let left = extent.left.floor().max(0.0);
-    let top = extent.top.floor().max(0.0);
-    let right = extent.right.ceil().min(canvas.width() as f32);
-    let bottom = extent.bottom.ceil().min(canvas.height() as f32);
+        .is_some_and(|transform| !transform.is_identity());
+    let (extent, limit) = if transformed {
+        // A transformed layer is resampled, and the filter reads a few pixels
+        // past what it draws. Past a layer's edge it repeats the edge, so the
+        // edge has to be transparent for the result to match a layer with no
+        // edge nearby.
+        (extent.grown(LAYER_FILTER_MARGIN, LAYER_FILTER_MARGIN), page)
+    } else {
+        let reach = blur::reach(layer_blur_sigma(node)) as f32;
+        (
+            extent,
+            page.intersection(canvas_extent(canvas).grown(reach, reach)),
+        )
+    };
+    snap_region(extent, limit)
+}
+
+/// `extent` snapped out to whole pixels and cut to `limit`.
+fn snap_region(extent: Extent, limit: Extent) -> Option<Region> {
+    let left = extent.left.floor().max(limit.left);
+    let top = extent.top.floor().max(limit.top);
+    let right = extent.right.ceil().min(limit.right);
+    let bottom = extent.bottom.ceil().min(limit.bottom);
     if !(right > left && bottom > top) {
         return None;
     }
@@ -277,6 +483,37 @@ impl Extent {
             right: self.right + horizontal,
             bottom: self.bottom + vertical,
         }
+    }
+
+    fn moved(self, dx: f32, dy: f32) -> Self {
+        Self {
+            left: self.left + dx,
+            top: self.top + dy,
+            right: self.right + dx,
+            bottom: self.bottom + dy,
+        }
+    }
+
+    fn intersection(self, other: Self) -> Self {
+        Self {
+            left: self.left.max(other.left),
+            top: self.top.max(other.top),
+            right: self.right.min(other.right),
+            bottom: self.bottom.min(other.bottom),
+        }
+    }
+
+    /// Whether the two share any area. An extent that lost its numbers to a
+    /// transform counts as overlapping, so doubt paints rather than culls.
+    fn overlaps(self, other: Self) -> bool {
+        let inside = self.left < other.right
+            && self.right > other.left
+            && self.top < other.bottom
+            && self.bottom > other.top;
+        let known = [self.left, self.top, self.right, self.bottom]
+            .iter()
+            .all(|edge| !edge.is_nan());
+        inside || !known
     }
 
     fn union(self, other: Self) -> Self {
@@ -372,9 +609,9 @@ fn paint_extent(node: &SceneNode) -> Extent {
         // A line that does not wrap runs out of its box to the right, as far
         // as it is long; the painter stops a line below the box's bottom edge.
         own = own.grown(line, line * 2.0);
-        own.right = f32::INFINITY;
+        own.right += TEXT_RUN_OFF;
         if segments.iter().any(|segment| segment.letter_spacing < 0.0) {
-            own.left = f32::NEG_INFINITY;
+            own.left -= TEXT_RUN_OFF;
         }
     }
 
@@ -403,21 +640,30 @@ fn paint_extent(node: &SceneNode) -> Extent {
     }
 
     // Blurs of the finished subtree spread all of it.
-    let mut sigma = node
-        .effects
-        .iter()
-        .filter(|effect| effect.kind == "layer-blur")
-        .map(|effect| effect.radius)
-        .sum::<f32>();
-    if let Some(filter) = node.filter.as_deref() {
-        sigma += filter_blur_sigma(filter);
-    }
+    let sigma = layer_blur_sigma(node);
     if sigma > 0.0 {
         let reach = blur::reach(sigma) as f32;
         own = own.grown(reach, reach);
     }
 
     own
+}
+
+/// How far right of its box a line of text is assumed to be able to run. A
+/// line that does not wrap has no other limit, and a finite one keeps the
+/// arithmetic of transforms and intersections away from infinities.
+const TEXT_RUN_OFF: f32 = 1.0e6;
+
+/// The sigma a node's layer is blurred by once painted: its `layer-blur`
+/// effects and a filter's `blur()` functions, one after another.
+fn layer_blur_sigma(node: &SceneNode) -> f32 {
+    let effects = node
+        .effects
+        .iter()
+        .filter(|effect| effect.kind == "layer-blur")
+        .map(|effect| effect.radius)
+        .sum::<f32>();
+    effects + node.filter.as_deref().map_or(0.0, filter_blur_sigma)
 }
 
 /// The total sigma of the `blur()` functions in a CSS filter, which apply one
@@ -1102,11 +1348,11 @@ impl Region {
 
 /// The part of the canvas a blurred shape can reach: its bounds grown by
 /// `reaches` times the blur's [`reach`](blur::reach), snapped out to whole
-/// pixels so the shape
-/// rasterises on the same grid it would on the canvas, and cut to the canvas.
+/// pixels so the shape rasterises on the same grid it would on the canvas, and
+/// cut to the page.
 ///
-/// Cutting to the canvas is what keeps this exact at its edges: there the
-/// region's edge is the canvas's edge, and the blur clamps at both the same.
+/// Cutting to the page is what keeps this exact at its edges: there the
+/// region's edge is the page's edge, and the blur clamps at both the same.
 fn blur_region(
     bounds: tiny_skia::Rect,
     sigma: f32,
@@ -1114,19 +1360,19 @@ fn blur_region(
     canvas: &Pixmap,
 ) -> Option<Region> {
     let reach = (blur::reach(sigma) * reaches) as f32;
-    let left = (bounds.left() - reach).floor().max(0.0);
-    let top = (bounds.top() - reach).floor().max(0.0);
-    let right = (bounds.right() + reach).ceil().min(canvas.width() as f32);
-    let bottom = (bounds.bottom() + reach).ceil().min(canvas.height() as f32);
-    if right <= left || bottom <= top {
-        return None;
+    let extent = Extent {
+        left: bounds.left(),
+        top: bounds.top(),
+        right: bounds.right(),
+        bottom: bounds.bottom(),
     }
-    Some(Region {
-        x: left as i32,
-        y: top as i32,
-        width: (right - left) as u32,
-        height: (bottom - top) as u32,
-    })
+    .grown(reach, reach);
+    // The page's edge is where the blur clamps on a full paint. When this
+    // canvas is only part of the page, the region stops a reach beyond the
+    // canvas instead: past that, a clamp at the region's edge cannot reach a
+    // pixel of the canvas.
+    let limit = page_extent(canvas).intersection(canvas_extent(canvas).grown(reach, reach));
+    snap_region(extent, limit)
 }
 
 /// A copy of one region of the canvas, as its own pixmap.
@@ -1410,10 +1656,23 @@ fn paint_vertical_text(
         *writing_mode = None;
     }
 
-    let Some(mut layer) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+    // Drawn into a layer that holds just the flat block, cut to the page: the
+    // quarter turn can bring any of it onto the canvas.
+    let Some(region) = snap_region(
+        paint_extent(&flat).grown(LAYER_FILTER_MARGIN, LAYER_FILTER_MARGIN),
+        page_extent(pixmap),
+    ) else {
         return;
     };
-    paint_content(&mut layer, &flat, font, asset_cache, fonts);
+    let Some(mut layer) = Pixmap::new(region.width, region.height) else {
+        return;
+    };
+    let (dx, dy) = (-(region.x as f32), -(region.y as f32));
+    translate_subtree(&mut flat, dx, dy);
+    let page = page_extent(pixmap).moved(dx, dy);
+    with_page(page, || {
+        paint_content(&mut layer, &flat, font, asset_cache, fonts)
+    });
 
     // A quarter turn clockwise about the box's own corner, then back along x
     // by the box's width, which is where that turn leaves it.
@@ -1430,8 +1689,8 @@ fn paint_vertical_text(
     }
 
     pixmap.draw_pixmap(
-        0,
-        0,
+        region.x,
+        region.y,
         layer.as_ref(),
         &PixmapPaint {
             quality: tiny_skia::FilterQuality::Bicubic,
@@ -5980,7 +6239,8 @@ mod tests {
         let canvas = Pixmap::new(400, 12000).unwrap();
         let square = &scene.root.children[0];
 
-        let region = layer_region(square, &canvas).expect("it lands on the canvas");
+        let region =
+            layer_region(square, paint_extent(square), &canvas).expect("it lands on the canvas");
         assert!(
             region.width < 40 && region.height < 40,
             "{}×{}",
