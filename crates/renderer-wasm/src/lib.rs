@@ -7,10 +7,10 @@
 
 use dotgui_renderer::{
     build_scene, compute_taffy_layout_with_text, font_urls_in_stylesheet, google_stylesheet_urls,
-    missing_system_font_files, normalize_presence_attrs, paint_scene_to_png_bytes,
-    paint_scene_to_rgba, parse_gui_xml, parse_gui_xml_with, parse_library, parse_standalone_xml,
-    read_gui_package, AssetCache, FontStore, GuiDocument, GuiNode, Library, ParseError,
-    ParseOptions, RENDERER_VERSION, SUPPORTED_VERSION,
+    missing_system_font_files, normalize_presence_attrs, paint_scene_to_png_bytes, parse_gui_xml,
+    parse_gui_xml_with, parse_library, parse_standalone_xml, read_gui_package, AssetCache,
+    FontStore, GuiDocument, GuiNode, Library, Page, ParseError, ParseOptions, PixelRect,
+    RENDERER_VERSION, SUPPORTED_VERSION,
 };
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use wasm_bindgen::prelude::*;
@@ -99,12 +99,49 @@ pub struct Engine {
     /// The package the markup comes from, once one is loaded. Without one,
     /// markup is a standalone document.
     package: RefCell<Option<PackageContext>>,
+    /// Pages laid out recently, most recent first. A view that zooms, pans or
+    /// shows several pages at once paints the same markup over and over, and
+    /// only the first paint should pay for parsing and layout.
+    pages: RefCell<Vec<Rc<KeptPage>>>,
+    /// Bumped whenever the library changes, which changes what every other
+    /// document resolves to.
+    library_generation: std::cell::Cell<u64>,
+}
+
+/// How many laid-out pages the engine keeps: a deck's worth.
+const KEPT_PAGES: usize = 48;
+
+/// A page laid out for one piece of markup, and what it was laid out with.
+struct KeptPage {
+    xml: String,
+    library: bool,
+    library_generation: u64,
+    fonts: Rc<FontStore>,
+    page: Page,
+    warnings: Vec<String>,
+    /// The layout as JSON, made the first time a frame is asked for it.
+    layout_json: RefCell<Option<Rc<str>>>,
+}
+
+impl KeptPage {
+    fn layout_json(&self) -> Result<Rc<str>, JsValue> {
+        if let Some(json) = self.layout_json.borrow().as_ref() {
+            return Ok(Rc::clone(json));
+        }
+        let json: Rc<str> = serde_json::to_string(self.page.layout())
+            .map_err(to_js)?
+            .into();
+        self.layout_json.replace(Some(Rc::clone(&json)));
+        Ok(json)
+    }
 }
 
 /// How a loaded package's documents are read.
 struct PackageContext {
     /// `library.guix` as last loaded or edited, or why it did not parse.
     library: Option<Result<Library, String>>,
+    /// The markup `library` was read from.
+    library_xml: Option<String>,
     /// A library or several documents: every document must declare 0.3.
     multi_document: bool,
 }
@@ -122,6 +159,8 @@ impl Default for Engine {
             cache: in_memory_cache(BTreeMap::new()),
             fonts: RefCell::new(None),
             package: RefCell::new(None),
+            pages: RefCell::new(Vec::new()),
+            library_generation: std::cell::Cell::new(0),
         }
     }
 }
@@ -132,10 +171,14 @@ impl Default for Engine {
 pub struct Frame {
     width: u32,
     height: u32,
+    /// Where the frame's top-left pixel sits in the page painted at its
+    /// density: 0, 0 for a whole page.
+    x: i32,
+    y: i32,
     /// Device pixels per document pixel this frame was drawn at.
     density: f32,
     pixels: Vec<u8>,
-    layout: String,
+    page: Rc<KeptPage>,
     warnings: Vec<String>,
 }
 
@@ -149,6 +192,18 @@ impl Frame {
     #[wasm_bindgen(getter)]
     pub fn height(&self) -> u32 {
         self.height
+    }
+
+    /// The frame's left edge in the page's pixels at [`Frame::density`].
+    #[wasm_bindgen(getter)]
+    pub fn x(&self) -> i32 {
+        self.x
+    }
+
+    /// The frame's top edge in the page's pixels at [`Frame::density`].
+    #[wasm_bindgen(getter)]
+    pub fn y(&self) -> i32 {
+        self.y
     }
 
     /// The density the frame was drawn at: the one asked for, or less when
@@ -165,10 +220,12 @@ impl Frame {
         self.pixels.clone()
     }
 
-    /// The layout tree as JSON, with absolute rects and every node's attributes.
+    /// The whole page's layout tree as JSON, in document pixels, with every
+    /// node's attributes. The same for every frame of one page, so a host
+    /// that already has it need not ask again.
     #[wasm_bindgen(getter)]
-    pub fn layout(&self) -> String {
-        self.layout.clone()
+    pub fn layout(&self) -> Result<String, JsValue> {
+        Ok(self.page.layout_json()?.to_string())
     }
 
     /// Fonts that did not resolve, and what was used instead.
@@ -222,7 +279,15 @@ impl Engine {
             "library": library_json,
         });
 
+        let library_xml = package
+            .library
+            .as_ref()
+            .and_then(|file| file.xml().ok())
+            .map(ToOwned::to_owned);
+        self.library_generation
+            .set(self.library_generation.get() + 1);
         self.package.replace(Some(PackageContext {
+            library_xml,
             library: library.map(|result| result.map_err(|err| library_reason(&err))),
             multi_document: package.is_multi_document(),
         }));
@@ -316,41 +381,109 @@ impl Engine {
     /// Pass `library: true` when `xml` is the package's `library.guix`: its
     /// page is drawn, and every later document resolves against this markup,
     /// so an edit to the library shows up in the documents that use it.
+    ///
+    /// The page is kept laid out, so rendering the same markup again — at
+    /// another density, or by region — only paints.
     pub fn render(&self, xml: &str, density: f32, library: Option<bool>) -> Result<Frame, JsValue> {
-        let document = self.read(xml, library)?;
-        let cache = &self.cache;
-        let (fonts, mut warnings) = self.fonts_for(&document)?;
-        warnings.splice(0..0, document.warnings.iter().cloned());
-        let fonts: &FontStore = &fonts;
-        let layout = compute_taffy_layout_with_text(&document, fonts).map_err(to_js)?;
-        let mut scene = build_scene(&document, &layout);
-        let requested = if density.is_finite() && density > 0.0 {
-            density
-        } else {
-            1.0
-        };
-        let density = fitting_density(requested, layout.rect.width, layout.rect.height);
+        let kept = self.page_for(xml, library)?;
+        let mut warnings = kept.warnings.clone();
+        let (page_width, page_height) = kept.page.size();
+        let requested = usable_density(density);
+        let density = fitting_density(requested, page_width, page_height);
         if density < requested {
             warnings.push(format!(
                 "drawn at {density:.2}x instead of {requested}x: at {requested}x this {}×{} page is larger than a browser canvas can draw",
-                layout.rect.width.round(),
-                layout.rect.height.round()
+                page_width.round(),
+                page_height.round()
             ));
         }
-        if density != 1.0 {
-            scene = scene.scaled(density);
-        }
-        let (width, height, pixels) =
-            paint_scene_to_rgba(&scene, Some(cache), Some(fonts)).map_err(to_js)?;
-        warnings.dedup();
+        let (width, height, pixels) = kept
+            .page
+            .paint(density, Some(&self.cache), Some(&kept.fonts))
+            .map_err(to_js)?;
         Ok(Frame {
             width,
             height,
+            x: 0,
+            y: 0,
             density,
             pixels,
-            layout: serde_json::to_string(&layout).map_err(to_js)?,
+            page: kept,
             warnings,
         })
+    }
+
+    /// Renders one rectangle of the page at `scale`: what a zoomed-in view or
+    /// a screenshot of one area needs, without painting the rest.
+    ///
+    /// `x`, `y`, `width` and `height` are in the pixels of the page painted at
+    /// `scale` — at 2, a 1280×720 page is 2560×1440 of them — so regions laid
+    /// side by side tile the page exactly. Parts past the page are transparent.
+    // Plain numbers cross into JavaScript as they are; a rectangle type would
+    // be one more object for every caller to build per frame.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_region(
+        &self,
+        xml: &str,
+        scale: f32,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        library: Option<bool>,
+    ) -> Result<Frame, JsValue> {
+        drawable_region(width, height).map_err(to_js)?;
+        let kept = self.page_for(xml, library)?;
+        let scale = usable_density(scale);
+        let region = PixelRect {
+            x,
+            y,
+            width,
+            height,
+        };
+        let (width, height, pixels) = kept
+            .page
+            .paint_region(scale, region, Some(&self.cache), Some(&kept.fonts))
+            .map_err(to_js)?;
+        Ok(Frame {
+            width,
+            height,
+            x,
+            y,
+            density: scale,
+            pixels,
+            warnings: kept.warnings.clone(),
+            page: kept,
+        })
+    }
+
+    /// The page's size in document pixels, `[width, height]`, for a host
+    /// planning which regions to ask for. Lays the page out if it is not yet.
+    pub fn page_size(&self, xml: &str, library: Option<bool>) -> Result<Vec<f32>, JsValue> {
+        let (width, height) = self.page_for(xml, library)?.page.size();
+        Ok(vec![width, height])
+    }
+}
+
+/// Whether a canvas can hold a `width` × `height` region.
+fn drawable_region(width: u32, height: u32) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        return Err("a region needs a width and a height".to_owned());
+    }
+    if width as f32 > MAX_CANVAS_SIDE || height as f32 > MAX_CANVAS_SIDE {
+        return Err(format!(
+            "a {width}×{height} region is larger than a browser canvas can draw"
+        ));
+    }
+    Ok(())
+}
+
+/// A density that paints something: anything else is 1.
+fn usable_density(density: f32) -> f32 {
+    if density.is_finite() && density > 0.0 {
+        density
+    } else {
+        1.0
     }
 }
 
@@ -361,23 +494,8 @@ impl Engine {
     /// Reading the library's page also takes its declarations as the
     /// package's library from now on.
     fn read(&self, xml: &str, library: Option<bool>) -> Result<GuiDocument, JsValue> {
-        let mut package = self.package.borrow_mut();
-
         if library == Some(true) {
-            let parsed = parse_library(xml).map_err(|err| library_reason(&err));
-            let failure = parsed.as_ref().err().cloned();
-            match package.as_mut() {
-                Some(context) => context.library = Some(parsed),
-                None => {
-                    *package = Some(PackageContext {
-                        library: Some(parsed),
-                        multi_document: true,
-                    })
-                }
-            }
-            if let Some(reason) = failure {
-                return Err(to_js(ParseError::Library(reason)));
-            }
+            self.sync_library(xml)?;
             return parse_gui_xml_with(
                 xml,
                 ParseOptions {
@@ -388,6 +506,7 @@ impl Engine {
             .map_err(to_js);
         }
 
+        let package = self.package.borrow();
         let Some(context) = package.as_ref() else {
             return parse_standalone_xml(xml).map_err(to_js);
         };
@@ -405,6 +524,96 @@ impl Engine {
             },
         )
         .map_err(to_js)
+    }
+
+    /// Takes `xml` as the package's library, when it differs from the one
+    /// held: every document read after this resolves against it.
+    fn sync_library(&self, xml: &str) -> Result<(), JsValue> {
+        let mut package = self.package.borrow_mut();
+        let unchanged = package
+            .as_ref()
+            .is_some_and(|context| context.library_xml.as_deref() == Some(xml));
+        if !unchanged {
+            let parsed = parse_library(xml).map_err(|err| library_reason(&err));
+            match package.as_mut() {
+                Some(context) => {
+                    context.library = Some(parsed);
+                    context.library_xml = Some(xml.to_owned());
+                }
+                None => {
+                    *package = Some(PackageContext {
+                        library: Some(parsed),
+                        library_xml: Some(xml.to_owned()),
+                        multi_document: true,
+                    })
+                }
+            }
+            self.library_generation
+                .set(self.library_generation.get() + 1);
+        }
+        let failure = package
+            .as_ref()
+            .and_then(|context| context.library.as_ref())
+            .and_then(|library| library.as_ref().err().cloned());
+        match failure {
+            Some(reason) => Err(to_js(ParseError::Library(reason))),
+            None => Ok(()),
+        }
+    }
+
+    /// The laid-out page for `xml`: a kept one when the markup, the library
+    /// and the fonts are all what it was laid out with, or a new one.
+    fn page_for(&self, xml: &str, library: Option<bool>) -> Result<Rc<KeptPage>, JsValue> {
+        let is_library = library == Some(true);
+        // The library's own markup may replace the library, so it is taken
+        // before anything kept is trusted.
+        if is_library {
+            self.sync_library(xml)?;
+        }
+        let generation = self.library_generation.get();
+
+        let kept = {
+            let pages = self.pages.borrow();
+            pages
+                .iter()
+                .position(|page| {
+                    page.xml == xml
+                        && page.library == is_library
+                        && page.library_generation == generation
+                })
+                .map(|index| (index, Rc::clone(&pages[index])))
+        };
+        if let Some((index, page)) = kept {
+            let (fonts, _) = self.fonts_for(page.page.document())?;
+            if Rc::ptr_eq(&fonts, &page.fonts) {
+                let mut pages = self.pages.borrow_mut();
+                let page = pages.remove(index);
+                pages.insert(0, Rc::clone(&page));
+                return Ok(page);
+            }
+        }
+
+        let document = self.read(xml, library)?;
+        let (fonts, font_warnings) = self.fonts_for(&document)?;
+        let mut warnings = document.warnings.clone();
+        warnings.extend(font_warnings);
+        warnings.dedup();
+        let page = Page::new(document, &fonts).map_err(to_js)?;
+        let kept = Rc::new(KeptPage {
+            xml: xml.to_owned(),
+            library: is_library,
+            library_generation: generation,
+            fonts,
+            page,
+            warnings,
+            layout_json: RefCell::new(None),
+        });
+
+        let mut pages = self.pages.borrow_mut();
+        pages.retain(|page| !(page.xml == xml && page.library == is_library));
+        pages.insert(0, Rc::clone(&kept));
+        pages.truncate(KEPT_PAGES);
+        Ok(kept)
     }
 
     fn not_held(&self, mut urls: Vec<String>) -> Vec<String> {
@@ -643,12 +852,12 @@ mod tests {
         assert_eq!(frame.pixels().len(), 100 * 100 * 4);
         // The red square's first pixel, straight RGBA.
         assert_eq!(&frame.pixels()[..4], &[255, 0, 0, 255]);
-        assert!(frame.layout().contains(r#""data-uid":"7""#));
+        assert!(frame.layout().unwrap().contains(r#""data-uid":"7""#));
 
         // Twice the pixels, the same layout.
         let dense = Engine::new().render(xml, 2.0, None).unwrap();
         assert_eq!((dense.width(), dense.height()), (200, 200));
-        assert_eq!(dense.layout(), frame.layout());
+        assert_eq!(dense.layout().unwrap(), frame.layout().unwrap());
     }
 
     #[test]
@@ -745,5 +954,85 @@ mod tests {
             .warnings()
             .iter()
             .any(|w| w.contains("larger than a browser canvas")));
+    }
+
+    #[test]
+    fn a_region_frame_is_that_part_of_the_whole_frame() {
+        let engine = Engine::new();
+        let xml = r##"<gui version="0.2"><col w="120" h="80" fill="#ffffff" p="10" gap="6">
+            <rect w="60" h="20" radius="6" fill="#0f62fe" />
+            <rect w="40" h="30" fill="#da1e28" rotation="20" />
+          </col></gui>"##;
+        let whole = engine.render(xml, 2.0, None).unwrap();
+        let region = engine
+            .render_region(xml, 2.0, 50, 30, 90, 70, None)
+            .unwrap();
+        assert_eq!(
+            (region.width(), region.height(), region.x(), region.y()),
+            (90, 70, 50, 30)
+        );
+        assert_eq!(region.layout().unwrap(), whole.layout().unwrap());
+
+        let (whole_pixels, part) = (whole.pixels(), region.pixels());
+        let mut differing = 0;
+        for y in 0..70 {
+            for x in 0..90 {
+                let i = ((y * 90 + x) * 4) as usize;
+                let j = (((y + 30) * whole.width() + x + 50) * 4) as usize;
+                if part[i..i + 4] != whole_pixels[j..j + 4] {
+                    differing += 1;
+                }
+            }
+        }
+        // Only an outline crossing the region's edge may differ, and only by
+        // anti-aliasing (see the renderer's region tests).
+        assert!(differing < 20, "{differing} pixels differ");
+        assert_eq!(engine.page_size(xml, None).unwrap(), vec![120.0, 80.0]);
+    }
+
+    #[test]
+    fn the_engine_keeps_a_page_laid_out_between_renders() {
+        let engine = Engine::new();
+        let xml = r##"<gui version="0.2"><col w="10" h="10" fill="#ff0000" /></gui>"##;
+        let first = engine.render(xml, 1.0, None).unwrap();
+        let again = engine.render_region(xml, 3.0, 0, 0, 5, 5, None).unwrap();
+        assert!(
+            Rc::ptr_eq(&first.page, &again.page),
+            "same markup, same page"
+        );
+
+        let edited = xml.replace("#ff0000", "#0000ff");
+        let other = engine.render(&edited, 1.0, None).unwrap();
+        assert!(!Rc::ptr_eq(&first.page, &other.page));
+        assert_eq!(&other.pixels()[..4], &[0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn a_library_edit_reaches_kept_pages() {
+        let mut engine = Engine::new();
+        engine
+            .load_package(&zip(&[("library.guix", LIBRARY), ("01-a.guix", SCREEN)]))
+            .unwrap();
+        let before = engine.render(SCREEN, 1.0, None).unwrap();
+        assert_eq!(&before.pixels()[..4], &[255, 0, 0, 255]);
+
+        // The same library markup again changes nothing kept.
+        engine.render(LIBRARY, 1.0, Some(true)).unwrap();
+        let same = engine.render(SCREEN, 1.0, None).unwrap();
+        assert!(Rc::ptr_eq(&before.page, &same.page));
+
+        engine
+            .render(&LIBRARY.replace("#ff0000", "#00ff00"), 1.0, Some(true))
+            .unwrap();
+        let after = engine.render_region(SCREEN, 1.0, 0, 0, 4, 4, None).unwrap();
+        assert!(!Rc::ptr_eq(&before.page, &after.page));
+        assert_eq!(&after.pixels()[..4], &[0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn a_region_too_large_for_a_canvas_is_refused() {
+        assert!(drawable_region(20000, 10).is_err());
+        assert!(drawable_region(0, 10).is_err());
+        assert!(drawable_region(4096, 4096).is_ok());
     }
 }

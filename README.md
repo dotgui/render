@@ -92,6 +92,8 @@ This is an early native renderer. It can already:
 - expand `<instance>` nodes against `<components>` definitions, with declared
   props, ad-hoc overrides by layer id, variants, slots, and instance scaling
 - expose parsing, layout, scene, and PNG rendering through WASM
+- keep a page laid out and paint it whole or by region, at any scale, for
+  zooming, thumbnails and screenshots of one area
 - skip a node the document hides with `visible`, keeping the space it holds
 - paint children back to front with `reverse-z`, and wrap them with `wrap`
 - case a run with `text-case`, small capitals included, before it is measured
@@ -295,6 +297,43 @@ package with a library or several documents must declare 0.3.
 [RFC-0042]: https://github.com/dotgui/core/blob/spec-0.3-multipage-slots/rfcs/0042-multi-document-packages.md
 [RFC-0043]: https://github.com/dotgui/core/blob/spec-0.3-multipage-slots/rfcs/0043-standalone-guix.md
 [RFC-0044]: https://github.com/dotgui/core/blob/spec-0.3-multipage-slots/rfcs/0044-slots.md
+
+## Pages, Regions And Zoom
+
+A page is parsed and laid out once, then painted as often as needed: whole, as
+one rectangle, at any scale. That is what a zoomable view, a thumbnail, a
+screenshot of one area and a repaint after an edit all have in common.
+
+In Rust, a `Page` keeps the document, its layout and its scene:
+
+```rust
+let page = Page::new(document, &fonts)?;
+let (width, height) = page.size();                      // document pixels
+let (w, h, rgba) = page.paint(2.0, Some(&assets), Some(&fonts))?;  // whole page at 2x
+let region = PixelRect { x: 800, y: 400, width: 1280, height: 800 };
+let (w, h, rgba) = page.paint_region(4.0, region, Some(&assets), Some(&fonts))?;
+```
+
+A region is given in the pixels of the page painted at that scale, so regions
+laid side by side tile the page. `paint_scene_region_to_rgba` does the same for
+a `Scene` directly.
+
+In the browser, the WASM `Engine` keeps the pages it has laid out, so rendering
+the same markup again only paints:
+
+```js
+engine.render(xml, devicePixelRatio)                          // the whole page
+engine.render_region(xml, zoom * devicePixelRatio, x, y, w, h)  // just what is on screen
+engine.page_size(xml)                                         // [width, height]
+```
+
+A region is painted the same as that part of the whole page. The one exception
+is the anti-aliased outline of a shape that crosses the region's edge, which
+tiny-skia rasterises slightly differently when clipped; no pixel in a flat part
+of the page differs by more than a level or two of rounding, which
+`tests/region_tests.rs` checks. On the IBM deck's 1408×11911 library page, a
+1280×800 region at 4x paints in about 5 ms in a browser, against 67 ms for the
+whole page at 1x.
 
 ## Appearance
 
