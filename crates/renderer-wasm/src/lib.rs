@@ -9,8 +9,8 @@ use dotgui_renderer::{
     build_scene, compute_taffy_layout_with_text, font_urls_in_stylesheet, google_stylesheet_urls,
     missing_system_font_files, normalize_presence_attrs, paint_scene_to_png_bytes, parse_gui_xml,
     parse_gui_xml_with, parse_library, parse_standalone_xml, read_gui_package, AssetCache,
-    FontStore, GuiDocument, GuiNode, Library, Page, ParseError, ParseOptions, PixelRect,
-    RENDERER_VERSION, SUPPORTED_VERSION,
+    FontStore, GuiDocument, GuiNode, LayoutRect, Library, Page, ParseError, ParseOptions,
+    PixelRect, RENDERER_VERSION, SUPPORTED_VERSION,
 };
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use wasm_bindgen::prelude::*;
@@ -455,6 +455,146 @@ impl Engine {
             warnings: kept.warnings.clone(),
             page: kept,
         })
+    }
+
+    /// The box of the first element whose `attribute` is `value` — an `id`, a
+    /// layer `name`, a `data-uid` — as `[x, y, width, height]` in document
+    /// pixels, or nothing when no element has it.
+    pub fn element_bounds(
+        &self,
+        xml: &str,
+        attribute: &str,
+        value: &str,
+        library: Option<bool>,
+    ) -> Result<Option<Vec<f32>>, JsValue> {
+        let kept = self.page_for(xml, library)?;
+        Ok(kept
+            .page
+            .element_bounds(attribute, value)
+            .map(|rect| vec![rect.x, rect.y, rect.width, rect.height]))
+    }
+
+    /// An area of the page, in document pixels, drawn at `scale` — ready for a
+    /// canvas. Its edges snap outward to whole pixels; the frame's `x` and `y`
+    /// say where it landed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_area(
+        &self,
+        xml: &str,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        scale: f32,
+        library: Option<bool>,
+    ) -> Result<Frame, JsValue> {
+        let scale = usable_density(scale);
+        let region = PixelRect::covering(
+            LayoutRect {
+                x,
+                y,
+                width,
+                height,
+            },
+            scale,
+        );
+        self.render_region(
+            xml,
+            scale,
+            region.x,
+            region.y,
+            region.width,
+            region.height,
+            library,
+        )
+    }
+
+    /// One element as it appears on the page, grown by `padding` document
+    /// pixels on each side, drawn at `scale` — ready for a canvas.
+    pub fn render_element(
+        &self,
+        xml: &str,
+        attribute: &str,
+        value: &str,
+        scale: f32,
+        padding: f32,
+        library: Option<bool>,
+    ) -> Result<Frame, JsValue> {
+        let area = self
+            .page_for(xml, library)?
+            .page
+            .element_area(attribute, value, padding)
+            .map_err(to_js)?;
+        self.render_area(xml, area.x, area.y, area.width, area.height, scale, library)
+    }
+
+    /// The whole page at `scale`, as PNG bytes: a screenshot to save or send.
+    /// Unlike [`Engine::render`], it is not held to a canvas's size limit.
+    pub fn screenshot_page_png(
+        &self,
+        xml: &str,
+        scale: f32,
+        library: Option<bool>,
+    ) -> Result<Vec<u8>, JsValue> {
+        let kept = self.page_for(xml, library)?;
+        let (width, height) = kept.page.size();
+        let area = LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+        };
+        kept.page
+            .paint_area_png(area, scale, Some(&self.cache), Some(&kept.fonts))
+            .map_err(to_js)
+    }
+
+    /// An area of the page, in document pixels, at `scale`, as PNG bytes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn screenshot_area_png(
+        &self,
+        xml: &str,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        scale: f32,
+        library: Option<bool>,
+    ) -> Result<Vec<u8>, JsValue> {
+        let kept = self.page_for(xml, library)?;
+        let area = LayoutRect {
+            x,
+            y,
+            width,
+            height,
+        };
+        kept.page
+            .paint_area_png(area, scale, Some(&self.cache), Some(&kept.fonts))
+            .map_err(to_js)
+    }
+
+    /// One element, grown by `padding` document pixels, at `scale`, as PNG
+    /// bytes.
+    pub fn screenshot_element_png(
+        &self,
+        xml: &str,
+        attribute: &str,
+        value: &str,
+        scale: f32,
+        padding: f32,
+        library: Option<bool>,
+    ) -> Result<Vec<u8>, JsValue> {
+        let kept = self.page_for(xml, library)?;
+        kept.page
+            .paint_element_png(
+                attribute,
+                value,
+                scale,
+                padding,
+                Some(&self.cache),
+                Some(&kept.fonts),
+            )
+            .map_err(to_js)
     }
 
     /// The page's size in document pixels, `[width, height]`, for a host
@@ -1034,5 +1174,47 @@ mod tests {
         assert!(drawable_region(20000, 10).is_err());
         assert!(drawable_region(0, 10).is_err());
         assert!(drawable_region(4096, 4096).is_ok());
+    }
+
+    #[test]
+    fn the_engine_takes_screenshots_of_a_page_an_area_and_an_element() {
+        let engine = Engine::new();
+        let xml = r##"<gui version="0.2"><col w="100" h="80" fill="#ffffff" p="10">
+            <rect id="hero" w="40" h="20" fill="#ff0000" />
+          </col></gui>"##;
+
+        assert_eq!(
+            engine.element_bounds(xml, "id", "hero", None).unwrap(),
+            Some(vec![10.0, 10.0, 40.0, 20.0])
+        );
+        assert_eq!(
+            engine.element_bounds(xml, "id", "nope", None).unwrap(),
+            None
+        );
+
+        let element = engine
+            .render_element(xml, "id", "hero", 2.0, 2.0, None)
+            .unwrap();
+        assert_eq!((element.width(), element.height()), (88, 48));
+        assert_eq!((element.x(), element.y()), (16, 16));
+        assert_eq!(&element.pixels()[..4], &[255, 255, 255, 255]);
+
+        let area = engine
+            .render_area(xml, 10.5, 10.0, 5.0, 5.0, 1.0, None)
+            .unwrap();
+        assert_eq!((area.x(), area.width()), (10, 6));
+        assert_eq!(&area.pixels()[..4], &[255, 0, 0, 255]);
+
+        for png in [
+            engine.screenshot_page_png(xml, 3.0, None).unwrap(),
+            engine
+                .screenshot_area_png(xml, 0.0, 0.0, 50.0, 50.0, 1.0, None)
+                .unwrap(),
+            engine
+                .screenshot_element_png(xml, "id", "hero", 1.0, 0.0, None)
+                .unwrap(),
+        ] {
+            assert!(png.starts_with(b"\x89PNG"));
+        }
     }
 }

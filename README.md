@@ -183,6 +183,21 @@ A package with more than one page writes one PNG per page beside the output
 name, `out/onboarding-02-signup.png` and so on, the library's page included. A
 document that fails is reported by name and the rest still render.
 
+Take a screenshot at any scale, of a whole page, an area (in document pixels),
+or one element found by an attribute:
+
+```bash
+cargo run -q -p dotgui-renderer --example render_png -- deck.gui out/thumb.png --page 05-metrics.guix --scale 0.25
+```
+
+```bash
+cargo run -q -p dotgui-renderer --example render_png -- deck.gui out/kpis.png --page 05-metrics.guix --area 80,150,1120,220 --scale 2
+```
+
+```bash
+cargo run -q -p dotgui-renderer --example render_png -- deck.gui out/headline.png --page 01-cover.guix --element id=headline --padding 12 --scale 2
+```
+
 Open the canvas demo, which rebuilds the WASM bundle on start and lists the
 examples and the spec 0.3 fixture packages:
 
@@ -318,6 +333,18 @@ A region is given in the pixels of the page painted at that scale, so regions
 laid side by side tile the page. `paint_scene_region_to_rgba` does the same for
 a `Scene` directly.
 
+Screenshots are given in document pixels instead, and snap outward to whole
+pixels at the scale asked for. An element is found by any attribute — its `id`,
+its layer `name`, or the `data-uid` an editor stamps on what it selects — and
+the picture is that part of the page, so whatever sits behind the element is in
+it too:
+
+```rust
+let bounds = page.element_bounds("id", "hero");          // Option<LayoutRect>
+let png = page.paint_area_png(area, 2.0, Some(&assets), Some(&fonts))?;
+let png = page.paint_element_png("id", "hero", 2.0, 12.0, Some(&assets), Some(&fonts))?;
+```
+
 In the browser, the WASM `Engine` keeps the pages it has laid out, so rendering
 the same markup again only paints:
 
@@ -325,7 +352,17 @@ the same markup again only paints:
 engine.render(xml, devicePixelRatio)                          // the whole page
 engine.render_region(xml, zoom * devicePixelRatio, x, y, w, h)  // just what is on screen
 engine.page_size(xml)                                         // [width, height]
+
+engine.element_bounds(xml, "id", "hero")                      // [x, y, w, h] or undefined
+engine.render_area(xml, x, y, w, h, scale)                    // an area, for a canvas
+engine.render_element(xml, "id", "hero", scale, padding)      // an element, for a canvas
+engine.screenshot_page_png(xml, scale)                        // PNG bytes to save or send
+engine.screenshot_area_png(xml, x, y, w, h, scale)
+engine.screenshot_element_png(xml, "id", "hero", scale, padding)
 ```
+
+The PNG screenshots are not held to a canvas's size limit, only to 16384×16384
+pixels in all.
 
 A region is painted the same as that part of the whole page. The one exception
 is the anti-aliased outline of a shape that crosses the region's edge, which

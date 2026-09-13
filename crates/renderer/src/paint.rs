@@ -35,6 +35,12 @@ pub enum PaintError {
 
     #[error("failed to render SVG: {0}")]
     Svg(String),
+
+    #[error("no element has {attribute}=\"{value}\"")]
+    NoSuchElement { attribute: String, value: String },
+
+    #[error("a {width}×{height} image is too large to paint")]
+    TooLarge { width: u32, height: u32 },
 }
 
 pub fn paint_scene_to_png(scene: &Scene, path: impl AsRef<Path>) -> Result<(), PaintError> {
@@ -91,6 +97,23 @@ pub struct PixelRect {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+}
+
+impl PixelRect {
+    /// The whole pixels at `scale` that cover `area`, given in document
+    /// pixels: its edges snapped outward, so nothing of the area is cut.
+    pub fn covering(area: crate::LayoutRect, scale: f32) -> Self {
+        let left = (area.x * scale).floor();
+        let top = (area.y * scale).floor();
+        let right = ((area.x + area.width.max(0.0)) * scale).ceil();
+        let bottom = ((area.y + area.height.max(0.0)) * scale).ceil();
+        Self {
+            x: left as i32,
+            y: top as i32,
+            width: (right - left).max(0.0) as u32,
+            height: (bottom - top).max(0.0) as u32,
+        }
+    }
 }
 
 /// The size, in pixels, a full paint of `scene` has: the page's box rounded
