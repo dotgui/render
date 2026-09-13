@@ -127,5 +127,50 @@
         </slot>
       </instance>
     </col>
+
+    <!-- The page template, shown with its slots marked. -->
+    <col gap="16">
+      <text text-style="Label" value="Templates" color="$muted" />
+      <col w="804" gap="4">
+        <text text-style="Label" value="Screen · comp-screen" color="$ink" />
+        <text text-style="Body" value="The page template every screen in this package is built on. The status bar and title stay in place; the middle changes per screen. Prop: title. Slots: body; actions, which falls back to a Continue button; tabs, which accepts only tabs (2 to 5). A slot left empty takes no space." color="$muted" w="fill" />
+      </col>
+      <row gap="24" align="top-left">
+        <col gap="8">
+          <text text-style="Caption" value="Body filled · actions fall back · no tabs" color="$muted" />
+          <col radius="24" border="1 $line" clip>
+          <instance component="comp-screen" title="Title prop">
+            <slot name="body">
+              <row w="fill" h="fill" radius="12" border-width="1" border-color="$muted" border-style="dashed" align="middle-center">
+                  <text text-style="Caption" value="body slot" color="$muted" />
+                </row>
+            </slot>
+          </instance>
+          </col>
+        </col>
+        <col gap="8">
+          <text text-style="Caption" value="Every slot filled" color="$muted" />
+          <col radius="24" border="1 $line" clip>
+          <instance component="comp-screen" title="Title prop">
+            <slot name="body">
+              <row w="fill" h="fill" radius="12" border-width="1" border-color="$muted" border-style="dashed" align="middle-center">
+                  <text text-style="Caption" value="body slot" color="$muted" />
+                </row>
+            </slot>
+            <slot name="actions">
+              <row w="fill" h="48" radius="12" border-width="1" border-color="$muted" border-style="dashed" align="middle-center">
+                  <text text-style="Caption" value="actions slot" color="$muted" />
+                </row>
+            </slot>
+            <slot name="tabs">
+              <instance component="comp-tab-active" label="Tab" />
+              <instance component="comp-tab" label="Tab" />
+              <instance component="comp-tab" label="Tab" />
+            </slot>
+          </instance>
+          </col>
+        </col>
+      </row>
+    </col>
   </col>
 </gui>
