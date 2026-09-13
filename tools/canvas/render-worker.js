@@ -116,6 +116,8 @@ const handlers = {
     const frame = engine.render(xml, density, library)
     const engineMs = performance.now() - started
     const { width, height } = frame
+    // Less than asked for when the page is too long for a canvas at that density.
+    const drawnDensity = frame.density
     const layout = JSON.parse(frame.layout)
     const warnings = frame.warnings
     const pixels = frame.pixels
@@ -123,7 +125,7 @@ const handlers = {
     // large screen at 2x is tens of megabytes.
     frame.free()
 
-    const result = { width, height, layout, warnings, engineMs, fontsMs, missingImages }
+    const result = { width, height, density: drawnDensity, layout, warnings, engineMs, fontsMs, missingImages }
     if (!canvas) {
       // No OffscreenCanvas: hand the pixels to the page, without copying.
       return [{ ...result, pixels: pixels.buffer }, [pixels.buffer]]

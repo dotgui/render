@@ -132,6 +132,8 @@ impl Default for Engine {
 pub struct Frame {
     width: u32,
     height: u32,
+    /// Device pixels per document pixel this frame was drawn at.
+    density: f32,
     pixels: Vec<u8>,
     layout: String,
     warnings: Vec<String>,
@@ -147,6 +149,13 @@ impl Frame {
     #[wasm_bindgen(getter)]
     pub fn height(&self) -> u32 {
         self.height
+    }
+
+    /// The density the frame was drawn at: the one asked for, or less when
+    /// the page would not fit a canvas at it (see [`MAX_CANVAS_SIDE`]).
+    #[wasm_bindgen(getter)]
+    pub fn density(&self) -> f32 {
+        self.density
     }
 
     /// Straight RGBA, row by row: the bytes of an `ImageData` of
@@ -315,7 +324,20 @@ impl Engine {
         let fonts: &FontStore = &fonts;
         let layout = compute_taffy_layout_with_text(&document, fonts).map_err(to_js)?;
         let mut scene = build_scene(&document, &layout);
-        if density.is_finite() && density > 0.0 && density != 1.0 {
+        let requested = if density.is_finite() && density > 0.0 {
+            density
+        } else {
+            1.0
+        };
+        let density = fitting_density(requested, layout.rect.width, layout.rect.height);
+        if density < requested {
+            warnings.push(format!(
+                "drawn at {density:.2}x instead of {requested}x: at {requested}x this {}×{} page is larger than a browser canvas can draw",
+                layout.rect.width.round(),
+                layout.rect.height.round()
+            ));
+        }
+        if density != 1.0 {
             scene = scene.scaled(density);
         }
         let (width, height, pixels) =
@@ -324,6 +346,7 @@ impl Engine {
         Ok(Frame {
             width,
             height,
+            density,
             pixels,
             layout: serde_json::to_string(&layout).map_err(to_js)?,
             warnings,
@@ -417,6 +440,25 @@ impl Engine {
         }));
         Ok((store, warnings))
     }
+}
+
+/// The longest side, in device pixels, a canvas can be drawn at.
+///
+/// Browsers back a canvas with a GPU texture, and 16384 is the largest texture
+/// side common hardware allows; past it, Chromium leaves the canvas blank or
+/// showing the previous frame. A long page — a library's style guide — reaches
+/// that at 2x density long before it runs out of memory.
+pub const MAX_CANVAS_SIDE: f32 = 16384.0;
+
+/// The density to draw a `width` × `height` page at: `requested`, or the
+/// highest density at which its longest side still fits a canvas.
+fn fitting_density(requested: f32, width: f32, height: f32) -> f32 {
+    let side = width.max(height);
+    if side <= 0.0 {
+        return requested;
+    }
+    // One pixel of headroom: the painter rounds the frame's size up.
+    requested.min((MAX_CANVAS_SIDE - 1.0) / side)
 }
 
 /// What went wrong with a library, without repeating that it was the library.
@@ -681,5 +723,27 @@ mod tests {
         engine.render(&edited, 1.0, Some(true)).unwrap();
         let frame = engine.render(SCREEN, 1.0, None).unwrap();
         assert_eq!(&frame.pixels()[..4], &[0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn a_page_too_long_for_a_canvas_is_drawn_at_a_density_that_fits() {
+        assert_eq!(fitting_density(2.0, 1280.0, 720.0), 2.0);
+
+        let density = fitting_density(2.0, 1408.0, 10875.0);
+        assert!(density < 2.0);
+        assert!((10875.0 * density).ceil() <= MAX_CANVAS_SIDE);
+
+        let xml = r##"<gui version="0.2"><col w="10" h="20000" fill="#ff0000" /></gui>"##;
+        let frame = Engine::new().render(xml, 2.0, None).unwrap();
+        assert!(
+            frame.height() as f32 <= MAX_CANVAS_SIDE,
+            "{}",
+            frame.height()
+        );
+        assert!(frame.density() < 1.0);
+        assert!(frame
+            .warnings()
+            .iter()
+            .any(|w| w.contains("larger than a browser canvas")));
     }
 }

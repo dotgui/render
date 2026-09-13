@@ -153,7 +153,7 @@
   // ── Canvas → page ────────────────────────────────────────────────────────
   gui.addEventListener('render', ({ detail }) => {
     const ready = detail.wallMs == null ? '' : `on screen in ${detail.wallMs.toFixed(0)} ms · `
-    stats.textContent = `${ready}render ${detail.ms.toFixed(0)} ms · ${detail.width}×${detail.height} @${detail.density}x` +
+    stats.textContent = `${ready}render ${detail.ms.toFixed(0)} ms · ${detail.width}×${detail.height} @${+detail.density.toFixed(2)}x` +
       (detail.complete ? '' : ' · loading images…') +
       (detail.warnings.length ? ` · ${detail.warnings.length} warning(s)` : '')
     const steps = Object.entries(detail.timings ?? {}).map(([step, ms]) => `${step}: ${ms.toFixed(0)} ms`)

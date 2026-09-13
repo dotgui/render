@@ -441,7 +441,7 @@ export class GuiCanvas extends HTMLElement {
           complete: frame.missingImages === 0,
           engineMs: frame.engineMs,
           offscreen: this.#offscreen,
-          density,
+          density: frame.density ?? density,
           width,
           height,
           pixels: [frame.width, frame.height],
