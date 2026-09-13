@@ -101,10 +101,7 @@ fn layout_matches_committed_snapshots() {
         });
 
         if expected != *rendered {
-            failures.push(format!(
-                "{name}\n{}",
-                first_difference(&expected, rendered)
-            ));
+            failures.push(format!("{name}\n{}", first_difference(&expected, rendered)));
         }
     }
 
