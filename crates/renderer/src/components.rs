@@ -383,7 +383,11 @@ impl Expander<'_> {
                 )
             })
             .collect();
-        self.fill_slots(&mut body, &mut fills, id, body_scope);
+        // Almost every component declares no slot, and its body need not be
+        // walked for one.
+        if !component.slots.is_empty() {
+            self.fill_slots(&mut body, &mut fills, id, body_scope);
+        }
 
         // A component body may itself hold instances.
         self.expand_at(&mut body, body_scope, depth + 1);
