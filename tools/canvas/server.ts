@@ -5,6 +5,9 @@
  *
  *   bun run tools/canvas/server.ts        # then open http://localhost:4180
  *
+ * The picker lists `examples/`, the spec 0.3 fixture packages, and any `.gui`
+ * or `.guix` dropped into `tools/canvas/samples/` (ignored by git and by the
+ * tests).
  * The WASM build is rebuilt and re-bound on start — a no-op when nothing
  * changed — so the page runs the working tree. Needs cargo, the
  * wasm32-unknown-unknown target, and a wasm-bindgen CLI matching Cargo.lock.
@@ -31,6 +34,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..', '..')
 const PORT = Number(process.env.PORT ?? 4180)
 const EXAMPLES = path.join(ROOT, 'examples')
+/** Multi-document fixture packages, kept unzipped; served zipped as `<name>.gui`. */
+const PACKAGES = path.join(ROOT, 'crates', 'renderer', 'tests', 'packages')
+/** Your own `.gui` / `.guix` files to try on the page, kept out of git and the tests. */
+const SAMPLES = path.join(HERE, 'samples')
 const WASM = path.join(ROOT, 'target', 'wasm32-unknown-unknown', 'release', 'dotgui_renderer_wasm.wasm')
 
 /** The user agent the native renderer fetches with, so Google serves TrueType. */
@@ -111,12 +118,25 @@ Bun.serve({
       if (existsSync(file)) return new Response(Bun.file(file))
     }
     if (pathname === '/examples') {
-      const names = readdirSync(EXAMPLES).filter((name) => /\.guix?$/.test(name)).sort()
-      return Response.json(names)
+      const names = readdirSync(EXAMPLES).filter((name) => /\.guix?$/.test(name))
+      const packages = existsSync(PACKAGES)
+        ? readdirSync(PACKAGES).filter((name) => statSync(path.join(PACKAGES, name)).isDirectory()).map((name) => `${name}.gui`)
+        : []
+      const samples = existsSync(SAMPLES) ? readdirSync(SAMPLES).filter((name) => /\.guix?$/.test(name)) : []
+      return Response.json([...new Set([...names, ...packages, ...samples])].sort())
     }
     if (pathname.startsWith('/examples/')) {
-      const file = path.join(EXAMPLES, path.basename(decodeURIComponent(pathname)))
+      const name = path.basename(decodeURIComponent(pathname))
+      const file = path.join(EXAMPLES, name)
       if (existsSync(file)) return new Response(Bun.file(file))
+      const sample = path.join(SAMPLES, name)
+      if (existsSync(sample)) return new Response(Bun.file(sample))
+      const dir = path.join(PACKAGES, name.replace(/\.gui$/, ''))
+      if (name.endsWith('.gui') && existsSync(dir) && statSync(dir).isDirectory()) {
+        // Zipped on request, so the page always sees the working tree.
+        const zip = Bun.spawn(['zip', '-q', '-r', '-X', '-', '.'], { cwd: dir, stdout: 'pipe' })
+        return new Response(zip.stdout, { headers: { 'Content-Type': 'application/zip' } })
+      }
     }
     if (pathname === '/proxy') return proxy(searchParams.get('url'))
     if (pathname === '/fonts') return Response.json(installedFonts())

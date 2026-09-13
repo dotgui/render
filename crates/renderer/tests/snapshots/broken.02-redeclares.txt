@@ -1,0 +1,1 @@
+error: token '$primary' is already declared by library.guix; change it there instead of redeclaring it

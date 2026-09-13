@@ -1,0 +1,21 @@
+<gui version="0.3" name="Done">
+  <col w="390" h="844">
+    <instance component="comp-screen" title="You're all set">
+      <slot name="body">
+        <instance component="comp-card" heading="First trip">
+          <slot name="content">
+            <text text-style="Body" value="Lisbon, 12–16 October" color="$ink" w="fill" />
+            <text text-style="Caption" value="3 friends invited" color="$muted" />
+          </slot>
+        </instance>
+      </slot>
+      <slot name="actions" />
+      <slot name="tabs">
+        <instance component="comp-tab-active" label="Trips" />
+        <instance component="comp-tab" label="Explore" />
+        <instance component="comp-tab" label="Inbox" />
+        <instance component="comp-tab" label="Profile" />
+      </slot>
+    </instance>
+  </col>
+</gui>

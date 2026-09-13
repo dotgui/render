@@ -62,11 +62,11 @@ async function supply(engine, wanted) {
  * more. Each round can reveal more: a stylesheet names its font files, and a
  * family that is not installed falls back to the next UI font.
  */
-async function supplyFonts(engine, xml, proxy, fontFile) {
+async function supplyFonts(engine, xml, library, proxy, fontFile) {
   for (let round = 0; round < 8; round++) {
     const wanted = [
-      ...engine.missing_font_urls(xml).map((url) => [url, proxy + encodeURIComponent(url)]),
-      ...engine.missing_font_files(xml).map((file) => [file, fontFile + encodeURIComponent(file)]),
+      ...engine.missing_font_urls(xml, library).map((url) => [url, proxy + encodeURIComponent(url)]),
+      ...engine.missing_font_files(xml, library).map((file) => [file, fontFile + encodeURIComponent(file)]),
     ]
     if (wanted.length === 0) return
     await supply(engine, wanted)
@@ -91,8 +91,9 @@ const handlers = {
     return [null]
   },
 
+  /** Keeps the package's assets and library; answers with its pages. */
   loadPackage({ key, bytes }) {
-    return [entry(key).engine.load_package(new Uint8Array(bytes))]
+    return [JSON.parse(entry(key).engine.load_package(new Uint8Array(bytes)))]
   },
 
   /**
@@ -100,18 +101,23 @@ const handlers = {
    * the layout, images only fill boxes the markup has already sized. The
    * result says how many images are still missing, for the page to fetch with
    * `supplyImages` and render again.
+   *
+   * `library` says the markup is the package's `library.guix`: its page is
+   * drawn, and the documents drawn after it resolve against this markup.
    */
-  async render({ key, xml, density, proxy, fontFile }) {
+  async render({ key, xml, library, density, proxy, fontFile }) {
     const { engine, canvas } = entry(key)
     const fontsStarted = performance.now()
-    await supplyFonts(engine, xml, proxy, fontFile)
+    await supplyFonts(engine, xml, library, proxy, fontFile)
     const fontsMs = performance.now() - fontsStarted
-    const missingImages = engine.missing_image_urls(xml).length
+    const missingImages = engine.missing_image_urls(xml, library).length
 
     const started = performance.now()
-    const frame = engine.render(xml, density)
+    const frame = engine.render(xml, density, library)
     const engineMs = performance.now() - started
     const { width, height } = frame
+    // Less than asked for when the page is too long for a canvas at that density.
+    const drawnDensity = frame.density
     const layout = JSON.parse(frame.layout)
     const warnings = frame.warnings
     const pixels = frame.pixels
@@ -119,7 +125,7 @@ const handlers = {
     // large screen at 2x is tens of megabytes.
     frame.free()
 
-    const result = { width, height, layout, warnings, engineMs, fontsMs, missingImages }
+    const result = { width, height, density: drawnDensity, layout, warnings, engineMs, fontsMs, missingImages }
     if (!canvas) {
       // No OffscreenCanvas: hand the pixels to the page, without copying.
       return [{ ...result, pixels: pixels.buffer }, [pixels.buffer]]
@@ -131,9 +137,9 @@ const handlers = {
     return [{ ...result, drawMs: performance.now() - drawStarted }]
   },
 
-  async supplyImages({ key, xml, proxy }) {
+  async supplyImages({ key, xml, library, proxy }) {
     const { engine } = entry(key)
-    const wanted = engine.missing_image_urls(xml).map((url) => [url, proxy + encodeURIComponent(url)])
+    const wanted = engine.missing_image_urls(xml, library).map((url) => [url, proxy + encodeURIComponent(url)])
     await supply(engine, wanted)
     return [wanted.length]
   },

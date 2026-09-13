@@ -1,0 +1,6 @@
+<gui version="0.3" name="Redeclares a library token">
+  <tokens>
+    <color name="primary" value="#FF0000" />
+  </tokens>
+  <col w="200" h="100" fill="$primary" />
+</gui>

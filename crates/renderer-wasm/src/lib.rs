@@ -8,8 +8,9 @@
 use dotgui_renderer::{
     build_scene, compute_taffy_layout_with_text, font_urls_in_stylesheet, google_stylesheet_urls,
     missing_system_font_files, normalize_presence_attrs, paint_scene_to_png_bytes,
-    paint_scene_to_rgba, parse_gui_xml, read_gui_package, AssetCache, FontStore, GuiDocument,
-    GuiNode,
+    paint_scene_to_rgba, parse_gui_xml, parse_gui_xml_with, parse_library, parse_standalone_xml,
+    read_gui_package, AssetCache, FontStore, GuiDocument, GuiNode, Library, ParseError,
+    ParseOptions, RENDERER_VERSION, SUPPORTED_VERSION,
 };
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use wasm_bindgen::prelude::*;
@@ -26,17 +27,24 @@ fn to_js(err: impl std::fmt::Display) -> JsValue {
 
 fn load_xml(xml: &str) -> Result<Loaded, JsValue> {
     Ok(Loaded {
-        document: parse_gui_xml(xml).map_err(to_js)?,
+        // Markup handed over on its own is a standalone document (RFC-0043).
+        document: parse_standalone_xml(xml).map_err(to_js)?,
         // No packaged assets: `src` values that are not data URIs cannot be
         // resolved without a host filesystem.
         cache: in_memory_cache(BTreeMap::new()),
     })
 }
 
+/// A package's only document. These one-shot entry points draw one screen; a
+/// package of several goes through [`Engine::load_package`].
 fn load_package(bytes: &[u8]) -> Result<Loaded, JsValue> {
     let package = read_gui_package(bytes).map_err(to_js)?;
+    let document = package.single_document().map_err(to_js)?;
+    let library = package.parse_library();
     Ok(Loaded {
-        document: parse_gui_xml(&package.xml).map_err(to_js)?,
+        document: package
+            .parse_document(document, library.as_ref())
+            .map_err(to_js)?,
         cache: in_memory_cache(package.assets),
     })
 }
@@ -88,6 +96,17 @@ pub struct Engine {
     /// slowest step that does not depend on the design, and an edit almost
     /// never changes the declarations, so an edit should not pay for it again.
     fonts: RefCell<Option<LoadedFonts>>,
+    /// The package the markup comes from, once one is loaded. Without one,
+    /// markup is a standalone document.
+    package: RefCell<Option<PackageContext>>,
+}
+
+/// How a loaded package's documents are read.
+struct PackageContext {
+    /// `library.guix` as last loaded or edited, or why it did not parse.
+    library: Option<Result<Library, String>>,
+    /// A library or several documents: every document must declare 0.3.
+    multi_document: bool,
 }
 
 struct LoadedFonts {
@@ -102,6 +121,7 @@ impl Default for Engine {
         Self {
             cache: in_memory_cache(BTreeMap::new()),
             fonts: RefCell::new(None),
+            package: RefCell::new(None),
         }
     }
 }
@@ -112,6 +132,8 @@ impl Default for Engine {
 pub struct Frame {
     width: u32,
     height: u32,
+    /// Device pixels per document pixel this frame was drawn at.
+    density: f32,
     pixels: Vec<u8>,
     layout: String,
     warnings: Vec<String>,
@@ -127,6 +149,13 @@ impl Frame {
     #[wasm_bindgen(getter)]
     pub fn height(&self) -> u32 {
         self.height
+    }
+
+    /// The density the frame was drawn at: the one asked for, or less when
+    /// the page would not fit a canvas at it (see [`MAX_CANVAS_SIDE`]).
+    #[wasm_bindgen(getter)]
+    pub fn density(&self) -> f32 {
+        self.density
     }
 
     /// Straight RGBA, row by row: the bytes of an `ImageData` of
@@ -163,14 +192,45 @@ impl Engine {
         self.fonts.replace(None);
     }
 
-    /// Reads a packaged `.gui`, keeps its assets, and returns its markup.
+    /// Reads a packaged `.gui`, keeps its assets and library, and returns its
+    /// pages as JSON:
+    ///
+    /// ```json
+    /// { "documents": [{ "name": "01-welcome.guix", "xml": "<gui …" }],
+    ///   "library": { "name": "library.guix", "xml": "<gui …", "hasPage": true } }
+    /// ```
+    ///
+    /// Documents are in presentation order. `library` is `null` when the
+    /// package has none. A document that is not valid UTF-8 comes back with
+    /// `xml: null` and an `error`, so the rest still open.
     pub fn load_package(&mut self, package: &[u8]) -> Result<String, JsValue> {
         let package = read_gui_package(package).map_err(to_js)?;
+        let library = package.parse_library();
+
+        let page = |document: &dotgui_renderer::PackageDocument| match document.xml() {
+            Ok(xml) => serde_json::json!({ "name": document.name, "xml": xml }),
+            Err(err) => {
+                serde_json::json!({ "name": document.name, "xml": null, "error": err.to_string() })
+            }
+        };
+        let mut library_json = package.library.as_ref().map(page);
+        if let (Some(json), Some(Ok(parsed))) = (library_json.as_mut(), library.as_ref()) {
+            json["hasPage"] = parsed.has_page().into();
+        }
+        let pages = serde_json::json!({
+            "documents": package.documents.iter().map(page).collect::<Vec<_>>(),
+            "library": library_json,
+        });
+
+        self.package.replace(Some(PackageContext {
+            library: library.map(|result| result.map_err(|err| library_reason(&err))),
+            multi_document: package.is_multi_document(),
+        }));
         for (key, bytes) in package.assets {
             self.cache.insert_package_asset(key, bytes);
         }
         self.fonts.replace(None);
-        Ok(package.xml)
+        serde_json::to_string(&pages).map_err(to_js)
     }
 
     /// The font files on the host, by path — what a native renderer would find
@@ -187,8 +247,12 @@ impl Engine {
     /// The system font files this document needs whose bytes the engine does
     /// not hold yet. Like [`Engine::missing_font_urls`], ask again after supplying
     /// them: a family that is not installed falls back to the next UI font.
-    pub fn missing_font_files(&self, xml: &str) -> Result<Vec<String>, JsValue> {
-        let document = parse_gui_xml(xml).map_err(to_js)?;
+    pub fn missing_font_files(
+        &self,
+        xml: &str,
+        library: Option<bool>,
+    ) -> Result<Vec<String>, JsValue> {
+        let document = self.read(xml, library)?;
         Ok(missing_system_font_files(&document, &self.cache))
     }
 
@@ -199,8 +263,12 @@ impl Engine {
     /// fetches what this returns and asks again until it comes back empty.
     /// Fonts decide where text breaks, so a host should wait for these before
     /// a first render, or the layout will jump when they arrive.
-    pub fn missing_font_urls(&self, xml: &str) -> Result<Vec<String>, JsValue> {
-        let document = parse_gui_xml(xml).map_err(to_js)?;
+    pub fn missing_font_urls(
+        &self,
+        xml: &str,
+        library: Option<bool>,
+    ) -> Result<Vec<String>, JsValue> {
+        let document = self.read(xml, library)?;
         let mut wanted = Vec::new();
 
         for stylesheet in google_stylesheet_urls(&document) {
@@ -223,8 +291,12 @@ impl Engine {
     ///
     /// Images never move the layout — their boxes are sized by the markup — so
     /// a host can render first and fill these in when they arrive.
-    pub fn missing_image_urls(&self, xml: &str) -> Result<Vec<String>, JsValue> {
-        let document = parse_gui_xml(xml).map_err(to_js)?;
+    pub fn missing_image_urls(
+        &self,
+        xml: &str,
+        library: Option<bool>,
+    ) -> Result<Vec<String>, JsValue> {
+        let document = self.read(xml, library)?;
         let mut wanted = Vec::new();
         collect_remote_urls(&document.root, &mut wanted);
         wanted.extend(
@@ -240,14 +312,32 @@ impl Engine {
     /// Renders at `density` device pixels per document pixel — pass the
     /// screen's `devicePixelRatio` for a sharp canvas. The layout stays in
     /// document pixels, so hit testing does not change with density.
-    pub fn render(&self, xml: &str, density: f32) -> Result<Frame, JsValue> {
-        let document = parse_gui_xml(xml).map_err(to_js)?;
+    ///
+    /// Pass `library: true` when `xml` is the package's `library.guix`: its
+    /// page is drawn, and every later document resolves against this markup,
+    /// so an edit to the library shows up in the documents that use it.
+    pub fn render(&self, xml: &str, density: f32, library: Option<bool>) -> Result<Frame, JsValue> {
+        let document = self.read(xml, library)?;
         let cache = &self.cache;
         let (fonts, mut warnings) = self.fonts_for(&document)?;
+        warnings.splice(0..0, document.warnings.iter().cloned());
         let fonts: &FontStore = &fonts;
         let layout = compute_taffy_layout_with_text(&document, fonts).map_err(to_js)?;
         let mut scene = build_scene(&document, &layout);
-        if density.is_finite() && density > 0.0 && density != 1.0 {
+        let requested = if density.is_finite() && density > 0.0 {
+            density
+        } else {
+            1.0
+        };
+        let density = fitting_density(requested, layout.rect.width, layout.rect.height);
+        if density < requested {
+            warnings.push(format!(
+                "drawn at {density:.2}x instead of {requested}x: at {requested}x this {}×{} page is larger than a browser canvas can draw",
+                layout.rect.width.round(),
+                layout.rect.height.round()
+            ));
+        }
+        if density != 1.0 {
             scene = scene.scaled(density);
         }
         let (width, height, pixels) =
@@ -256,6 +346,7 @@ impl Engine {
         Ok(Frame {
             width,
             height,
+            density,
             pixels,
             layout: serde_json::to_string(&layout).map_err(to_js)?,
             warnings,
@@ -264,6 +355,58 @@ impl Engine {
 }
 
 impl Engine {
+    /// Parses markup as what it is: a package document resolved against the
+    /// library, the library's own page, or a standalone document.
+    ///
+    /// Reading the library's page also takes its declarations as the
+    /// package's library from now on.
+    fn read(&self, xml: &str, library: Option<bool>) -> Result<GuiDocument, JsValue> {
+        let mut package = self.package.borrow_mut();
+
+        if library == Some(true) {
+            let parsed = parse_library(xml).map_err(|err| library_reason(&err));
+            let failure = parsed.as_ref().err().cloned();
+            match package.as_mut() {
+                Some(context) => context.library = Some(parsed),
+                None => {
+                    *package = Some(PackageContext {
+                        library: Some(parsed),
+                        multi_document: true,
+                    })
+                }
+            }
+            if let Some(reason) = failure {
+                return Err(to_js(ParseError::Library(reason)));
+            }
+            return parse_gui_xml_with(
+                xml,
+                ParseOptions {
+                    in_multi_document_package: true,
+                    ..ParseOptions::default()
+                },
+            )
+            .map_err(to_js);
+        }
+
+        let Some(context) = package.as_ref() else {
+            return parse_standalone_xml(xml).map_err(to_js);
+        };
+        let library = match &context.library {
+            Some(Ok(library)) => Some(library),
+            Some(Err(reason)) => return Err(to_js(ParseError::Library(reason.clone()))),
+            None => None,
+        };
+        parse_gui_xml_with(
+            xml,
+            ParseOptions {
+                library,
+                in_multi_document_package: context.multi_document,
+                ..ParseOptions::default()
+            },
+        )
+        .map_err(to_js)
+    }
+
     fn not_held(&self, mut urls: Vec<String>) -> Vec<String> {
         urls.retain(|url| !self.cache.has_package_asset(url));
         urls.sort();
@@ -299,6 +442,33 @@ impl Engine {
     }
 }
 
+/// The longest side, in device pixels, a canvas can be drawn at.
+///
+/// Browsers back a canvas with a GPU texture, and 16384 is the largest texture
+/// side common hardware allows; past it, Chromium leaves the canvas blank or
+/// showing the previous frame. A long page — a library's style guide — reaches
+/// that at 2x density long before it runs out of memory.
+pub const MAX_CANVAS_SIDE: f32 = 16384.0;
+
+/// The density to draw a `width` × `height` page at: `requested`, or the
+/// highest density at which its longest side still fits a canvas.
+fn fitting_density(requested: f32, width: f32, height: f32) -> f32 {
+    let side = width.max(height);
+    if side <= 0.0 {
+        return requested;
+    }
+    // One pixel of headroom: the painter rounds the frame's size up.
+    requested.min((MAX_CANVAS_SIDE - 1.0) / side)
+}
+
+/// What went wrong with a library, without repeating that it was the library.
+fn library_reason(err: &ParseError) -> String {
+    match err {
+        ParseError::Library(reason) => reason.clone(),
+        other => other.to_string(),
+    }
+}
+
 fn collect_remote_urls(node: &GuiNode, into: &mut Vec<String>) {
     for value in node.attributes.values() {
         into.extend(remote_urls_in(value));
@@ -326,6 +496,20 @@ fn remote_urls_in(value: &str) -> Vec<String> {
         rest = &tail[end..];
     }
     urls
+}
+
+/// This renderer's version, e.g. `0.3.0`. Its `major.minor` is the newest spec
+/// version it reads.
+#[wasm_bindgen]
+pub fn renderer_version() -> String {
+    RENDERER_VERSION.to_owned()
+}
+
+/// The newest spec version this renderer reads, e.g. `0.3`. A document
+/// declaring a newer one is refused.
+#[wasm_bindgen]
+pub fn supported_spec_version() -> String {
+    SUPPORTED_VERSION.to_owned()
 }
 
 /// The markup with presence attributes (`<frame clip>`) given values, so a
@@ -427,7 +611,7 @@ mod tests {
         "##;
         let mut engine = Engine::new();
 
-        let first = engine.missing_font_urls(xml).unwrap();
+        let first = engine.missing_font_urls(xml, None).unwrap();
         let stylesheet = first
             .iter()
             .find(|url| url.starts_with("https://fonts.googleapis.com/"))
@@ -435,7 +619,7 @@ mod tests {
             .clone();
         assert_eq!(first.len(), 1, "images are not fonts: {first:?}");
         assert_eq!(
-            engine.missing_image_urls(xml).unwrap(),
+            engine.missing_image_urls(xml, None).unwrap(),
             vec![
                 "http://example.com/a.png".to_owned(),
                 "https://example.com/bg.png".to_owned()
@@ -444,7 +628,7 @@ mod tests {
 
         let css = "@font-face { font-style: normal; font-weight: 400; src: url(https://fonts.gstatic.com/inter.ttf) format('truetype'); }";
         engine.set_asset(stylesheet, css.as_bytes().to_vec());
-        let second = engine.missing_font_urls(xml).unwrap();
+        let second = engine.missing_font_urls(xml, None).unwrap();
         assert!(second.contains(&"https://fonts.gstatic.com/inter.ttf".to_owned()));
         assert!(!second
             .iter()
@@ -454,7 +638,7 @@ mod tests {
     #[test]
     fn engine_frame_carries_attributes_a_host_can_select_by() {
         let xml = r##"<gui version="0.2"><col w="100" h="100"><rect data-uid="7" w="50" h="50" fill="#ff0000" /></col></gui>"##;
-        let frame = Engine::new().render(xml, 1.0).unwrap();
+        let frame = Engine::new().render(xml, 1.0, None).unwrap();
         assert_eq!((frame.width(), frame.height()), (100, 100));
         assert_eq!(frame.pixels().len(), 100 * 100 * 4);
         // The red square's first pixel, straight RGBA.
@@ -462,7 +646,7 @@ mod tests {
         assert!(frame.layout().contains(r#""data-uid":"7""#));
 
         // Twice the pixels, the same layout.
-        let dense = Engine::new().render(xml, 2.0).unwrap();
+        let dense = Engine::new().render(xml, 2.0, None).unwrap();
         assert_eq!((dense.width(), dense.height()), (200, 200));
         assert_eq!(dense.layout(), frame.layout());
     }
@@ -487,5 +671,79 @@ mod tests {
         let second = parse_gui_xml(&with("Roboto")).unwrap();
         let (c, _) = engine.fonts_for(&second).unwrap();
         assert!(!Rc::ptr_eq(&a, &c), "new declarations load again");
+    }
+
+    fn zip(entries: &[(&str, &str)]) -> Vec<u8> {
+        use std::io::Write;
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut bytes);
+            for (name, contents) in entries {
+                zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(contents.as_bytes()).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        bytes.into_inner()
+    }
+
+    const LIBRARY: &str = r##"<gui version="0.3">
+      <tokens><color name="brand" value="#ff0000" /></tokens>
+      <col w="20" h="20" fill="$brand" />
+    </gui>"##;
+    const SCREEN: &str = r##"<gui version="0.3"><col w="10" h="10" fill="$brand" /></gui>"##;
+
+    #[test]
+    fn engine_renders_every_page_of_a_multi_document_package() {
+        let mut engine = Engine::new();
+        let pages = engine
+            .load_package(&zip(&[
+                ("02-b.guix", SCREEN),
+                ("library.guix", LIBRARY),
+                ("01-a.guix", SCREEN),
+            ]))
+            .unwrap();
+        let pages: serde_json::Value = serde_json::from_str(&pages).unwrap();
+        assert_eq!(pages["documents"][0]["name"], "01-a.guix");
+        assert_eq!(pages["documents"][1]["name"], "02-b.guix");
+        assert_eq!(pages["library"]["hasPage"], true);
+
+        // A document resolves the library's token without declaring it.
+        let frame = engine.render(SCREEN, 1.0, None).unwrap();
+        assert_eq!(&frame.pixels()[..4], &[255, 0, 0, 255]);
+
+        // The library's own page draws too.
+        let library = pages["library"]["xml"].as_str().unwrap();
+        let page = engine.render(library, 1.0, Some(true)).unwrap();
+        assert_eq!((page.width(), page.height()), (20, 20));
+
+        // Editing the library reaches the documents that use it.
+        let edited = LIBRARY.replace("#ff0000", "#0000ff");
+        engine.render(&edited, 1.0, Some(true)).unwrap();
+        let frame = engine.render(SCREEN, 1.0, None).unwrap();
+        assert_eq!(&frame.pixels()[..4], &[0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn a_page_too_long_for_a_canvas_is_drawn_at_a_density_that_fits() {
+        assert_eq!(fitting_density(2.0, 1280.0, 720.0), 2.0);
+
+        let density = fitting_density(2.0, 1408.0, 10875.0);
+        assert!(density < 2.0);
+        assert!((10875.0 * density).ceil() <= MAX_CANVAS_SIDE);
+
+        let xml = r##"<gui version="0.2"><col w="10" h="20000" fill="#ff0000" /></gui>"##;
+        let frame = Engine::new().render(xml, 2.0, None).unwrap();
+        assert!(
+            frame.height() as f32 <= MAX_CANVAS_SIDE,
+            "{}",
+            frame.height()
+        );
+        assert!(frame.density() < 1.0);
+        assert!(frame
+            .warnings()
+            .iter()
+            .any(|w| w.contains("larger than a browser canvas")));
     }
 }

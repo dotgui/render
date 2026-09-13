@@ -46,8 +46,12 @@ tool, a server-side thumbnail service, or a WebAssembly host.
 
 This is an early native renderer. It can already:
 
-- read `.gui` packages and `.guix` XML
-- extract `design.guix` and bundled package assets
+- read `.gui` packages and `.guix` XML, telling them apart by their first bytes
+- read every document in a package, in filename order, and resolve names they
+  do not declare against the package's `library.guix` (spec 0.3)
+- render `library.guix`'s own page, the package's style guide, when it has one
+- fill component slots with instance content (spec 0.3)
+- refuse documents declaring a spec version newer than 0.3
 - parse tokens, fonts, text styles, nodes, attributes, and children
 - compute a flexbox layout tree (Taffy) for rows, columns, stacks, frames,
   groups, and leaves
@@ -86,7 +90,7 @@ This is an early native renderer. It can already:
 - render raster images (PNG/JPEG) with `contain`, `cover`, `fill`, and `crop`
   fit modes
 - expand `<instance>` nodes against `<components>` definitions, with declared
-  props, ad-hoc overrides by layer id, variants, and instance scaling
+  props, ad-hoc overrides by layer id, variants, slots, and instance scaling
 - expose parsing, layout, scene, and PNG rendering through WASM
 - skip a node the document hides with `visible`, keeping the space it holds
 - paint children back to front with `reverse-z`, and wrap them with `wrap`
@@ -110,6 +114,9 @@ crates/
   renderer/       Core Rust parser, model, layout, scene, assets, fonts, paint
   renderer-wasm/  JavaScript/WASM adapter around the core parser
 
+crates/renderer/tests/packages/
+                  Spec 0.3 packages kept unzipped: several documents, a library
+tools/canvas/     Local page that draws a .gui on a canvas through WASM
 examples/         Sample .gui packages used for renderer validation
 out/              Local PNG exports, ignored by git
 .gui-render/      Local renderer cache, ignored by git
@@ -132,7 +139,7 @@ intentional layout change, read the diff and regenerate:
 UPDATE_SNAPSHOTS=1 cargo test -p dotgui-renderer --test layout_snapshots
 ```
 
-Golden-image tests compare four examples against committed PNGs. They are a
+Golden-image tests compare four examples, and a set of fixtures, against committed PNGs. They are a
 local tool rather than a CI gate, and are ignored by default: two of them
 declare `source="system"` fonts whose bytes differ per host, and the other two
 resolve Google fonts and remote icons over the network, which is rate limited.
@@ -170,6 +177,17 @@ Example:
 cargo run -q -p dotgui-renderer --example render_png examples/beacon-recovery-code-android.gui out/beacon.png
 ```
 
+A package with more than one page writes one PNG per page beside the output
+name, `out/onboarding-02-signup.png` and so on, the library's page included. A
+document that fails is reported by name and the rest still render.
+
+Open the canvas demo, which rebuilds the WASM bundle on start and lists the
+examples and the spec 0.3 fixture packages:
+
+```bash
+bun run tools/canvas/server.ts
+```
+
 Parse a `.gui` or `.guix` file and print JSON:
 
 ```bash
@@ -204,6 +222,79 @@ cargo run -q -p dotgui-renderer --example compare examples/foo.gui   # one docum
 Needs [bun](https://bun.sh), a Chromium-based browser, and a `dotgui/kit`
 checkout beside this one (or `DOTGUI_KIT` pointing at it) with its render
 bundle built. See [Comparing Against Kit](#comparing-against-kit).
+
+## Versions
+
+The renderer's version follows the spec. Its `major.minor` is the newest `.gui`
+version it reads, and a patch release fixes the renderer without changing that:
+renderer `0.3.0` and `0.3.2` both read documents up to `version="0.3"`.
+
+Support is cumulative. A newer renderer reads every older document as it always
+rendered. An older renderer refuses a document from a newer spec by name
+instead of drawing features it does not know: renderer `0.3.x` meeting a
+`version="0.4"` document reports that a newer renderer is needed. A test fails
+if the crate version and the supported spec version drift apart.
+
+```bash
+cargo run -q -p dotgui-renderer --example render_png -- --version
+```
+
+From WASM, `renderer_version()` and `supported_spec_version()` answer the same
+questions.
+
+[VERSIONING.md](VERSIONING.md) has the full rules and the checklists for
+implementing a new spec version and for a renderer-only release.
+
+## Packages, Libraries and Slots
+
+Spec 0.3 ([RFC-0042], [RFC-0043], [RFC-0044]) changes what a `.gui` holds and
+adds one piece of component vocabulary.
+
+**A package is listed, not looked up.** Every `.guix` at the package root is a
+document, whatever it is called, shown in filename order. `design.guix` is only
+a convention. `GuiPackage::pages` parses each one on its own, so one broken
+document fails by name and the others still render.
+
+**`library.guix` is shared.** Everything above its layout root (tokens, fonts,
+styles, components) is visible to every document with no import. A document may
+add names of its own. Redeclaring a name the library holds is an error, and so is
+a name found in neither place. The library resolves only against itself. When it
+has a layout root, that page renders like any other: it is the package's style
+guide or documentation.
+
+**Bare markup is a standalone document.** `parse_standalone_xml` applies the
+rules for markup served on its own: assets are absolute URLs, never a local path.
+In any 0.3 document an asset is never a `data:` URI.
+
+**Slots.** A layout container carrying `slot` in a component body is a hole, and
+its children are the fallback. An instance fills it by name:
+
+```xml
+<component id="comp-screen">
+  <col w="390" gap="16">
+    <text id="title" value="Title" />
+    <col slot="body" p="24" gap="16" />
+    <row slot="tabs" slot-accept="compset-tab" slot-min="2" gap="8" />
+  </col>
+</component>
+
+<instance component="comp-screen">
+  <slot name="body"><text value="Anything goes here" /></slot>
+</instance>
+```
+
+Content takes the slot's layout. An unfilled slot with no fallback takes no
+space and no share of the gap. `slot-accept` is enforced; `slot-min` and
+`slot-max` only warn.
+
+**0.2 documents are unaffected.** The rules above are errors only in documents
+that declare 0.3. The same findings in a 0.2 document are reported on
+`GuiDocument::warnings`, and it renders exactly as before. Every document in a
+package with a library or several documents must declare 0.3.
+
+[RFC-0042]: https://github.com/dotgui/core/blob/spec-0.3-multipage-slots/rfcs/0042-multi-document-packages.md
+[RFC-0043]: https://github.com/dotgui/core/blob/spec-0.3-multipage-slots/rfcs/0043-standalone-guix.md
+[RFC-0044]: https://github.com/dotgui/core/blob/spec-0.3-multipage-slots/rfcs/0044-slots.md
 
 ## Appearance
 
