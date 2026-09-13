@@ -7,6 +7,7 @@ use std::{
 use dotgui_renderer::{
     build_scene, compute_taffy_layout_with_text, paint_scene_to_png_with_assets_and_fonts,
     parse_standalone_xml, read_gui_input, AssetCache, FontStore, GuiDocument, GuiInput, ParseError,
+    RENDERER_VERSION, SUPPORTED_VERSION,
 };
 
 const USAGE: &str =
@@ -18,6 +19,12 @@ const USAGE: &str =
 /// documents, or a library with a page of its own — writes one PNG per page
 /// beside it, named `<out>-<document>.png`.
 fn main() {
+    if env::args().nth(1).as_deref() == Some("--version") {
+        println!(
+            "dotgui renderer {RENDERER_VERSION} (reads .gui up to version {SUPPORTED_VERSION})"
+        );
+        return;
+    }
     let input = env::args().nth(1).unwrap_or_else(|| {
         eprintln!("{USAGE}");
         process::exit(2);

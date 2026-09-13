@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "dotgui-renderer"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "fontdue",
  "image",
@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "dotgui-renderer-wasm"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "dotgui-renderer",
  "serde_json",

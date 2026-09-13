@@ -20,8 +20,14 @@ const PRESENCE_ATTRS: &[(&str, &str)] = &[
     ("wrap", "true"),
 ];
 
+/// This renderer's own version. Its `major.minor` is the newest spec version
+/// it implements, and a patch release fixes the renderer without changing the
+/// spec it reads: renderer 0.3.2 reads the same documents as 0.3.0.
+pub const RENDERER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// The newest spec version this renderer implements. Support is cumulative:
-/// every earlier version is implemented too.
+/// every earlier version is implemented too, and a document declaring a newer
+/// one is refused rather than drawn with features this renderer does not know.
 pub const SUPPORTED_VERSION: &str = "0.3";
 const SUPPORTED: (u32, u32) = (0, 3);
 const MULTI_DOCUMENT: (u32, u32) = (0, 3);
@@ -41,7 +47,7 @@ pub enum ParseError {
     MultipleRootLayouts,
 
     #[error(
-        "the document declares version {0}, but this renderer implements up to {SUPPORTED_VERSION}"
+        "the document declares version {0}, but this renderer ({RENDERER_VERSION}) reads documents up to version {SUPPORTED_VERSION}; a newer renderer is needed"
     )]
     UnsupportedVersion(String),
 
@@ -741,5 +747,16 @@ mod tests {
             r#"<gui version="0.2"><col><img src="assets/hero.webp" w="1" h="1" /></col></gui>"#
         )
         .is_ok());
+    }
+
+    #[test]
+    fn the_renderer_version_names_the_spec_it_implements() {
+        // Bumping the crate to a new minor without implementing that spec, or
+        // implementing a spec without bumping the crate, fails here.
+        assert!(
+            RENDERER_VERSION.starts_with(&format!("{SUPPORTED_VERSION}.")),
+            "renderer {RENDERER_VERSION} should be a {SUPPORTED_VERSION}.x release"
+        );
+        assert_eq!(parse_version(SUPPORTED_VERSION), Some(SUPPORTED));
     }
 }

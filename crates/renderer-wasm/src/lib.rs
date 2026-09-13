@@ -10,7 +10,7 @@ use dotgui_renderer::{
     missing_system_font_files, normalize_presence_attrs, paint_scene_to_png_bytes,
     paint_scene_to_rgba, parse_gui_xml, parse_gui_xml_with, parse_library, parse_standalone_xml,
     read_gui_package, AssetCache, FontStore, GuiDocument, GuiNode, Library, ParseError,
-    ParseOptions,
+    ParseOptions, RENDERER_VERSION, SUPPORTED_VERSION,
 };
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use wasm_bindgen::prelude::*;
@@ -454,6 +454,20 @@ fn remote_urls_in(value: &str) -> Vec<String> {
         rest = &tail[end..];
     }
     urls
+}
+
+/// This renderer's version, e.g. `0.3.0`. Its `major.minor` is the newest spec
+/// version it reads.
+#[wasm_bindgen]
+pub fn renderer_version() -> String {
+    RENDERER_VERSION.to_owned()
+}
+
+/// The newest spec version this renderer reads, e.g. `0.3`. A document
+/// declaring a newer one is refused.
+#[wasm_bindgen]
+pub fn supported_spec_version() -> String {
+    SUPPORTED_VERSION.to_owned()
 }
 
 /// The markup with presence attributes (`<frame clip>`) given values, so a

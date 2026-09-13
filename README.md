@@ -223,6 +223,25 @@ Needs [bun](https://bun.sh), a Chromium-based browser, and a `dotgui/kit`
 checkout beside this one (or `DOTGUI_KIT` pointing at it) with its render
 bundle built. See [Comparing Against Kit](#comparing-against-kit).
 
+## Versions
+
+The renderer's version follows the spec. Its `major.minor` is the newest `.gui`
+version it reads, and a patch release fixes the renderer without changing that:
+renderer `0.3.0` and `0.3.2` both read documents up to `version="0.3"`.
+
+Support is cumulative. A newer renderer reads every older document as it always
+rendered. An older renderer refuses a document from a newer spec by name
+instead of drawing features it does not know: renderer `0.3.x` meeting a
+`version="0.4"` document reports that a newer renderer is needed. A test fails
+if the crate version and the supported spec version drift apart.
+
+```bash
+cargo run -q -p dotgui-renderer --example render_png -- --version
+```
+
+From WASM, `renderer_version()` and `supported_spec_version()` answer the same
+questions.
+
 ## Packages, Libraries and Slots
 
 Spec 0.3 ([RFC-0042], [RFC-0043], [RFC-0044]) changes what a `.gui` holds and
