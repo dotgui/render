@@ -63,13 +63,57 @@ async function supply(engine, wanted) {
  * family that is not installed falls back to the next UI font.
  */
 async function supplyFonts(engine, xml, library, proxy, fontFile) {
+  let supplied = 0
   for (let round = 0; round < 8; round++) {
     const wanted = [
       ...engine.missing_font_urls(xml, library).map((url) => [url, proxy + encodeURIComponent(url)]),
       ...engine.missing_font_files(xml, library).map((file) => [file, fontFile + encodeURIComponent(file)]),
     ]
-    if (wanted.length === 0) return
+    if (wanted.length === 0) break
     await supply(engine, wanted)
+    supplied += wanted.length
+  }
+  return supplied
+}
+
+/**
+ * Paints over the canvas only the areas where `xml` differs from the markup it
+ * shows, and answers like a render; `null` when the page has to be painted
+ * whole instead.
+ */
+function patch(engine, canvas, last, xml, library) {
+  const started = performance.now()
+  const areas = engine.changed_areas(last.xml, xml, library)
+  if (areas === undefined) return null
+  const context = canvas.getContext('2d')
+  let layout = null
+  let warnings = []
+  let drawMs = 0
+  for (let i = 0; i < areas.length; i += 4) {
+    const frame = engine.render_area(xml, areas[i], areas[i + 1], areas[i + 2], areas[i + 3], last.drawnDensity, library)
+    const drawStarted = performance.now()
+    context.putImageData(new ImageData(new Uint8ClampedArray(frame.pixels), frame.width, frame.height), frame.x, frame.y)
+    drawMs += performance.now() - drawStarted
+    layout ??= frame.layout
+    warnings = frame.warnings
+    frame.free()
+  }
+  if (layout === null) {
+    // Nothing paints differently, but the layout's attributes may have: the
+    // page still answers hit tests from the new one.
+    const frame = engine.render_area(xml, 0, 0, 1, 1, last.drawnDensity, library)
+    layout = frame.layout
+    warnings = frame.warnings
+    frame.free()
+  }
+  return {
+    width: last.width,
+    height: last.height,
+    layout: JSON.parse(layout),
+    warnings,
+    engineMs: performance.now() - started - drawMs,
+    drawMs,
+    repainted: areas.length / 4,
   }
 }
 
@@ -106,11 +150,26 @@ const handlers = {
    * drawn, and the documents drawn after it resolve against this markup.
    */
   async render({ key, xml, library, density, proxy, fontFile }) {
-    const { engine, canvas } = entry(key)
+    const target = entry(key)
+    const { engine, canvas } = target
     const fontsStarted = performance.now()
-    await supplyFonts(engine, xml, library, proxy, fontFile)
+    const suppliedFonts = await supplyFonts(engine, xml, library, proxy, fontFile)
     const fontsMs = performance.now() - fontsStarted
     const missingImages = engine.missing_image_urls(xml, library).length
+
+    // An edit to the markup the canvas already shows repaints only what it
+    // changed. Anything else — another page, another density, fonts or
+    // images that have just arrived — paints the page whole.
+    const last = target.last
+    const patchable = canvas && last && last.xml !== xml && last.library === library &&
+      last.density === density && !suppliedFonts && !target.assetsArrived
+    if (patchable) {
+      const patched = patch(engine, canvas, last, xml, library)
+      if (patched) {
+        target.last = { ...last, xml }
+        return [{ ...patched, density: last.drawnDensity, warnings: patched.warnings, fontsMs, missingImages }]
+      }
+    }
 
     const started = performance.now()
     const frame = engine.render(xml, density, library)
@@ -126,6 +185,8 @@ const handlers = {
     frame.free()
 
     const result = { width, height, density: drawnDensity, layout, warnings, engineMs, fontsMs, missingImages }
+    target.last = { xml, library, density, drawnDensity, width, height }
+    target.assetsArrived = false
     if (!canvas) {
       // No OffscreenCanvas: hand the pixels to the page, without copying.
       return [{ ...result, pixels: pixels.buffer }, [pixels.buffer]]
@@ -138,9 +199,10 @@ const handlers = {
   },
 
   async supplyImages({ key, xml, library, proxy }) {
-    const { engine } = entry(key)
-    const wanted = engine.missing_image_urls(xml, library).map((url) => [url, proxy + encodeURIComponent(url)])
-    await supply(engine, wanted)
+    const target = entry(key)
+    const wanted = target.engine.missing_image_urls(xml, library).map((url) => [url, proxy + encodeURIComponent(url)])
+    await supply(target.engine, wanted)
+    if (wanted.length > 0) target.assetsArrived = true
     return [wanted.length]
   },
 

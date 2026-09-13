@@ -10,7 +10,7 @@ use dotgui_renderer::{
     missing_system_font_files, normalize_presence_attrs, paint_scene_to_png_bytes, parse_gui_xml,
     parse_gui_xml_with, parse_library, parse_standalone_xml, read_gui_package, AssetCache,
     FontStore, GuiDocument, GuiNode, LayoutRect, Library, Page, ParseError, ParseOptions,
-    PixelRect, RENDERER_VERSION, SUPPORTED_VERSION,
+    PixelRect, SceneChanges, RENDERER_VERSION, SUPPORTED_VERSION,
 };
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use wasm_bindgen::prelude::*;
@@ -595,6 +595,77 @@ impl Engine {
                 Some(&kept.fonts),
             )
             .map_err(to_js)
+    }
+
+    /// What an edit changed: the areas, in document pixels, that paint
+    /// differently in `after` than in `before`, as `[x, y, width, height, …]`.
+    /// Empty when nothing changed; nothing at all when the whole page should be
+    /// painted again — its size changed, most of it changed, or `library` is
+    /// set, since a library edit reaches every document.
+    pub fn changed_areas(
+        &self,
+        before: &str,
+        after: &str,
+        library: Option<bool>,
+    ) -> Result<Option<Vec<f32>>, JsValue> {
+        if library == Some(true) {
+            return Ok(None);
+        }
+        let earlier = self.page_for(before, library)?;
+        let later = self.page_for(after, library)?;
+        Ok(match later.page.changes_since(&earlier.page) {
+            SceneChanges::Nothing => Some(Vec::new()),
+            SceneChanges::Everything => None,
+            SceneChanges::Areas(areas) => Some(
+                areas
+                    .iter()
+                    .flat_map(|area| [area.x, area.y, area.width, area.height])
+                    .collect(),
+            ),
+        })
+    }
+
+    /// After an edit, the frames to put over the last frame of `before` at
+    /// `scale` to show `after`: one per changed area, each at its own `x` and
+    /// `y`. None when nothing changed; a single whole-page frame when the page
+    /// should be painted again — check its `density`, since a page too large
+    /// for a canvas is drawn smaller.
+    pub fn repaint(
+        &self,
+        before: &str,
+        after: &str,
+        scale: f32,
+        library: Option<bool>,
+    ) -> Result<Vec<Frame>, JsValue> {
+        let Some(areas) = self.changed_areas(before, after, library)? else {
+            return Ok(vec![self.render(after, scale, library)?]);
+        };
+        let scale = usable_density(scale);
+        areas
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&[x, y, width, height]| {
+                let region = PixelRect::covering(
+                    LayoutRect {
+                        x,
+                        y,
+                        width,
+                        height,
+                    },
+                    scale,
+                );
+                self.render_region(
+                    after,
+                    scale,
+                    region.x,
+                    region.y,
+                    region.width,
+                    region.height,
+                    library,
+                )
+            })
+            .collect()
     }
 
     /// The page's size in document pixels, `[width, height]`, for a host
@@ -1216,5 +1287,41 @@ mod tests {
         ] {
             assert!(png.starts_with(b"\x89PNG"));
         }
+    }
+
+    #[test]
+    fn the_engine_repaints_only_what_an_edit_changed() {
+        let engine = Engine::new();
+        let before = r##"<gui version="0.2"><col w="200" h="100" fill="#ffffff" p="10" gap="10">
+            <rect id="a" w="20" h="20" fill="#ff0000" />
+            <rect id="b" w="20" h="20" fill="#00ff00" />
+          </col></gui>"##;
+        let after = before.replace("#00ff00", "#0000ff");
+
+        assert_eq!(
+            engine.changed_areas(before, before, None).unwrap(),
+            Some(vec![])
+        );
+        let areas = engine.changed_areas(before, &after, None).unwrap().unwrap();
+        assert_eq!(areas.len(), 4, "one area: {areas:?}");
+
+        let old = engine.render(before, 2.0, None).unwrap();
+        let mut patched = old.pixels();
+        for frame in engine.repaint(before, &after, 2.0, None).unwrap() {
+            for y in 0..frame.height() {
+                for x in 0..frame.width() {
+                    let from = ((y * frame.width() + x) * 4) as usize;
+                    let to = (((frame.y() as u32 + y) * old.width() + frame.x() as u32 + x) * 4)
+                        as usize;
+                    patched[to..to + 4].copy_from_slice(&frame.pixels()[from..from + 4]);
+                }
+            }
+        }
+        assert_eq!(patched, engine.render(&after, 2.0, None).unwrap().pixels());
+
+        let resized = before.replace(r#"h="100""#, r#"h="140""#);
+        assert_eq!(engine.changed_areas(before, &resized, None).unwrap(), None);
+        let whole = engine.repaint(before, &resized, 2.0, None).unwrap();
+        assert_eq!((whole.len(), whole[0].height()), (1, 280));
     }
 }
