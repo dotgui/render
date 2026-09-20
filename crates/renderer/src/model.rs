@@ -7,6 +7,11 @@ pub struct GuiDocument {
     pub name: Option<String>,
     pub metadata: GuiMetadata,
     pub root: GuiNode,
+    /// Problems that did not stop the document rendering: advisory findings
+    /// such as `slot-min`, and — in a document declaring 0.2 — rules that only
+    /// became errors in 0.3.
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

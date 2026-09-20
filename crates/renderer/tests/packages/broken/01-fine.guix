@@ -1,0 +1,10 @@
+<gui version="0.3" name="Fine">
+  <col w="200" p="16" fill="#FFFFFF">
+    <instance component="comp-toolbar">
+      <slot name="items">
+        <instance component="comp-tool" />
+        <instance component="comp-tool" />
+      </slot>
+    </instance>
+  </col>
+</gui>

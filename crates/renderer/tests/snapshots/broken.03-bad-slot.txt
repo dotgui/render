@@ -1,0 +1,1 @@
+error: slot 'items' of component 'comp-toolbar' accepts only instances of comp-tool, but was given a <text>

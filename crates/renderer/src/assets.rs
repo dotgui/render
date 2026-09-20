@@ -47,6 +47,10 @@ pub struct AssetCache {
     root: PathBuf,
     max_bytes: u64,
     package_assets: BTreeMap<String, Vec<u8>>,
+    /// The host's font files, when the renderer cannot list the host's disk
+    /// itself — a browser running the WASM build. Their bytes are looked up in
+    /// the package assets under the same path.
+    host_font_files: Option<Vec<PathBuf>>,
 }
 
 impl AssetCache {
@@ -55,6 +59,7 @@ impl AssetCache {
             root: root.into(),
             max_bytes: 250 * 1024 * 1024,
             package_assets: BTreeMap::new(),
+            host_font_files: None,
         }
     }
 
@@ -66,6 +71,35 @@ impl AssetCache {
     pub fn with_package_assets(mut self, assets: BTreeMap<String, Vec<u8>>) -> Self {
         self.package_assets = assets;
         self
+    }
+
+    /// Holds `bytes` under `key`, as a package asset is held.
+    pub fn insert_package_asset(&mut self, key: impl Into<String>, bytes: Vec<u8>) {
+        self.package_assets.insert(key.into(), bytes);
+    }
+
+    pub fn has_package_asset(&self, key: &str) -> bool {
+        self.package_assets.contains_key(key)
+    }
+
+    /// Takes the host's font files as a list instead of reading font
+    /// directories, and their bytes from the package assets instead of disk.
+    ///
+    /// Nothing else about `source="system"` resolution changes: the same
+    /// aliases, filename matching, family check and fallbacks run over this
+    /// list, so a host that lists its real font files gets what a native
+    /// render on that host would.
+    pub fn with_host_font_files(mut self, files: Vec<PathBuf>) -> Self {
+        self.host_font_files = Some(files);
+        self
+    }
+
+    pub(crate) fn host_font_files(&self) -> Option<&[PathBuf]> {
+        self.host_font_files.as_deref()
+    }
+
+    pub(crate) fn package_asset(&self, key: &str) -> Option<&[u8]> {
+        self.package_assets.get(key).map(Vec::as_slice)
     }
 
     pub fn root(&self) -> &Path {

@@ -1,0 +1,75 @@
+<gui version="0.3" name="Slots">
+  <fonts>
+    <font family="Inter" source="google" weights="400 700" styles="normal" />
+  </fonts>
+  <components>
+    <component id="comp-tag" name="Tag">
+      <props>
+        <prop name="label" type="string" target="label" />
+      </props>
+      <row h="24" p="0 10" radius="12" fill="#E7E2D8" align="middle-center">
+        <text id="label" value="Tag" font-family="Inter" font-size="12" color="#1C1B19" />
+      </row>
+    </component>
+
+    <!-- A header, a free body, a tag row that only takes tags, and a footer
+         with fallback content. -->
+    <component id="comp-panel" name="Panel">
+      <props>
+        <prop name="title" type="string" target="title" />
+      </props>
+      <col w="320" p="16" gap="12" radius="16" fill="#FFFFFF" border="1 #E7E2D8">
+        <text id="title" value="Panel" font-family="Inter" font-size="17" font-weight="700" color="#1C1B19" />
+        <col slot="body" w="fill" gap="8" />
+        <row slot="tags" slot-accept="comp-tag" w="fill" gap="6" wrap />
+        <row slot="footer" w="fill" gap="8" align="middle-right">
+          <text value="Fallback footer" font-family="Inter" font-size="12" color="#6B675E" />
+        </row>
+      </col>
+    </component>
+
+    <!-- Passes a slot of its own through to the panel's body. -->
+    <component id="comp-section" name="Section">
+      <col w="320">
+        <instance component="comp-panel" title="Section">
+          <slot name="body">
+            <col slot="content" w="fill" p="8" gap="4" radius="8" fill="#F4F1EA" />
+          </slot>
+        </instance>
+      </col>
+    </component>
+  </components>
+
+  <col w="720" p="24" gap="24" fill="#F4F1EA">
+    <row gap="24" align="top-left">
+      <!-- Every slot filled. -->
+      <instance component="comp-panel" title="Filled">
+        <slot name="body">
+          <text value="Body content lands in the slot's column, with its gap." font-family="Inter" font-size="13" color="#1C1B19" w="fill" />
+          <rect w="fill" h="48" radius="8" fill="#2F5BEA" />
+        </slot>
+        <slot name="tags">
+          <instance component="comp-tag" label="travel" />
+          <instance component="comp-tag" label="friends" />
+        </slot>
+        <slot name="footer">
+          <text value="Custom footer" font-family="Inter" font-size="12" color="#E8572A" />
+        </slot>
+      </instance>
+
+      <!-- Nothing filled: body and tags collapse, the footer keeps its fallback. -->
+      <instance component="comp-panel" title="Empty" />
+    </row>
+    <row gap="24" align="top-left">
+      <instance component="comp-section">
+        <slot name="content">
+          <text value="Through two components" font-family="Inter" font-size="13" color="#1C1B19" />
+        </slot>
+      </instance>
+      <!-- An explicitly empty footer collapses too. -->
+      <instance component="comp-panel" title="No footer">
+        <slot name="footer" />
+      </instance>
+    </row>
+  </col>
+</gui>

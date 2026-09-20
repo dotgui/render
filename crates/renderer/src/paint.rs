@@ -10,7 +10,8 @@ use crate::{
     TextSegment, Transform2D,
 };
 use fontdue::{Font, FontSettings};
-use std::{fs, path::Path};
+use serde::{Deserialize, Serialize};
+use std::{cell::Cell, fs, path::Path};
 use thiserror::Error;
 use tiny_skia::{
     BlendMode, Color, FillRule, LineCap, Paint, PathBuilder, Pixmap, PixmapPaint, PixmapRef, Rect,
@@ -34,6 +35,12 @@ pub enum PaintError {
 
     #[error("failed to render SVG: {0}")]
     Svg(String),
+
+    #[error("no element has {attribute}=\"{value}\"")]
+    NoSuchElement { attribute: String, value: String },
+
+    #[error("a {width}×{height} image is too large to paint")]
+    TooLarge { width: u32, height: u32 },
 }
 
 pub fn paint_scene_to_png(scene: &Scene, path: impl AsRef<Path>) -> Result<(), PaintError> {
@@ -62,6 +69,227 @@ pub fn paint_scene_to_png_bytes(
     asset_cache: Option<&AssetCache>,
     fonts: Option<&FontStore>,
 ) -> Result<Vec<u8>, PaintError> {
+    paint_scene_to_pixmap(scene, asset_cache, fonts)?
+        .encode_png()
+        .map_err(|err| PaintError::Png(err.to_string()))
+}
+
+/// The painted scene as straight (not premultiplied) RGBA, row by row — the
+/// layout of a browser's `ImageData`, so a host can put it on a canvas without
+/// encoding a PNG only to decode it again.
+pub fn paint_scene_to_rgba(
+    scene: &Scene,
+    asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
+) -> Result<(u32, u32, Vec<u8>), PaintError> {
+    Ok(straight_rgba(paint_scene_to_pixmap(
+        scene,
+        asset_cache,
+        fonts,
+    )?))
+}
+
+/// A whole-pixel rectangle of a painted page, in the pixels the scene paints
+/// at: a scene scaled by 2 is twice as many of them each way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PixelRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl PixelRect {
+    /// The whole pixels at `scale` that cover `area`, given in document
+    /// pixels: its edges snapped outward, so nothing of the area is cut.
+    pub fn covering(area: crate::LayoutRect, scale: f32) -> Self {
+        let left = (area.x * scale).floor();
+        let top = (area.y * scale).floor();
+        let right = ((area.x + area.width.max(0.0)) * scale).ceil();
+        let bottom = ((area.y + area.height.max(0.0)) * scale).ceil();
+        Self {
+            x: left as i32,
+            y: top as i32,
+            width: (right - left).max(0.0) as u32,
+            height: (bottom - top).max(0.0) as u32,
+        }
+    }
+}
+
+/// The size, in pixels, a full paint of `scene` has: the page's box rounded
+/// up. A region anywhere inside it paints the same pixels a full paint would.
+pub fn scene_pixel_size(scene: &Scene) -> (u32, u32) {
+    (
+        scene.root.bounds.width.ceil().max(0.0) as u32,
+        scene.root.bounds.height.ceil().max(0.0) as u32,
+    )
+}
+
+/// One rectangle of the page, painted on its own: the same pixels as that
+/// rectangle of [`paint_scene_to_rgba`], at a fraction of the cost when the
+/// rectangle is small — which is what a zoomed-in view, a screenshot of one
+/// area, or a repaint after an edit needs.
+///
+/// Parts of the rectangle outside the page are transparent.
+pub fn paint_scene_region_to_rgba(
+    scene: &Scene,
+    region: PixelRect,
+    asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
+) -> Result<(u32, u32, Vec<u8>), PaintError> {
+    Ok(straight_rgba(paint_scene_region_to_pixmap(
+        scene,
+        region,
+        asset_cache,
+        fonts,
+    )?))
+}
+
+/// [`paint_scene_region_to_rgba`], encoded as a PNG.
+pub fn paint_scene_region_to_png_bytes(
+    scene: &Scene,
+    region: PixelRect,
+    asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
+) -> Result<Vec<u8>, PaintError> {
+    paint_scene_region_to_pixmap(scene, region, asset_cache, fonts)?
+        .encode_png()
+        .map_err(|err| PaintError::Png(err.to_string()))
+}
+
+fn paint_scene_region_to_pixmap(
+    scene: &Scene,
+    region: PixelRect,
+    asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
+) -> Result<Pixmap, PaintError> {
+    let (page_width, page_height) = scene_pixel_size(scene);
+    if page_width == 0 || page_height == 0 {
+        return Err(PaintError::InvalidSize {
+            width: scene.root.bounds.width,
+            height: scene.root.bounds.height,
+        });
+    }
+    let mut out = Pixmap::new(region.width, region.height).ok_or(PaintError::Allocation {
+        width: region.width,
+        height: region.height,
+    })?;
+
+    // A backdrop blur reads what is already painted around it, so the pixels
+    // it reads have to be painted too: the region grows by as far as backdrop
+    // blurs can reach, and is cut back afterwards. Everything else that looks
+    // past the region's edge — a shadow, a layer's blur, a rotated layer —
+    // measures itself against the page instead, and needs no margin.
+    let margin = i64::from(REGION_EDGE_MARGIN + backdrop_margin(&scene.root));
+    let left = (i64::from(region.x) - margin).max(0);
+    let top = (i64::from(region.y) - margin).max(0);
+    let right = (i64::from(region.x) + i64::from(region.width) + margin).min(i64::from(page_width));
+    let bottom =
+        (i64::from(region.y) + i64::from(region.height) + margin).min(i64::from(page_height));
+    if right <= left || bottom <= top {
+        return Ok(out);
+    }
+    let (width, height) = ((right - left) as u32, (bottom - top) as u32);
+    let mut painted = Pixmap::new(width, height).ok_or(PaintError::Allocation { width, height })?;
+
+    let mut root = scene.root.clone();
+    translate_subtree(&mut root, -(left as f32), -(top as f32));
+    let page = Extent {
+        left: -(left as f32),
+        top: -(top as f32),
+        right: page_width as f32 - left as f32,
+        bottom: page_height as f32 - top as f32,
+    };
+    with_page(page, || {
+        paint_node(&mut painted, &root, default_font(), asset_cache, fonts)
+    });
+
+    out.draw_pixmap(
+        (left - i64::from(region.x)) as i32,
+        (top - i64::from(region.y)) as i32,
+        painted.as_ref(),
+        &PixmapPaint {
+            blend_mode: BlendMode::Source,
+            ..PixmapPaint::default()
+        },
+        Transform::identity(),
+        None,
+    );
+    Ok(out)
+}
+
+/// Pixels painted past a region's edge and then cut away.
+///
+/// The rasteriser clips a shape that crosses the canvas's edge, and a clipped
+/// shape's anti-aliased edge pixels come out a little different from the same
+/// shape drawn whole. On a full page those pixels are the page's edge; in a
+/// region they would be seams, so the region is painted a little wider.
+const REGION_EDGE_MARGIN: u32 = 4;
+
+/// How far outside a region the pixels a backdrop blur reads can lie: each
+/// blur reads twice its reach, and one backdrop can sit on another.
+fn backdrop_margin(node: &SceneNode) -> u32 {
+    let own = node
+        .effects
+        .iter()
+        .filter(|effect| matches!(effect.kind.as_str(), "background-blur" | "glass"))
+        .map(|effect| 2 * blur::reach(effect.radius) + 1)
+        .sum::<u32>();
+    own + node.children.iter().map(backdrop_margin).sum::<u32>()
+}
+
+/// Straight (not premultiplied) RGBA from a pixmap.
+fn straight_rgba(pixmap: Pixmap) -> (u32, u32, Vec<u8>) {
+    let (width, height) = (pixmap.width(), pixmap.height());
+    let mut data = pixmap.take();
+    for pixel in data.as_chunks_mut::<4>().0 {
+        let alpha = pixel[3];
+        if alpha != 0 && alpha != 255 {
+            for channel in &mut pixel[..3] {
+                *channel = ((u16::from(*channel) * 255 + u16::from(alpha) / 2) / u16::from(alpha))
+                    .min(255) as u8;
+            }
+        }
+    }
+    (width, height, data)
+}
+
+thread_local! {
+    /// Where the page lies in the canvas being painted, when the canvas is not
+    /// the page: a region of it, or a node's layer.
+    static PAGE: Cell<Option<Extent>> = const { Cell::new(None) };
+}
+
+/// Runs `paint` with `page` as the page's box in the canvas it paints into.
+fn with_page<R>(page: Extent, paint: impl FnOnce() -> R) -> R {
+    let outer = PAGE.replace(Some(page));
+    let result = paint();
+    PAGE.set(outer);
+    result
+}
+
+/// The page's box, in `canvas`'s pixels. Work that has to stop where the page
+/// stops — a blur that clamps at an edge, a layer a transform will move —
+/// measures against this, not against the canvas, so a region of the page
+/// paints exactly as that part of the whole page would.
+fn page_extent(canvas: &Pixmap) -> Extent {
+    PAGE.get().unwrap_or_else(|| canvas_extent(canvas))
+}
+
+fn canvas_extent(canvas: &Pixmap) -> Extent {
+    Extent {
+        left: 0.0,
+        top: 0.0,
+        right: canvas.width() as f32,
+        bottom: canvas.height() as f32,
+    }
+}
+
+fn paint_scene_to_pixmap(
+    scene: &Scene,
+    asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
+) -> Result<Pixmap, PaintError> {
     let width = scene.root.bounds.width.ceil();
     let height = scene.root.bounds.height.ceil();
     if width <= 0.0 || height <= 0.0 || !width.is_finite() || !height.is_finite() {
@@ -71,11 +299,8 @@ pub fn paint_scene_to_png_bytes(
     let width = width as u32;
     let height = height as u32;
     let mut pixmap = Pixmap::new(width, height).ok_or(PaintError::Allocation { width, height })?;
-    let font = load_default_font();
-    paint_node(&mut pixmap, &scene.root, font.as_ref(), asset_cache, fonts);
-    pixmap
-        .encode_png()
-        .map_err(|err| PaintError::Png(err.to_string()))
+    paint_node(&mut pixmap, &scene.root, default_font(), asset_cache, fonts);
+    Ok(pixmap)
 }
 
 fn paint_scene(
@@ -101,20 +326,52 @@ fn paint_node(
     asset_cache: Option<&AssetCache>,
     fonts: Option<&FontStore>,
 ) {
+    // A subtree that paints nothing onto this canvas is not walked at all,
+    // which is what makes a small region of a long page cheap: text off to one
+    // side is never shaped.
+    let extent = paint_extent(node);
+    let reach = match node.transform.filter(|transform| !transform.is_identity()) {
+        Some(transform) => extent
+            .grown(LAYER_FILTER_MARGIN, LAYER_FILTER_MARGIN)
+            .transformed(node_matrix(node, transform)),
+        None => extent,
+    };
+    if !reach.overlaps(canvas_extent(pixmap)) {
+        return;
+    }
+
     if !needs_layer(node) {
         paint_node_direct(pixmap, node, font, asset_cache, fonts);
         return;
     }
 
-    let Some(mut layer) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+    // The layer covers only the part of the canvas the subtree can paint, not
+    // the whole canvas: on a long page a full-canvas layer is tens of millions
+    // of pixels to clear, filter and resample back, for a node that may be a
+    // seven-pixel icon.
+    let Some(region) = layer_region(node, extent, pixmap) else {
+        return;
+    };
+    let Some(mut layer) = Pixmap::new(region.width, region.height) else {
         paint_node_direct(pixmap, node, font, asset_cache, fonts);
         return;
     };
+    // Painting reads positions only from `bounds`; everything else a node
+    // carries is relative to them. So the subtree, moved by the region's
+    // corner, paints into the small layer exactly as it would into the canvas.
+    let original = node;
+    let mut local = node.clone();
+    let (dx, dy) = (-(region.x as f32), -(region.y as f32));
+    translate_subtree(&mut local, dx, dy);
+    let node = &local;
 
     // Backdrop effects read what is behind the node, and inside a layer that
     // is nothing. Copying the canvas in first would then be blended twice, so
     // a node that both isolates and blurs its backdrop is a known gap.
-    paint_node_direct(&mut layer, node, font, asset_cache, fonts);
+    let page = page_extent(pixmap).moved(dx, dy);
+    with_page(page, || {
+        paint_node_direct(&mut layer, node, font, asset_cache, fonts)
+    });
 
     // `layer-blur` blurs the finished subtree, which is what makes it the
     // opposite of `background-blur`: one softens the node, the other softens
@@ -144,13 +401,15 @@ fn paint_node(
     // It is applied to the layer rather than handed to `draw_pixmap`, because
     // a clip mask there would be in canvas space: a node that both masks and
     // transforms would have its mask left behind by the transform.
-    if let Some(mask) = node_mask(pixmap.width(), pixmap.height(), node, asset_cache) {
+    if let Some(mask) = node_mask(layer.width(), layer.height(), node, asset_cache) {
         mask_layer(&mut layer, &mask);
     }
 
+    // The transform is in canvas space, so it applies after the layer is put
+    // back at the region's corner — which is what drawing it there does.
     pixmap.draw_pixmap(
-        0,
-        0,
+        region.x,
+        region.y,
         layer.as_ref(),
         &PixmapPaint {
             blend_mode: node
@@ -166,10 +425,297 @@ fn paint_node(
             quality: tiny_skia::FilterQuality::Bicubic,
         },
         node.transform
-            .map(|transform| node_matrix(node, transform))
+            .map(|transform| node_matrix(original, transform))
             .unwrap_or_default(),
         None,
     );
+}
+
+/// The part of the canvas a node's layer has to cover: everything its subtree
+/// can paint, before the node's own transform, snapped out to whole pixels.
+/// `None` when none of it can show.
+///
+/// A transformed layer is cut to the page, because the transform can carry
+/// any of it onto the canvas. Any other layer is cut to the canvas, grown by
+/// the reach of the layer's own blur: nothing further out can change a pixel
+/// that lands on it.
+fn layer_region(node: &SceneNode, extent: Extent, canvas: &Pixmap) -> Option<Region> {
+    let page = page_extent(canvas);
+    let transformed = node
+        .transform
+        .is_some_and(|transform| !transform.is_identity());
+    let (extent, limit) = if transformed {
+        // A transformed layer is resampled, and the filter reads a few pixels
+        // past what it draws. Past a layer's edge it repeats the edge, so the
+        // edge has to be transparent for the result to match a layer with no
+        // edge nearby.
+        (extent.grown(LAYER_FILTER_MARGIN, LAYER_FILTER_MARGIN), page)
+    } else {
+        let reach = blur::reach(layer_blur_sigma(node)) as f32;
+        (
+            extent,
+            page.intersection(canvas_extent(canvas).grown(reach, reach)),
+        )
+    };
+    snap_region(extent, limit)
+}
+
+/// `extent` snapped out to whole pixels and cut to `limit`.
+fn snap_region(extent: Extent, limit: Extent) -> Option<Region> {
+    let left = extent.left.floor().max(limit.left);
+    let top = extent.top.floor().max(limit.top);
+    let right = extent.right.ceil().min(limit.right);
+    let bottom = extent.bottom.ceil().min(limit.bottom);
+    if !(right > left && bottom > top) {
+        return None;
+    }
+    Some(Region {
+        x: left as i32,
+        y: top as i32,
+        width: (right - left) as u32,
+        height: (bottom - top) as u32,
+    })
+}
+
+/// Transparent pixels kept around a resampled layer's content.
+const LAYER_FILTER_MARGIN: f32 = 8.0;
+
+/// A box in canvas pixels, by its edges.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Extent {
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+}
+
+impl Extent {
+    fn of(bounds: crate::LayoutRect) -> Self {
+        Self {
+            left: bounds.x,
+            top: bounds.y,
+            right: bounds.x + bounds.width,
+            bottom: bounds.y + bounds.height,
+        }
+    }
+
+    fn grown(self, horizontal: f32, vertical: f32) -> Self {
+        Self {
+            left: self.left - horizontal,
+            top: self.top - vertical,
+            right: self.right + horizontal,
+            bottom: self.bottom + vertical,
+        }
+    }
+
+    fn moved(self, dx: f32, dy: f32) -> Self {
+        Self {
+            left: self.left + dx,
+            top: self.top + dy,
+            right: self.right + dx,
+            bottom: self.bottom + dy,
+        }
+    }
+
+    fn intersection(self, other: Self) -> Self {
+        Self {
+            left: self.left.max(other.left),
+            top: self.top.max(other.top),
+            right: self.right.min(other.right),
+            bottom: self.bottom.min(other.bottom),
+        }
+    }
+
+    /// Whether the two share any area. An extent that lost its numbers to a
+    /// transform counts as overlapping, so doubt paints rather than culls.
+    fn overlaps(self, other: Self) -> bool {
+        let inside = self.left < other.right
+            && self.right > other.left
+            && self.top < other.bottom
+            && self.bottom > other.top;
+        let known = [self.left, self.top, self.right, self.bottom]
+            .iter()
+            .all(|edge| !edge.is_nan());
+        inside || !known
+    }
+
+    fn union(self, other: Self) -> Self {
+        Self {
+            left: self.left.min(other.left),
+            top: self.top.min(other.top),
+            right: self.right.max(other.right),
+            bottom: self.bottom.max(other.bottom),
+        }
+    }
+
+    /// The box `transform` carries these edges to.
+    fn transformed(self, transform: Transform) -> Self {
+        let mut corners = [
+            tiny_skia::Point::from_xy(self.left, self.top),
+            tiny_skia::Point::from_xy(self.right, self.top),
+            tiny_skia::Point::from_xy(self.left, self.bottom),
+            tiny_skia::Point::from_xy(self.right, self.bottom),
+        ];
+        transform.map_points(&mut corners);
+        corners.iter().fold(
+            Self {
+                left: f32::INFINITY,
+                top: f32::INFINITY,
+                right: f32::NEG_INFINITY,
+                bottom: f32::NEG_INFINITY,
+            },
+            |extent, point| Self {
+                left: extent.left.min(point.x),
+                top: extent.top.min(point.y),
+                right: extent.right.max(point.x),
+                bottom: extent.bottom.max(point.y),
+            },
+        )
+    }
+}
+
+/// Everything a subtree can put on the canvas, before the node's own
+/// transform.
+///
+/// This decides how much of a layer survives, so it errs wide wherever paint
+/// can leave the box: strokes and outlines outside it, shadows and blurs by
+/// their full reach, and text, which can run past its box to the right and by
+/// a line or two below it.
+fn paint_extent(node: &SceneNode) -> Extent {
+    let mut own = Extent::of(node.bounds);
+
+    // Anti-aliasing, and strokes centred on or outside the edge.
+    let stroke = node
+        .borders
+        .iter()
+        .map(|border| {
+            let sides = &border.widths;
+            border
+                .width
+                .max(sides.top)
+                .max(sides.right)
+                .max(sides.bottom)
+                .max(sides.left)
+        })
+        .fold(0.0_f32, f32::max);
+    let outline = node
+        .outline
+        .as_ref()
+        .map_or(0.0, |outline| outline.offset.max(0.0) + outline.width);
+    let edge = 2.0 + stroke.max(outline);
+    own = own.grown(edge, edge);
+
+    for effect in &node.effects {
+        let reach = match effect.kind.as_str() {
+            // `radius` is twice the shadow's sigma.
+            "drop-shadow" | "glass" => {
+                blur::reach(effect.radius / 2.0) as f32
+                    + effect.spread.max(0.0)
+                    + effect.x.abs().max(effect.y.abs())
+            }
+            _ => 0.0,
+        };
+        own = own.grown(reach, reach);
+    }
+
+    if let PaintContent::Text { segments, .. } = &node.content {
+        let line = segments
+            .iter()
+            .map(|segment| {
+                segment
+                    .line_height
+                    .unwrap_or(0.0)
+                    .max(segment.font_size * 1.5)
+                    + segment.baseline_shift.abs()
+            })
+            .fold(0.0_f32, f32::max);
+        // A line that does not wrap runs out of its box to the right, as far
+        // as it is long; the painter stops a line below the box's bottom edge.
+        own = own.grown(line, line * 2.0);
+        own.right += TEXT_RUN_OFF;
+        if segments.iter().any(|segment| segment.letter_spacing < 0.0) {
+            own.left -= TEXT_RUN_OFF;
+        }
+    }
+
+    let mut children: Option<Extent> = None;
+    for child in &node.children {
+        let mut extent = paint_extent(child);
+        if let Some(transform) = child.transform.filter(|it| !it.is_identity()) {
+            extent = extent.transformed(node_matrix(child, transform));
+        }
+        children = Some(children.map_or(extent, |it| it.union(extent)));
+    }
+    if let Some(mut children) = children {
+        // A clipping node holds its children inside its own box.
+        let clip = Extent::of(node.bounds);
+        if node.clip_x {
+            children.left = children.left.max(clip.left);
+            children.right = children.right.min(clip.right);
+        }
+        if node.clip_y {
+            children.top = children.top.max(clip.top);
+            children.bottom = children.bottom.min(clip.bottom);
+        }
+        if children.right > children.left && children.bottom > children.top {
+            own = own.union(children);
+        }
+    }
+
+    // Blurs of the finished subtree spread all of it.
+    let sigma = layer_blur_sigma(node);
+    if sigma > 0.0 {
+        let reach = blur::reach(sigma) as f32;
+        own = own.grown(reach, reach);
+    }
+
+    own
+}
+
+/// How far right of its box a line of text is assumed to be able to run. A
+/// line that does not wrap has no other limit, and a finite one keeps the
+/// arithmetic of transforms and intersections away from infinities.
+const TEXT_RUN_OFF: f32 = 1.0e6;
+
+/// The sigma a node's layer is blurred by once painted: its `layer-blur`
+/// effects and a filter's `blur()` functions, one after another.
+fn layer_blur_sigma(node: &SceneNode) -> f32 {
+    let effects = node
+        .effects
+        .iter()
+        .filter(|effect| effect.kind == "layer-blur")
+        .map(|effect| effect.radius)
+        .sum::<f32>();
+    effects + node.filter.as_deref().map_or(0.0, filter_blur_sigma)
+}
+
+/// The total sigma of the `blur()` functions in a CSS filter, which apply one
+/// after another and so reach as far as their sum.
+fn filter_blur_sigma(filter: &str) -> f32 {
+    filter
+        .match_indices("blur(")
+        .filter_map(|(start, _)| {
+            let argument = &filter[start + 5..];
+            let end = argument.find(')')?;
+            argument[..end]
+                .trim()
+                .trim_end_matches("px")
+                .parse::<f32>()
+                .ok()
+        })
+        .map(f32::abs)
+        .sum()
+}
+
+/// Moves a subtree by `dx`, `dy`. `bounds` is the only position a scene node
+/// carries; every other geometry — shadows, masks, clip shapes, a transform's
+/// origin — is relative to it.
+fn translate_subtree(node: &mut SceneNode, dx: f32, dy: f32) {
+    node.bounds.x += dx;
+    node.bounds.y += dy;
+    for child in &mut node.children {
+        translate_subtree(child, dx, dy);
+    }
 }
 
 /// Multiplies a mask into a layer's alpha.
@@ -671,13 +1217,33 @@ fn paint_backdrop_effects(pixmap: &mut Pixmap, node: &SceneNode) {
                 // 180% — the lift that makes frosted glass read as glass
                 // rather than as fog. Applying it only to `glass` left every
                 // backdrop-blurred panel flat.
-                let mut backdrop = pixmap.clone();
+                //
+                // Only the part of the backdrop the mask can let through is
+                // copied: the node's box, grown by twice the blur's reach.
+                // Unlike a shadow, the backdrop is not transparent at the
+                // copy's edges, so the edge clamp reads the wrong pixels there
+                // — but each pass carries that error at most one reach inward,
+                // and the second reach keeps it clear of the node.
+                let Some(bounds) = tiny_skia::Rect::from_xywh(
+                    node.bounds.x,
+                    node.bounds.y,
+                    node.bounds.width,
+                    node.bounds.height,
+                ) else {
+                    continue;
+                };
+                let Some(region) = blur_region(bounds, effect.radius, 2, pixmap) else {
+                    continue;
+                };
+                let Some(mut backdrop) = copy_region(pixmap, &region) else {
+                    continue;
+                };
                 blur::blur(&mut backdrop, effect.radius);
                 saturate(&mut backdrop, effect.saturation / 100.0);
 
                 pixmap.draw_pixmap(
-                    0,
-                    0,
+                    region.x,
+                    region.y,
                     backdrop.as_ref(),
                     &PixmapPaint::default(),
                     Transform::identity(),
@@ -702,26 +1268,26 @@ fn paint_drop_shadows(pixmap: &mut Pixmap, node: &SceneNode) {
         let Some(path) = node_shape_path(node, effect.spread, effect.x, effect.y) else {
             continue;
         };
-        let Some(mut shadow) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+        // CSS states shadow blur as a radius; the Gaussian sigma is half it.
+        let sigma = effect.radius / 2.0;
+        // Only the shape and the distance its blur can travel are painted and
+        // blurred, not the whole canvas: the same pixels, a fraction of the work.
+        let Some(region) = blur_region(path.bounds(), sigma, 1, pixmap) else {
+            continue;
+        };
+        let Some(mut shadow) = Pixmap::new(region.width, region.height) else {
             continue;
         };
 
         let mut paint = Paint::default();
         paint.set_color(color);
         paint.anti_alias = true;
-        shadow.fill_path(
-            &path,
-            &paint,
-            FillRule::Winding,
-            Transform::identity(),
-            None,
-        );
-        // CSS states shadow blur as a radius; the Gaussian sigma is half it.
-        blur::blur(&mut shadow, effect.radius / 2.0);
+        shadow.fill_path(&path, &paint, FillRule::Winding, region.to_local(), None);
+        blur::blur(&mut shadow, sigma);
 
         pixmap.draw_pixmap(
-            0,
-            0,
+            region.x,
+            region.y,
             shadow.as_ref(),
             &PixmapPaint::default(),
             Transform::identity(),
@@ -743,7 +1309,23 @@ fn paint_inner_shadows(pixmap: &mut Pixmap, node: &SceneNode) {
         let Some(mask) = create_clip_mask(pixmap.width(), pixmap.height(), node) else {
             continue;
         };
-        let Some(mut shadow) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+        let sigma = effect.radius / 2.0;
+        // The mask keeps only what falls inside the node, so the node's box
+        // plus the blur's reach is all that can show. The flood colour runs to
+        // the region's edges, which the edge clamp repeats exactly as it would
+        // repeat the flood beyond them on a full canvas.
+        let Some(bounds) = tiny_skia::Rect::from_xywh(
+            node.bounds.x,
+            node.bounds.y,
+            node.bounds.width,
+            node.bounds.height,
+        ) else {
+            continue;
+        };
+        let Some(region) = blur_region(bounds, sigma, 1, pixmap) else {
+            continue;
+        };
+        let Some(mut shadow) = Pixmap::new(region.width, region.height) else {
             continue;
         };
 
@@ -756,20 +1338,81 @@ fn paint_inner_shadows(pixmap: &mut Pixmap, node: &SceneNode) {
             cut.set_color(Color::TRANSPARENT);
             cut.blend_mode = tiny_skia::BlendMode::Clear;
             cut.anti_alias = true;
-            shadow.fill_path(&hole, &cut, FillRule::Winding, Transform::identity(), None);
+            shadow.fill_path(&hole, &cut, FillRule::Winding, region.to_local(), None);
         }
 
-        blur::blur(&mut shadow, effect.radius / 2.0);
+        blur::blur(&mut shadow, sigma);
 
         pixmap.draw_pixmap(
-            0,
-            0,
+            region.x,
+            region.y,
             shadow.as_ref(),
             &PixmapPaint::default(),
             Transform::identity(),
             Some(&mask),
         );
     }
+}
+
+/// A whole-pixel area of the canvas, for effects that paint off to one side.
+struct Region {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+impl Region {
+    /// Moves canvas coordinates into the region's own pixmap.
+    fn to_local(&self) -> Transform {
+        Transform::from_translate(-self.x as f32, -self.y as f32)
+    }
+}
+
+/// The part of the canvas a blurred shape can reach: its bounds grown by
+/// `reaches` times the blur's [`reach`](blur::reach), snapped out to whole
+/// pixels so the shape rasterises on the same grid it would on the canvas, and
+/// cut to the page.
+///
+/// Cutting to the page is what keeps this exact at its edges: there the
+/// region's edge is the page's edge, and the blur clamps at both the same.
+fn blur_region(
+    bounds: tiny_skia::Rect,
+    sigma: f32,
+    reaches: u32,
+    canvas: &Pixmap,
+) -> Option<Region> {
+    let reach = (blur::reach(sigma) * reaches) as f32;
+    let extent = Extent {
+        left: bounds.left(),
+        top: bounds.top(),
+        right: bounds.right(),
+        bottom: bounds.bottom(),
+    }
+    .grown(reach, reach);
+    // The page's edge is where the blur clamps on a full paint. When this
+    // canvas is only part of the page, the region stops a reach beyond the
+    // canvas instead: past that, a clamp at the region's edge cannot reach a
+    // pixel of the canvas.
+    let limit = page_extent(canvas).intersection(canvas_extent(canvas).grown(reach, reach));
+    snap_region(extent, limit)
+}
+
+/// A copy of one region of the canvas, as its own pixmap.
+fn copy_region(canvas: &Pixmap, region: &Region) -> Option<Pixmap> {
+    let mut copy = Pixmap::new(region.width, region.height)?;
+    copy.draw_pixmap(
+        -region.x,
+        -region.y,
+        canvas.as_ref(),
+        &PixmapPaint {
+            blend_mode: BlendMode::Source,
+            ..PixmapPaint::default()
+        },
+        Transform::identity(),
+        None,
+    );
+    Some(copy)
 }
 
 fn effect_color(effect: &Effect, node: &SceneNode) -> Option<Color> {
@@ -1036,10 +1679,23 @@ fn paint_vertical_text(
         *writing_mode = None;
     }
 
-    let Some(mut layer) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+    // Drawn into a layer that holds just the flat block, cut to the page: the
+    // quarter turn can bring any of it onto the canvas.
+    let Some(region) = snap_region(
+        paint_extent(&flat).grown(LAYER_FILTER_MARGIN, LAYER_FILTER_MARGIN),
+        page_extent(pixmap),
+    ) else {
         return;
     };
-    paint_content(&mut layer, &flat, font, asset_cache, fonts);
+    let Some(mut layer) = Pixmap::new(region.width, region.height) else {
+        return;
+    };
+    let (dx, dy) = (-(region.x as f32), -(region.y as f32));
+    translate_subtree(&mut flat, dx, dy);
+    let page = page_extent(pixmap).moved(dx, dy);
+    with_page(page, || {
+        paint_content(&mut layer, &flat, font, asset_cache, fonts)
+    });
 
     // A quarter turn clockwise about the box's own corner, then back along x
     // by the box's width, which is where that turn leaves it.
@@ -1056,8 +1712,8 @@ fn paint_vertical_text(
     }
 
     pixmap.draw_pixmap(
-        0,
-        0,
+        region.x,
+        region.y,
         layer.as_ref(),
         &PixmapPaint {
             quality: tiny_skia::FilterQuality::Bicubic,
@@ -1673,6 +2329,14 @@ fn paint_text(
 
         line_top += line_height - trim;
     }
+}
+
+/// The face undeclared text falls back to, read from disk once per process
+/// rather than once per paint: it is a system UI font, several megabytes, and
+/// parsing it cost more than painting a small screen.
+fn default_font() -> Option<&'static Font> {
+    static DEFAULT_FONT: std::sync::OnceLock<Option<Font>> = std::sync::OnceLock::new();
+    DEFAULT_FONT.get_or_init(load_default_font).as_ref()
 }
 
 fn load_default_font() -> Option<Font> {
@@ -5579,5 +6243,89 @@ mod tests {
         let bytes = std::fs::read(&path).expect("png readable");
         let _ = std::fs::remove_file(&path);
         assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn a_layer_covers_what_its_subtree_paints_not_the_whole_canvas() {
+        // A seven-pixel rotated square on a tall page: the layer it needs is a
+        // few pixels across, not the page.
+        let document = parse_gui_xml(
+            r##"<gui version="0.2">
+              <col w="400" h="12000" p="20">
+                <rect w="7" h="7" rotation="45" fill="#9747ff" />
+              </col>
+            </gui>"##,
+        )
+        .unwrap();
+        let layout = compute_taffy_layout(&document).unwrap();
+        let scene = build_scene(&document, &layout);
+        let canvas = Pixmap::new(400, 12000).unwrap();
+        let square = &scene.root.children[0];
+
+        let region =
+            layer_region(square, paint_extent(square), &canvas).expect("it lands on the canvas");
+        assert!(
+            region.width < 40 && region.height < 40,
+            "{}×{}",
+            region.width,
+            region.height
+        );
+    }
+
+    #[test]
+    fn a_layer_still_holds_a_shadow_that_reaches_past_its_box() {
+        // Opacity puts the card through a layer; its shadow falls well outside
+        // the card and has to survive the layer being cut to size.
+        let faded = render(
+            &SHADOW_CARD
+                .replace(
+                    r##"<rect w="40" h="20" fill="#ffffff">"##,
+                    r##"<rect w="40" h="20" fill="#ffffff" opacity="0.99">"##,
+                )
+                .replace("EXTRA", ""),
+        );
+        let solid = render(&SHADOW_CARD.replace("EXTRA", ""));
+
+        let below_card = faded.get_pixel(40, 47);
+        assert!(below_card[0] < 250, "the shadow is painted: {below_card:?}");
+        // A 1% fade moves a pixel a few levels; a shadow cut off at the layer's
+        // edge would move it by a hundred or more.
+        for (x, y, pixel) in solid.enumerate_pixels() {
+            let other = faded.get_pixel(x, y);
+            for channel in 0..3 {
+                assert!(
+                    (pixel[channel] as i16 - other[channel] as i16).abs() <= 8,
+                    "({x}, {y}): {pixel:?} against {other:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_rotated_node_draws_the_same_far_down_a_page_as_at_its_top() {
+        let at = |top: f32| {
+            render(&format!(
+                r##"<gui version="0.2">
+                  <col w="60" h="{height}" fill="#262626" pt="{top}" pl="20.3">
+                    <rect w="7" h="7" rotation="45" fill="#9747ff" />
+                  </col>
+                </gui>"##,
+                height = top + 40.0,
+            ))
+        };
+        let near = at(20.5);
+        let far = at(12020.5);
+        for y in 15..35 {
+            for x in 15..35 {
+                let a = near.get_pixel(x, y);
+                let b = far.get_pixel(x, y + 12000);
+                for channel in 0..4 {
+                    assert!(
+                        (a[channel] as i16 - b[channel] as i16).abs() <= 1,
+                        "({x}, {y}): {a:?} against {b:?}"
+                    );
+                }
+            }
+        }
     }
 }

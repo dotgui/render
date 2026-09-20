@@ -8,7 +8,18 @@
 //! The vocabulary is RFC-0034's, which the spec summarises as: a `<component>`
 //! declares `<props>`, an `<instance>` passes overrides as attributes, and
 //! "ad-hoc overrides skip the props block and match by sanitized layer name".
+//!
+//! RFC-0044 adds slots. A layout container carrying `slot="name"` inside a
+//! component body is a hole; an instance fills it with
+//! `<slot name="name">…</slot>` children. The container's own children are the
+//! fallback, and a slot left empty takes up no space at all.
+//!
+//! RFC-0042 adds a second place a component can come from: the package's
+//! `library.guix`. A document sees its own components and the library's; a
+//! library component's body sees only the library's, because the library
+//! depends on nothing.
 
+use crate::issues::Issues;
 use crate::model::GuiNode;
 use std::collections::BTreeMap;
 
@@ -17,6 +28,9 @@ use std::collections::BTreeMap;
 /// A component whose body instantiates itself would otherwise expand forever.
 /// The limit is generous: real component trees are a handful deep.
 const MAX_DEPTH: usize = 16;
+
+/// The containers that may be a slot: a slot's layout is its container's.
+const SLOT_CONTAINERS: &[&str] = &["frame", "stack", "row", "col", "grid"];
 
 /// Attributes an instance applies to the expanded body's root rather than
 /// treating as a prop override.
@@ -44,10 +58,39 @@ const POSITIONAL: &[&str] = &[
     "max-height",
 ];
 
+/// Every component and component set one `<components>` scope declares.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Components {
+    by_id: BTreeMap<String, Component>,
+    /// A component set's id and its variants' ids, which `slot-accept` expands
+    /// a set id to.
+    sets: BTreeMap<String, Vec<String>>,
+}
+
+impl Components {
+    /// Every id this scope declares, components and sets alike.
+    pub(crate) fn ids(&self) -> impl Iterator<Item = &String> {
+        self.by_id.keys().chain(self.sets.keys())
+    }
+
+    pub(crate) fn contains(&self, id: &str) -> bool {
+        self.by_id.contains_key(id) || self.sets.contains_key(id)
+    }
+
+    /// Each component's body, for checking what it refers to.
+    pub(crate) fn bodies(&self) -> impl Iterator<Item = (&String, &GuiNode)> {
+        self.by_id
+            .iter()
+            .map(|(id, component)| (id, &component.body))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Component {
     props: Vec<Prop>,
     body: GuiNode,
+    /// The names of the slots the body declares.
+    slots: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,22 +103,69 @@ struct Prop {
     bind: Option<String>,
 }
 
+/// Where instance lookups resolve: the document's own components, then the
+/// library's.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Scope<'a> {
+    pub(crate) local: &'a Components,
+    pub(crate) library: Option<&'a Components>,
+}
+
+impl<'a> Scope<'a> {
+    /// The component `id` names, and the scope its own body resolves in.
+    fn lookup(self, id: &str) -> Option<(&'a Component, Scope<'a>)> {
+        if let Some(component) = self.local.by_id.get(id) {
+            return Some((component, self));
+        }
+        let library = self.library?;
+        let component = library.by_id.get(id)?;
+        Some((
+            component,
+            Scope {
+                local: library,
+                library: None,
+            },
+        ))
+    }
+
+    /// The component ids an entry in `slot-accept` stands for: itself, or
+    /// every variant when it names a set.
+    fn accepted(self, id: &str) -> Vec<String> {
+        let set = self
+            .local
+            .sets
+            .get(id)
+            .or_else(|| self.library.and_then(|library| library.sets.get(id)));
+        match set {
+            Some(variants) => variants.clone(),
+            None => vec![id.to_owned()],
+        }
+    }
+}
+
 /// Collects every component and variant a `<components>` block declares.
 ///
 /// A `<component-set>`'s `<variant>` children are components in their own
 /// right — an instance references a variant by its own id, not the set's.
-pub(crate) fn read_components(blocks: &[GuiNode]) -> BTreeMap<String, Component> {
-    let mut components = BTreeMap::new();
+pub(crate) fn read_components(blocks: &[GuiNode], issues: &mut Issues) -> Components {
+    let mut components = Components::default();
 
     for block in blocks {
         for child in &block.children {
             match child.tag.as_str() {
-                "component" => insert_component(&mut components, child),
+                "component" => insert_component(&mut components, child, issues),
                 "component-set" => {
+                    let mut variants = Vec::new();
                     for variant in &child.children {
                         if variant.tag == "variant" {
-                            insert_component(&mut components, variant);
+                            if let Some(id) = variant.attributes.get("id") {
+                                variants.push(id.clone());
+                            }
+                            insert_component(&mut components, variant, issues);
                         }
+                    }
+                    if let Some(id) = child.attributes.get("id") {
+                        components.sets.insert(id.clone(), variants);
                     }
                 }
                 _ => {}
@@ -86,7 +176,7 @@ pub(crate) fn read_components(blocks: &[GuiNode]) -> BTreeMap<String, Component>
     components
 }
 
-fn insert_component(components: &mut BTreeMap<String, Component>, node: &GuiNode) {
+fn insert_component(components: &mut Components, node: &GuiNode, issues: &mut Issues) {
     let Some(id) = node.attributes.get("id") else {
         return;
     };
@@ -95,13 +185,66 @@ fn insert_component(components: &mut BTreeMap<String, Component>, node: &GuiNode
         return;
     };
 
-    components.insert(
+    components.by_id.insert(
         id.clone(),
         Component {
             props: read_props(node),
+            slots: read_slots(id, body, issues),
             body: body.clone(),
         },
     );
+}
+
+/// The slots a component body declares, checked against RFC-0044's rules for
+/// declaring one.
+fn read_slots(component: &str, body: &GuiNode, issues: &mut Issues) -> Vec<String> {
+    if body.attributes.contains_key("slot") {
+        issues.violation(format!(
+            "component '{component}': a slot may not be the component's root"
+        ));
+    }
+
+    let mut slots = Vec::new();
+    collect_slots(component, body, false, &mut slots, issues);
+    slots
+}
+
+fn collect_slots(
+    component: &str,
+    node: &GuiNode,
+    inside_slot: bool,
+    slots: &mut Vec<String>,
+    issues: &mut Issues,
+) {
+    for child in &node.children {
+        let Some(name) = child.attributes.get("slot") else {
+            collect_slots(component, child, inside_slot, slots, issues);
+            continue;
+        };
+
+        if inside_slot {
+            issues.violation(format!(
+                "component '{component}': slot '{name}' is declared inside another slot"
+            ));
+        }
+        if !SLOT_CONTAINERS.contains(&child.tag.as_str()) {
+            issues.violation(format!(
+                "component '{component}': slot '{name}' is on a <{}>, but only a layout container can be a slot",
+                child.tag
+            ));
+        }
+        if name.trim().is_empty() {
+            issues.violation(format!("component '{component}': a slot has an empty name"));
+        } else if slots.contains(name) {
+            issues.violation(format!(
+                "component '{component}': slot '{name}' is declared twice"
+            ));
+        } else {
+            slots.push(name.clone());
+        }
+
+        collect_slots(component, child, true, slots, issues);
+    }
 }
 
 fn read_props(component: &GuiNode) -> Vec<Prop> {
@@ -130,61 +273,252 @@ fn read_props(component: &GuiNode) -> Vec<Prop> {
 }
 
 /// Replaces every `<instance>` in the tree with the component it names.
-pub(crate) fn expand(node: &mut GuiNode, components: &BTreeMap<String, Component>) {
-    expand_at(node, components, 0);
+pub(crate) fn expand(node: &mut GuiNode, scope: Scope, issues: &mut Issues) {
+    let mut expander = Expander {
+        issues,
+        stack: Vec::new(),
+    };
+    expander.expand_at(node, scope, 0);
 }
 
-fn expand_at(node: &mut GuiNode, components: &BTreeMap<String, Component>, depth: usize) {
-    if depth > MAX_DEPTH {
-        return;
-    }
+/// One instance's `<slot>` content: as written, for checking `slot-accept`,
+/// and expanded in the scope of the document that wrote it.
+struct Fill {
+    written: Vec<GuiNode>,
+    expanded: Vec<GuiNode>,
+}
 
-    // Most nodes hold no instance at all, and rebuilding their children would
-    // be an allocation per node for nothing.
-    if !node.children.iter().any(|child| child.tag == "instance") {
-        for child in &mut node.children {
-            expand_at(child, components, depth);
+struct Expander<'i> {
+    issues: &'i mut Issues,
+    /// The components being instantiated, outermost first.
+    stack: Vec<String>,
+}
+
+impl Expander<'_> {
+    fn expand_at(&mut self, node: &mut GuiNode, scope: Scope, depth: usize) {
+        if depth > MAX_DEPTH {
+            return;
         }
-        return;
-    }
 
-    let mut expanded = Vec::with_capacity(node.children.len());
-    for child in std::mem::take(&mut node.children) {
-        match instantiate(&child, components, depth) {
-            // An instance naming a component nothing declares is dropped
-            // rather than left in the tree, where it would lay out as an
-            // unknown block.
-            Some(body) => expanded.push(body),
-            None if child.tag == "instance" => {}
-            None => {
-                let mut child = child;
-                expand_at(&mut child, components, depth);
-                expanded.push(child);
+        // Most nodes hold no instance at all, and rebuilding their children
+        // would be an allocation per node for nothing.
+        if !node
+            .children
+            .iter()
+            .any(|child| matches!(child.tag.as_str(), "instance" | "slot"))
+        {
+            for child in &mut node.children {
+                self.expand_at(child, scope, depth);
+            }
+            return;
+        }
+
+        let mut expanded = Vec::with_capacity(node.children.len());
+        for mut child in std::mem::take(&mut node.children) {
+            match child.tag.as_str() {
+                // An instance that cannot be expanded is dropped rather than
+                // left in the tree, where it would lay out as an unknown block.
+                "instance" => expanded.extend(self.instantiate(&child, scope, depth)),
+                "slot" => self.issues.violation(format!(
+                    "<slot name=\"{}\"> is only valid directly inside an <instance>",
+                    child.attributes.get("name").map_or("", String::as_str)
+                )),
+                _ => {
+                    self.expand_at(&mut child, scope, depth);
+                    expanded.push(child);
+                }
             }
         }
+        node.children = expanded;
     }
-    node.children = expanded;
-}
 
-fn instantiate(
-    node: &GuiNode,
-    components: &BTreeMap<String, Component>,
-    depth: usize,
-) -> Option<GuiNode> {
-    if node.tag != "instance" {
-        return None;
+    fn instantiate(&mut self, node: &GuiNode, scope: Scope, depth: usize) -> Option<GuiNode> {
+        let Some(id) = node.attributes.get("component") else {
+            self.issues
+                .violation("an <instance> has no component attribute");
+            return None;
+        };
+        let Some((component, body_scope)) = scope.lookup(id) else {
+            self.issues
+                .violation(format!("<instance> names unknown component '{id}'"));
+            return None;
+        };
+        // RFC-0044 makes a component inside its own slot content an error, and
+        // with it any other self-containment. A 0.2 document keeps the old
+        // behaviour: expansion stops at the depth limit.
+        if self.issues.strict() && self.stack.contains(id) {
+            self.issues.violation(format!(
+                "component '{id}' contains itself: {} → {id}",
+                self.stack.join(" → ")
+            ));
+            return None;
+        }
+
+        let fills = self.read_fills(node, id, component);
+
+        let mut body = component.body.clone();
+        apply_declared_props(&mut body, node, &component.props);
+        apply_ad_hoc_overrides(&mut body, node, &component.props);
+        apply_positional(&mut body, node);
+        scale_to_instance(&mut body, &component.body);
+
+        self.stack.push(id.clone());
+
+        // Content is expanded where it was written, before it is inserted: a
+        // document fills a library component's slot with its own components,
+        // which the library's scope cannot see. Props are already applied, so
+        // content never reads them.
+        let mut fills: BTreeMap<String, Fill> = fills
+            .into_iter()
+            .map(|(name, written)| {
+                let mut holder = GuiNode::new("slot");
+                holder.children = written.clone();
+                self.expand_at(&mut holder, scope, depth + 1);
+                (
+                    name,
+                    Fill {
+                        written,
+                        expanded: holder.children,
+                    },
+                )
+            })
+            .collect();
+        // Almost every component declares no slot, and its body need not be
+        // walked for one.
+        if !component.slots.is_empty() {
+            self.fill_slots(&mut body, &mut fills, id, body_scope);
+        }
+
+        // A component body may itself hold instances.
+        self.expand_at(&mut body, body_scope, depth + 1);
+        self.stack.pop();
+        Some(body)
     }
-    let component = components.get(node.attributes.get("component")?)?;
-    let mut body = component.body.clone();
 
-    apply_declared_props(&mut body, node, &component.props);
-    apply_ad_hoc_overrides(&mut body, node, &component.props);
-    apply_positional(&mut body, node);
-    scale_to_instance(&mut body, &component.body);
+    /// An instance's children, by slot name, checked against the rules for
+    /// filling one.
+    fn read_fills(
+        &mut self,
+        instance: &GuiNode,
+        id: &str,
+        component: &Component,
+    ) -> BTreeMap<String, Vec<GuiNode>> {
+        let mut fills = BTreeMap::new();
 
-    // A component body may itself hold instances.
-    expand_at(&mut body, components, depth + 1);
-    Some(body)
+        for child in &instance.children {
+            if child.tag != "slot" {
+                self.issues.violation(format!(
+                    "<instance component=\"{id}\"> may only contain <slot> elements, found <{}>",
+                    child.tag
+                ));
+                continue;
+            }
+            let Some(name) = child
+                .attributes
+                .get("name")
+                .filter(|n| !n.trim().is_empty())
+            else {
+                self.issues.violation(format!(
+                    "<instance component=\"{id}\"> has a <slot> without a name"
+                ));
+                continue;
+            };
+            if !component.slots.contains(name) {
+                self.issues.violation(format!(
+                    "<instance component=\"{id}\"> fills slot '{name}', which the component does not declare"
+                ));
+                continue;
+            }
+            if fills.contains_key(name) {
+                self.issues.violation(format!(
+                    "<instance component=\"{id}\"> fills slot '{name}' twice"
+                ));
+                continue;
+            }
+            fills.insert(name.clone(), child.children.clone());
+        }
+
+        fills
+    }
+
+    /// Puts each fill into the slot it names, keeps the fallback of slots
+    /// left unfilled, and removes every slot that ends up empty.
+    fn fill_slots(
+        &mut self,
+        node: &mut GuiNode,
+        fills: &mut BTreeMap<String, Fill>,
+        component: &str,
+        scope: Scope,
+    ) {
+        let mut kept = Vec::with_capacity(node.children.len());
+
+        for mut child in std::mem::take(&mut node.children) {
+            let Some(name) = child.attributes.get("slot").cloned() else {
+                self.fill_slots(&mut child, fills, component, scope);
+                kept.push(child);
+                continue;
+            };
+
+            if let Some(fill) = fills.remove(&name) {
+                self.check_accept(&child, &fill.written, component, &name, scope);
+                child.children = fill.expanded;
+            }
+
+            // An empty slot is not an empty box: no size, no padding, and no
+            // share of its parent's gap.
+            if !child.children.is_empty() {
+                kept.push(child);
+            }
+        }
+
+        node.children = kept;
+    }
+
+    fn check_accept(
+        &mut self,
+        slot: &GuiNode,
+        content: &[GuiNode],
+        component: &str,
+        name: &str,
+        scope: Scope,
+    ) {
+        if let Some(accept) = slot.attributes.get("slot-accept") {
+            let accepted: Vec<String> = accept
+                .split_whitespace()
+                .flat_map(|id| scope.accepted(id))
+                .collect();
+
+            for child in content {
+                let fits = child.tag == "instance"
+                    && child
+                        .attributes
+                        .get("component")
+                        .is_some_and(|id| accepted.contains(id));
+                if !fits {
+                    let what = match child.attributes.get("component") {
+                        Some(id) if child.tag == "instance" => format!("an instance of '{id}'"),
+                        _ => format!("a <{}>", child.tag),
+                    };
+                    self.issues.violation(format!(
+                        "slot '{name}' of component '{component}' accepts only instances of {accept}, but was given {what}"
+                    ));
+                }
+            }
+        }
+
+        let count = content.len();
+        let bound = |attr: &str| slot.attributes.get(attr)?.trim().parse::<usize>().ok();
+        if let Some(min) = bound("slot-min").filter(|min| count < *min) {
+            self.issues.advise(format!(
+                "slot '{name}' of component '{component}' has {count} item(s), fewer than slot-min {min}"
+            ));
+        }
+        if let Some(max) = bound("slot-max").filter(|max| count > *max) {
+            self.issues.advise(format!(
+                "slot '{name}' of component '{component}' has {count} item(s), more than slot-max {max}"
+            ));
+        }
+    }
 }
 
 fn apply_declared_props(body: &mut GuiNode, instance: &GuiNode, props: &[Prop]) {
@@ -827,5 +1161,307 @@ mod tests {
 
         let track = find(&root.children[0], "track").unwrap();
         assert_eq!(track.attributes.get("w").map(String::as_str), Some("80"));
+    }
+
+    fn parse_err(xml: &str) -> String {
+        match parse_gui_xml(xml) {
+            Ok(_) => panic!("expected the document to be refused"),
+            Err(err) => err.to_string(),
+        }
+    }
+
+    /// RFC-0044's scaffold: a title prop, a free `body` slot and a `tabs`
+    /// slot that accepts only tab items.
+    const SCREEN: &str = r##"
+        <components>
+          <component-set id="compset-tab-item" name="Tab">
+            <variant id="comp-tab-item">
+              <text value="Tab" />
+            </variant>
+            <variant id="comp-tab-item-active">
+              <text value="Tab" font-weight="700" />
+            </variant>
+          </component-set>
+          <component id="comp-section">
+            <text id="label" value="Section" />
+          </component>
+          <component name="Screen" id="comp-screen">
+            <props>
+              <prop name="title" type="string" target="title" />
+            </props>
+            <col w="390" gap="22">
+              <text id="title" value="Title" />
+              <col id="body" slot="body" w="fill" p="0 16" gap="24" />
+              <row id="tabs" slot="tabs" slot-accept="compset-tab-item" slot-min="2" slot-max="5" w="fill" gap="8" />
+              <row id="actions" slot="actions" gap="12">
+                <text id="close" value="Close" />
+              </row>
+            </col>
+          </component>
+        </components>
+    "##;
+
+    fn screen(version: &str, instance: &str) -> String {
+        format!(
+            r##"
+            <gui version="{version}">
+              {SCREEN}
+              <frame w="390" h="800">
+                {instance}
+              </frame>
+            </gui>
+            "##
+        )
+    }
+
+    #[test]
+    fn slot_content_lands_in_the_container_and_takes_its_layout() {
+        let root = root_of(&screen(
+            "0.3",
+            r#"
+            <instance component="comp-screen" title="Audio Settings">
+              <slot name="body">
+                <instance component="comp-section" label="Playback" />
+                <row id="toggles" gap="12"><text value="Lossless" /></row>
+              </slot>
+              <slot name="tabs">
+                <instance component="comp-tab-item" />
+                <instance component="comp-tab-item-active" />
+              </slot>
+            </instance>
+            "#,
+        ));
+
+        let screen = &root.children[0];
+        let body = find(screen, "body").expect("the body slot is kept");
+        assert_eq!(
+            body.attributes["gap"], "24",
+            "the slot keeps its own layout"
+        );
+        assert_eq!(body.children.len(), 2);
+        assert_eq!(
+            body.children[0].tag, "text",
+            "an instance in content is expanded"
+        );
+        assert_eq!(body.children[0].attributes["value"], "Playback");
+        assert_eq!(body.children[1].attributes["id"], "toggles");
+
+        assert_eq!(find(screen, "tabs").unwrap().children.len(), 2);
+        assert_eq!(
+            find(screen, "title").unwrap().attributes["value"],
+            "Audio Settings"
+        );
+    }
+
+    #[test]
+    fn an_unfilled_slot_keeps_its_fallback() {
+        let root = root_of(&screen("0.3", r#"<instance component="comp-screen" />"#));
+        let actions = find(&root.children[0], "actions").expect("fallback keeps the slot");
+        assert_eq!(actions.children[0].attributes["value"], "Close");
+    }
+
+    #[test]
+    fn a_filled_slot_replaces_its_fallback() {
+        let root = root_of(&screen(
+            "0.3",
+            r#"
+            <instance component="comp-screen">
+              <slot name="actions"><text id="save" value="Save" /></slot>
+            </instance>
+            "#,
+        ));
+        let actions = find(&root.children[0], "actions").unwrap();
+        assert_eq!(actions.children.len(), 1);
+        assert_eq!(actions.children[0].attributes["id"], "save");
+    }
+
+    #[test]
+    fn an_empty_slot_leaves_no_box_behind() {
+        let root = root_of(&screen(
+            "0.3",
+            r#"
+            <instance component="comp-screen">
+              <slot name="actions" />
+            </instance>
+            "#,
+        ));
+        let screen = &root.children[0];
+        assert!(
+            find(screen, "body").is_none(),
+            "unfilled, no fallback: gone"
+        );
+        assert!(find(screen, "tabs").is_none());
+        assert!(
+            find(screen, "actions").is_none(),
+            "filled with nothing: gone"
+        );
+        assert_eq!(
+            screen.children.len(),
+            1,
+            "only the title is left to take a gap"
+        );
+    }
+
+    #[test]
+    fn slot_content_does_not_read_the_components_props() {
+        // `title` targets the layer with id="title"; content carrying the same
+        // id is the document's, and the prop must not reach it.
+        let root = root_of(&screen(
+            "0.3",
+            r#"
+            <instance component="comp-screen" title="From prop">
+              <slot name="body"><text id="title" value="From content" /></slot>
+            </instance>
+            "#,
+        ));
+        let body = find(&root.children[0], "body").unwrap();
+        assert_eq!(body.children[0].attributes["value"], "From content");
+    }
+
+    #[test]
+    fn slot_rules_are_errors_in_0_3() {
+        let cases = [
+            (
+                r#"<instance component="comp-screen"><text value="bare" /></instance>"#,
+                "may only contain <slot>",
+            ),
+            (
+                r#"<instance component="comp-screen"><slot><text value="x" /></slot></instance>"#,
+                "without a name",
+            ),
+            (
+                r#"<instance component="comp-screen"><slot name="footer"><text value="x" /></slot></instance>"#,
+                "does not declare",
+            ),
+            (
+                r#"<instance component="comp-screen"><slot name="tabs"><text value="x" /></slot></instance>"#,
+                "accepts only instances of compset-tab-item, but was given a <text>",
+            ),
+            (
+                r#"<instance component="comp-screen"><slot name="tabs"><instance component="comp-section" /></slot></instance>"#,
+                "was given an instance of 'comp-section'",
+            ),
+            (
+                r#"<slot name="body"><text value="x" /></slot>"#,
+                "only valid directly inside",
+            ),
+            (
+                r#"<instance component="nope" />"#,
+                "unknown component 'nope'",
+            ),
+        ];
+
+        for (instance, expected) in cases {
+            let err = parse_err(&screen("0.3", instance));
+            assert!(err.contains(expected), "{instance}\n→ {err}");
+        }
+    }
+
+    #[test]
+    fn the_same_findings_only_warn_in_0_2() {
+        let document = parse_gui_xml(&screen(
+            "0.2",
+            r#"<instance component="comp-screen"><text value="bare" /></instance>"#,
+        ))
+        .expect("a 0.2 document still renders");
+        assert!(document
+            .warnings
+            .iter()
+            .any(|w| w.contains("may only contain <slot>")));
+    }
+
+    #[test]
+    fn slot_min_and_max_advise_but_do_not_fail() {
+        let document = parse_gui_xml(&screen(
+            "0.3",
+            r#"
+            <instance component="comp-screen">
+              <slot name="tabs"><instance component="comp-tab-item" /></slot>
+            </instance>
+            "#,
+        ))
+        .expect("slot-min is advisory");
+        assert!(document
+            .warnings
+            .iter()
+            .any(|w| w.contains("fewer than slot-min 2")));
+    }
+
+    #[test]
+    fn a_slot_declaration_is_checked_where_it_is_declared() {
+        let declare = |body: &str| {
+            parse_err(&format!(
+                r#"<gui version="0.3">
+                  <components><component id="c">{body}</component></components>
+                  <frame w="10" h="10"><instance component="c" /></frame>
+                </gui>"#
+            ))
+        };
+
+        assert!(declare(r#"<col slot="root"><text value="x" /></col>"#)
+            .contains("may not be the component's root"));
+        assert!(
+            declare(r#"<col><col slot="a"><row slot="b" /></col></col>"#)
+                .contains("inside another slot")
+        );
+        assert!(declare(r#"<col><text slot="a" value="x" /></col>"#)
+            .contains("only a layout container"));
+        assert!(
+            declare(r#"<col><col slot="a" /><row slot="a" /></col>"#).contains("declared twice")
+        );
+    }
+
+    #[test]
+    fn a_component_inside_its_own_slot_content_is_an_error() {
+        let err = parse_err(
+            r#"<gui version="0.3">
+              <components>
+                <component id="card"><col><col slot="body" /></col></component>
+              </components>
+              <frame w="10" h="10">
+                <instance component="card">
+                  <slot name="body"><instance component="card" /></slot>
+                </instance>
+              </frame>
+            </gui>"#,
+        );
+        assert!(err.contains("contains itself"), "{err}");
+    }
+
+    #[test]
+    fn a_component_can_pass_its_own_slot_through_to_another() {
+        // `page` declares `content` inside the content it gives `card`.
+        let root = root_of(
+            r#"<gui version="0.3">
+              <components>
+                <component id="card"><col id="card"><col id="card-body" slot="body" p="8" /></col></component>
+                <component id="page">
+                  <col id="page">
+                    <instance component="card">
+                      <slot name="body"><col id="content" slot="content" gap="4" /></slot>
+                    </instance>
+                  </col>
+                </component>
+              </components>
+              <frame w="100" h="100">
+                <instance component="page">
+                  <slot name="content"><text id="hello" value="Hello" /></slot>
+                </instance>
+                <instance component="page" />
+              </frame>
+            </gui>"#,
+        );
+
+        let filled = &root.children[0];
+        let content = find(filled, "content").expect("the pass-through slot is filled");
+        assert_eq!(content.children[0].attributes["id"], "hello");
+        assert!(find(filled, "card-body").is_some());
+
+        let empty = &root.children[1];
+        assert!(find(empty, "content").is_none(), "unfilled, it collapses");
+        assert!(
+            find(empty, "card-body").is_none(),
+            "and so does the slot it was the only content of"
+        );
     }
 }

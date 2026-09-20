@@ -13,26 +13,43 @@ mod filter;
 mod fonts;
 mod gradient;
 mod grid;
+mod issues;
 mod layout;
 mod model;
 mod package;
+mod page;
 mod paint;
 mod parser;
+mod scale;
 mod scene;
 mod taffy_layout;
 mod text;
 mod text_style;
+mod validate;
 
 pub use assets::{AssetCache, AssetError, ResolvedAsset};
-pub use fonts::{FontAxes, FontError, FontFace, FontStore};
+pub use fonts::{
+    font_urls_in_stylesheet, google_stylesheet_urls, missing_system_font_files, FontAxes,
+    FontError, FontFace, FontStore,
+};
 pub use layout::{ApproxTextMeasurer, LayoutBox, LayoutRect, TextMeasurer};
 pub use model::{FontInfo, GuiDocument, GuiMetadata, GuiNode};
-pub use package::{read_gui_package, read_gui_package_xml, GuiPackage, PackageError};
-pub use paint::{
-    paint_scene_to_png, paint_scene_to_png_bytes, paint_scene_to_png_with_assets,
-    paint_scene_to_png_with_assets_and_fonts, PaintError,
+pub use package::{
+    read_gui_input, read_gui_package, read_gui_package_xml, GuiInput, GuiPackage, PackageDocument,
+    PackageError, PackagePage, LIBRARY_FILENAME,
 };
-pub use parser::{parse_gui_xml, ParseError};
+pub use page::Page;
+pub use paint::{
+    paint_scene_region_to_png_bytes, paint_scene_region_to_rgba, paint_scene_to_png,
+    paint_scene_to_png_bytes, paint_scene_to_png_with_assets,
+    paint_scene_to_png_with_assets_and_fonts, paint_scene_to_rgba, scene_pixel_size, PaintError,
+    PixelRect,
+};
+pub use parser::{
+    normalize_presence_attrs, parse_gui_xml, parse_gui_xml_with, parse_library,
+    parse_standalone_xml, DocumentForm, Library, ParseError, ParseOptions, RENDERER_VERSION,
+    SUPPORTED_VERSION,
+};
 pub use scene::{
     build_scene, Border, BorderWidths, Effect, Fill, ImageMask, Outline, PaintContent, Scene,
     SceneNode, TextSegment, Transform2D,
