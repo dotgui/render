@@ -83,11 +83,11 @@ version that introduced it.
 
 | | Value today |
 |---|---|
-| `RENDERER_VERSION` (Rust) | `0.3.0`, read from `Cargo.toml` at build time |
+| `RENDERER_VERSION` (Rust) | `0.3.1`, read from `Cargo.toml` at build time |
 | `SUPPORTED_VERSION` (Rust) | `"0.3"`, in `parser.rs` |
-| `render_png --version` | `dotgui renderer 0.3.0 (reads .gui up to version 0.3)` |
-| WASM `renderer_version()` / `supported_spec_version()` | `"0.3.0"` / `"0.3"` |
-| Error for a newer document | `the document declares version 0.4, but this renderer (0.3.0) reads documents up to version 0.3; a newer renderer is needed` |
+| `render_png --version` | `dotgui renderer 0.3.1 (reads .gui up to version 0.3)` |
+| WASM `renderer_version()` / `supported_spec_version()` | `"0.3.1"` / `"0.3"` |
+| Error for a newer document | `the document declares version 0.4, but this renderer (0.3.1) reads documents up to version 0.3; a newer renderer is needed` |
 
 The test `the_renderer_version_names_the_spec_it_implements` in `parser.rs`
 fails if `Cargo.toml`'s `MAJOR.MINOR` and `SUPPORTED_VERSION` disagree. Treat a
@@ -141,7 +141,7 @@ Say core defines spec `0.4`.
 For fixes, performance, kit-equivalence work, tooling and docs that don't change
 which spec is read:
 
-1. Bump `PATCH` in `Cargo.toml`: `0.3.0` → `0.3.1`.
+1. Bump `PATCH` in `Cargo.toml`: `0.3.1` → `0.3.2`.
 2. Leave `SUPPORTED_VERSION` alone.
 3. Run the workspace tests and clippy with CI's toolchain:
    ```bash

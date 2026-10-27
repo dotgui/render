@@ -918,7 +918,7 @@ fn remote_urls_in(value: &str) -> Vec<String> {
     urls
 }
 
-/// This renderer's version, e.g. `0.3.0`. Its `major.minor` is the newest spec
+/// This renderer's version, e.g. `0.3.1`. Its `major.minor` is the newest spec
 /// version it reads.
 #[wasm_bindgen]
 pub fn renderer_version() -> String {
