@@ -1452,7 +1452,52 @@ fn paint_fill(pixmap: &mut Pixmap, node: &SceneNode, asset_cache: Option<&AssetC
     }
 }
 
+/// Paints one entry of the stack, through its own `opacity` and `blend`
+/// (RFC-0024).
+///
+/// A paint with either is drawn alone onto a layer and composited once, the
+/// way kit gives each `<fill>` its own element: fading or blending each draw
+/// inside it instead would treat an image fill's pixels and its clip
+/// separately.
 fn paint_one_fill(
+    pixmap: &mut Pixmap,
+    node: &SceneNode,
+    fill: &Fill,
+    asset_cache: Option<&AssetCache>,
+) {
+    let opacity = fill.opacity.unwrap_or(1.0).clamp(0.0, 1.0);
+    let blend = fill
+        .blend
+        .as_deref()
+        .and_then(blend_mode)
+        .unwrap_or(BlendMode::SourceOver);
+    if opacity >= 1.0 && blend == BlendMode::SourceOver {
+        draw_fill(pixmap, node, fill, asset_cache);
+        return;
+    }
+    if opacity <= 0.0 {
+        return;
+    }
+
+    let Some(mut layer) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+        return;
+    };
+    draw_fill(&mut layer, node, fill, asset_cache);
+    pixmap.draw_pixmap(
+        0,
+        0,
+        layer.as_ref(),
+        &PixmapPaint {
+            opacity,
+            blend_mode: blend,
+            quality: tiny_skia::FilterQuality::Nearest,
+        },
+        Transform::identity(),
+        None,
+    );
+}
+
+fn draw_fill(
     pixmap: &mut Pixmap,
     node: &SceneNode,
     fill: &Fill,
@@ -1594,7 +1639,10 @@ fn paint_image_fill(
                 node,
                 &asset.bytes,
                 ImageStyle {
-                    fit: fill.fit.as_deref(),
+                    // kit fits an image fill as `cover` when it names no fit,
+                    // and an `<img>` as `fill`.
+                    fit: Some(fill.fit.as_deref().unwrap_or("cover")),
+                    crop: fill.crop,
                     ..Default::default()
                 },
             )
@@ -1602,6 +1650,12 @@ fn paint_image_fill(
 
     if drawn.is_err() {
         return;
+    }
+
+    // The adjustments apply to the image alone, before the node's outline
+    // cuts it, as kit's `filter` sits on the image's own layer.
+    if let Some(filter) = fill.filter.as_deref() {
+        apply_filter(&mut layer, filter);
     }
 
     let mask = create_clip_mask(pixmap.width(), pixmap.height(), node);
@@ -1807,6 +1861,7 @@ fn paint_content(
                 fit: fit.as_deref(),
                 object_position: object_position.as_deref(),
                 rendering: image_rendering.as_deref(),
+                crop: None,
             },
             asset_cache,
         ),
@@ -2707,6 +2762,9 @@ struct ImageStyle<'a> {
     fit: Option<&'a str>,
     object_position: Option<&'a str>,
     rendering: Option<&'a str>,
+    /// `x y w h` inside the node for an image fill's `fit="crop"`: the whole
+    /// image is stretched to that box, and the node's outline cuts it.
+    crop: Option<[f32; 4]>,
 }
 
 impl ImageStyle<'_> {
@@ -2835,7 +2893,46 @@ fn render_raster_asset(
     // did on their own before it was read.
     let (align_x, align_y) = style.alignment();
 
-    let (transform, needs_clip) = match style.fit.unwrap_or("fill") {
+    if style.fit == Some("tile") {
+        // Repeated at its own size from the node's corner, as kit's
+        // `background-repeat: repeat` with `background-size: auto` does.
+        let shader = tiny_skia::Pattern::new(
+            img_pixmap,
+            tiny_skia::SpreadMode::Repeat,
+            style.quality(),
+            1.0,
+            Transform::from_translate(rx, ry),
+        );
+        if let Some(path) = node_fill_path(node) {
+            let paint = Paint {
+                shader,
+                anti_alias: true,
+                ..Default::default()
+            };
+            pixmap.fill_path(
+                &path,
+                &paint,
+                FillRule::Winding,
+                Transform::identity(),
+                None,
+            );
+        }
+        return Ok(());
+    }
+
+    let fit = if style.crop.is_some() {
+        "crop-box"
+    } else {
+        style.fit.unwrap_or("fill")
+    };
+    let (transform, needs_clip) = match fit {
+        "crop-box" => {
+            let [x, y, w, h] = style.crop.unwrap_or_default();
+            (
+                Transform::from_scale(w / iw, h / ih).post_translate(rx + x, ry + y),
+                true,
+            )
+        }
         "contain" => {
             let scale = (rw / iw).min(rh / ih);
             let dx = rx + (rw - iw * scale) * align_x;
@@ -5156,6 +5253,120 @@ mod tests {
             painted.get_pixel(1, 1).0[0..3],
             [255, 255, 255],
             "and is cut off at its edge"
+        );
+    }
+
+    /// A PNG of `width` pixels in one row, one colour per pixel.
+    fn png_row(pixels: &[[u8; 3]]) -> Vec<u8> {
+        let mut image = image::RgbaImage::new(pixels.len() as u32, 1);
+        for (x, [r, g, b]) in pixels.iter().enumerate() {
+            image.put_pixel(x as u32, 0, image::Rgba([*r, *g, *b, 255]));
+        }
+        let mut bytes = Vec::new();
+        image
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .expect("test image encodes");
+        bytes
+    }
+
+    /// One 40x40 frame on white, with `fills` as its `<appearance>`.
+    fn fill_stack(fills: &str, asset: Vec<u8>) -> image::RgbaImage {
+        render_with_asset(
+            &format!(
+                r##"
+                <gui version="0.3">
+                  <frame w="40" h="40" fill="#ffffff">
+                    <frame abs x="0" y="0" w="40" h="40">
+                      <appearance>{fills}</appearance>
+                    </frame>
+                  </frame>
+                </gui>
+                "##
+            ),
+            "assets/img.png",
+            asset,
+        )
+    }
+
+    #[test]
+    fn a_fill_has_its_own_opacity() {
+        let painted = fill_stack(
+            r##"<fill type="color" value="#000000" opacity="0.5" />"##,
+            png_row(&[[0, 0, 0]]),
+        );
+        let grey = painted.get_pixel(20, 20).0[0];
+        assert!((125..=131).contains(&grey), "half black over white, got {grey}");
+    }
+
+    #[test]
+    fn a_fill_blends_with_the_paints_below_it() {
+        let stack = |blend: &str| {
+            fill_stack(
+                &format!(
+                    r##"<fill type="color" value="#ff0000" />
+                        <fill type="color" value="#00ff00" {blend} />"##
+                ),
+                png_row(&[[0, 0, 0]]),
+            )
+            .get_pixel(20, 20)
+            .0[0..3]
+            .to_vec()
+        };
+        assert_eq!(stack(""), [0, 255, 0], "normal paints over");
+        assert_eq!(stack(r#"blend="multiply""#), [0, 0, 0], "red times green is black");
+        assert_eq!(stack(r#"blend="screen""#), [255, 255, 0], "screen lightens to yellow");
+    }
+
+    #[test]
+    fn a_cropped_image_fill_is_drawn_at_its_crop_box() {
+        // Red left half, blue right half, drawn 80 wide from x = -40: only the
+        // blue half lands inside the node. Covering the node instead would
+        // centre the red-blue seam on it.
+        let painted = fill_stack(
+            r#"<fill type="image" src="assets/img.png" fit="crop" x="-40" y="0" w="80" h="40" />"#,
+            png_row(&[[255, 0, 0], [255, 0, 0], [0, 0, 255], [0, 0, 255]]),
+        );
+        assert_eq!(painted.get_pixel(20, 20).0[0..3], [0, 0, 255]);
+        assert_eq!(painted.get_pixel(35, 20).0[0..3], [0, 0, 255]);
+    }
+
+    #[test]
+    fn a_tiled_image_fill_repeats_at_its_own_size() {
+        let painted = fill_stack(
+            r#"<fill type="image" src="assets/img.png" fit="tile" />"#,
+            png_row(&[[255, 0, 0], [0, 0, 255]]),
+        );
+        assert_eq!(painted.get_pixel(0, 7).0[0..3], [255, 0, 0]);
+        assert_eq!(painted.get_pixel(1, 7).0[0..3], [0, 0, 255]);
+        assert_eq!(painted.get_pixel(30, 30).0[0..3], [255, 0, 0]);
+        assert_eq!(painted.get_pixel(31, 30).0[0..3], [0, 0, 255]);
+    }
+
+    #[test]
+    fn an_image_fill_without_a_fit_covers_like_kit() {
+        // Three red pixels and a blue one. Covering a square scales it far
+        // past the node and centres it, so the blue end is cut off; stretching
+        // it to fill would put blue in the right quarter.
+        let painted = fill_stack(
+            r#"<fill type="image" src="assets/img.png" />"#,
+            png_row(&[[255, 0, 0], [255, 0, 0], [255, 0, 0], [0, 0, 255]]),
+        );
+        assert_eq!(painted.get_pixel(35, 20).0[0..3], [255, 0, 0]);
+    }
+
+    #[test]
+    fn an_image_fills_saturation_adjustment_is_painted() {
+        let painted = fill_stack(
+            r#"<fill type="image" src="assets/img.png" fit="fill" filter-saturation="-1" />"#,
+            png_row(&[[255, 0, 0]]),
+        );
+        let [r, g, b, _] = painted.get_pixel(20, 20).0;
+        assert!(
+            r.abs_diff(g) <= 2 && g.abs_diff(b) <= 2,
+            "fully desaturated red is grey, got {r} {g} {b}"
         );
     }
 

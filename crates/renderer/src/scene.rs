@@ -162,8 +162,7 @@ pub struct Outline {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Fill {
     /// `color`, `linear-gradient`, `radial-gradient`, `angular-gradient` or
-    /// `image`. Only `color` is painted today; the rest are carried so a
-    /// consumer can see them and so the stack keeps its order.
+    /// `image`.
     pub kind: String,
     /// The paint itself: a colour for `type="color"`, the gradient function
     /// for a gradient, unset for an image.
@@ -171,6 +170,16 @@ pub struct Fill {
     /// `src` and `fit`, for `type="image"`.
     pub src: Option<String>,
     pub fit: Option<String>,
+    /// This paint's own `opacity` (RFC-0024), on top of the node's. Unset is 1.
+    pub opacity: Option<f32>,
+    /// This paint's own `blend` against the paints below it in the stack.
+    pub blend: Option<String>,
+    /// `x y w h` of the image inside the node, for `fit="crop"`: where the
+    /// whole image is drawn, before the node cuts it to its own outline.
+    pub crop: Option<[f32; 4]>,
+    /// The image adjustments (`filter-exposure`, `filter-contrast`,
+    /// `filter-saturation`) as the CSS filter list kit applies for them.
+    pub filter: Option<String>,
 }
 
 /// One entry of a node's effect stack (RFC-0027).
@@ -391,6 +400,10 @@ fn fills_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Fill> {
             value: attr(fill, "value").map(|value| resolve_token(value, metadata)),
             src: attr(fill, "src").map(ToOwned::to_owned),
             fit: attr(fill, "fit").map(ToOwned::to_owned),
+            opacity: fill_number(fill, "opacity"),
+            blend: attr(fill, "blend").map(ToOwned::to_owned),
+            crop: fill_crop(fill),
+            filter: fill_filter(fill),
         })
         .collect();
 
@@ -408,9 +421,53 @@ fn fills_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Vec<Fill> {
             value: Some(resolve_token(value, metadata)),
             src: None,
             fit: None,
+            opacity: None,
+            blend: None,
+            crop: None,
+            filter: None,
         })
         .into_iter()
         .collect()
+}
+
+fn fill_number(fill: &LayoutBox, name: &str) -> Option<f32> {
+    attr(fill, name)?
+        .trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|value| value.is_finite())
+}
+
+/// The crop box of a `fit="crop"` image fill. kit only crops when all four of
+/// `x`, `y`, `w` and `h` are present, and fits the image as `cover` otherwise.
+fn fill_crop(fill: &LayoutBox) -> Option<[f32; 4]> {
+    if attr(fill, "fit") != Some("crop") {
+        return None;
+    }
+    Some([
+        fill_number(fill, "x")?,
+        fill_number(fill, "y")?,
+        fill_number(fill, "w")?,
+        fill_number(fill, "h")?,
+    ])
+}
+
+/// The image adjustments kit renders, as the CSS filters it renders them with:
+/// each is a -1..1 offset from neutral, so `filter-exposure="0.2"` is
+/// `brightness(1.2)`. The other `filter-*` attributes have no CSS equivalent
+/// and kit leaves them unpainted, so they are left unpainted here too.
+fn fill_filter(fill: &LayoutBox) -> Option<String> {
+    let parts: Vec<String> = [
+        ("filter-exposure", "brightness"),
+        ("filter-contrast", "contrast"),
+        ("filter-saturation", "saturate"),
+    ]
+    .into_iter()
+    .filter_map(|(name, function)| {
+        fill_number(fill, name).map(|amount| format!("{function}({})", 1.0 + amount))
+    })
+    .collect();
+    (!parts.is_empty()).then(|| parts.join(" "))
 }
 
 /// Reads the ordered border stack out of a node's `<appearance>` block.
