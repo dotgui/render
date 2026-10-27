@@ -20,17 +20,18 @@ const PRESENCE_ATTRS: &[(&str, &str)] = &[
     ("wrap", "true"),
 ];
 
-/// This renderer's own version. Its `major.minor` is the newest spec version
-/// it implements, and a patch release fixes the renderer without changing the
-/// spec it reads: renderer 0.3.2 reads the same documents as 0.3.0.
+/// This renderer's own version. Its `major.minor` is the spec chapter it reads;
+/// its patch is the renderer's own counter, so renderer 0.3.7 may read spec
+/// 0.3.4. `SUPPORTED_VERSION` names the exact spec point.
 pub const RENDERER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The newest spec version this renderer implements. Support is cumulative:
-/// every earlier version is implemented too, and a document declaring a newer
-/// one is refused rather than drawn with features this renderer does not know.
-pub const SUPPORTED_VERSION: &str = "0.3";
-const SUPPORTED: (u32, u32) = (0, 3);
-const MULTI_DOCUMENT: (u32, u32) = (0, 3);
+/// The newest spec point this renderer implements in full. Support is
+/// cumulative: every earlier point is implemented too, and a document declaring
+/// a newer one is refused rather than drawn with features this renderer does
+/// not know.
+pub const SUPPORTED_VERSION: &str = "0.3.4";
+const SUPPORTED: (u32, u32, u32) = (0, 3, 4);
+const MULTI_DOCUMENT: (u32, u32, u32) = (0, 3, 0);
 
 #[derive(Debug, Error)]
 pub enum ParseError {
@@ -356,12 +357,17 @@ fn read_parts(xml: &str, requires_multi_document: bool) -> Result<Parts, ParseEr
     })
 }
 
-/// `major.minor`, ignoring any patch part.
-fn parse_version(version: &str) -> Option<(u32, u32)> {
+/// `major.minor.patch`; a missing minor or patch reads as 0, so `0.3` is the
+/// start of the 0.3 chapter. Anything longer than three parts is not a version.
+fn parse_version(version: &str) -> Option<(u32, u32, u32)> {
     let mut parts = version.trim().split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next().map_or(Some(0), |minor| minor.parse().ok())?;
-    Some((major, minor))
+    let patch = parts.next().map_or(Some(0), |patch| patch.parse().ok())?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
 }
 
 /// Gives presence attributes a value — `<frame clip>` becomes
@@ -697,10 +703,35 @@ mod tests {
         ));
         assert!(parse_gui_xml(r#"<gui version="0.3"><col /></gui>"#).is_ok());
         assert!(parse_gui_xml(r#"<gui version="0.1"><col /></gui>"#).is_ok());
+        assert!(matches!(
+            parse_gui_xml(r#"<gui version="0.3.4.1"><col /></gui>"#),
+            Err(ParseError::UnsupportedVersion(_))
+        ));
         assert!(
             parse_gui_xml(r#"<gui><col /></gui>"#).is_ok(),
             "no version reads as 0.2"
         );
+    }
+
+    #[test]
+    fn a_spec_point_newer_than_the_renderer_is_refused() {
+        // Inside a chapter, each point is one RFC: a document declaring a point
+        // past SUPPORTED_VERSION may use vocabulary this renderer has never seen.
+        for read in ["0.3", "0.3.0", "0.3.1", SUPPORTED_VERSION] {
+            let xml = format!(r#"<gui version="{read}"><col /></gui>"#);
+            assert!(parse_gui_xml(&xml).is_ok(), "{read} should render");
+        }
+
+        let (major, minor, patch) = SUPPORTED;
+        let next = format!("{major}.{minor}.{}", patch + 1);
+        let xml = format!(r#"<gui version="{next}"><col /></gui>"#);
+        let err = parse_gui_xml(&xml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains(&format!("reads documents up to version {SUPPORTED_VERSION}")),
+            "{err}"
+        );
+        assert!(matches!(err, ParseError::UnsupportedVersion(v) if v == next));
     }
 
     #[test]
@@ -751,11 +782,14 @@ mod tests {
 
     #[test]
     fn the_renderer_version_names_the_spec_it_implements() {
-        // Bumping the crate to a new minor without implementing that spec, or
-        // implementing a spec without bumping the crate, fails here.
+        // The renderer shares the spec's chapter and counts its own patch.
+        // Bumping the crate to a new chapter without implementing it, or
+        // implementing a chapter without bumping the crate, fails here.
+        let (major, minor, _) = SUPPORTED;
+        let chapter = format!("{major}.{minor}");
         assert!(
-            RENDERER_VERSION.starts_with(&format!("{SUPPORTED_VERSION}.")),
-            "renderer {RENDERER_VERSION} should be a {SUPPORTED_VERSION}.x release"
+            RENDERER_VERSION.starts_with(&format!("{chapter}.")),
+            "renderer {RENDERER_VERSION} should be a {chapter}.x release"
         );
         assert_eq!(parse_version(SUPPORTED_VERSION), Some(SUPPORTED));
     }

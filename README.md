@@ -51,7 +51,7 @@ This is an early native renderer. It can already:
   do not declare against the package's `library.guix` (spec 0.3)
 - render `library.guix`'s own page, the package's style guide, when it has one
 - fill component slots with instance content (spec 0.3)
-- refuse documents declaring a spec version newer than 0.3
+- refuse documents declaring a spec version newer than 0.3.4
 - parse tokens, fonts, text styles, nodes, attributes, and children
 - compute a flexbox layout tree (Taffy) for rows, columns, stacks, frames,
   groups, and leaves
@@ -250,15 +250,18 @@ Same requirements as the comparison. See [The viewer](#the-viewer).
 
 ## Versions
 
-The renderer's version follows the spec. Its `major.minor` is the newest `.gui`
-version it reads, and a patch release fixes the renderer without changing that:
-renderer `0.3.0` and `0.3.2` both read documents up to `version="0.3"`.
+The spec moves in chapters: `0.3` is a chapter, and each point inside it
+(`0.3.1`, `0.3.2`, …) is one RFC. The renderer shares the chapter and counts its
+own patch: every renderer `0.3.x` reads 0.3 documents, and `SUPPORTED_VERSION`
+names the exact spec point it reads in full — so renderer `0.3.7` may read spec
+`0.3.4`.
 
 Support is cumulative. A newer renderer reads every older document as it always
 rendered. An older renderer refuses a document from a newer spec by name
-instead of drawing features it does not know: renderer `0.3.x` meeting a
-`version="0.4"` document reports that a newer renderer is needed. A test fails
-if the crate version and the supported spec version drift apart.
+instead of drawing features it does not know: a renderer reading up to `0.3.4`
+meeting a `version="0.3.5"` or `version="0.4"` document reports that a newer
+renderer is needed. A test fails if the crate's chapter and the supported spec
+version's chapter drift apart.
 
 ```bash
 cargo run -q -p dotgui-renderer --example render_png -- --version

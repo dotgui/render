@@ -8,38 +8,58 @@ a new spec version, or cutting a release.
 
 | | Where it lives | Form | Example |
 |---|---|---|---|
-| **Spec version** | `<gui version="…">` in every document; decided in [dotgui/core](https://github.com/dotgui/core/blob/main/rfcs/README.md) | `MAJOR.MINOR` | `0.3` |
-| **Renderer version** | `version` in the workspace [`Cargo.toml`](Cargo.toml) | `MAJOR.MINOR.PATCH` | `0.3.2` |
+| **Spec version** | `<gui version="…">` in every document; decided in [dotgui/core](https://github.com/dotgui/core/blob/main/rfcs/README.md) | `MAJOR.MINOR.PATCH` | `0.3.4` |
+| **Renderer version** | `version` in the workspace [`Cargo.toml`](Cargo.toml) | `MAJOR.MINOR.PATCH` | `0.3.7` |
 
 The spec is the contract. Its version tells a consumer what a document may
 contain. The renderer is one consumer of that contract, and its version says
 which contract it implements.
 
+**The spec moves in chapters.** Its `MINOR` is a *chapter*: a themed group of
+RFCs (0.3 is components and packages, 0.4 is motion and interaction). Its
+`PATCH` is *one RFC* inside that chapter: `0.3.2` is multi-document packages,
+`0.3.4` is slots. A chapter closes when every RFC on its list has shipped, been
+rejected, or moved to the next chapter; the next release is then `0.4.0`. The
+current assignment is in core's [RFC index](https://github.com/dotgui/core/blob/main/rfcs/README.md#index).
+
 ## The rule
 
-> **The renderer's `MAJOR.MINOR` is the newest spec version it reads.
-> Its `PATCH` changes only the renderer.**
+> **The renderer shares the spec's chapter, and counts its own patches.
+> It declares exactly which spec point it reads.**
 
-- Renderer `0.3.0`, `0.3.1` and `0.3.2` all read documents up to `version="0.3"`.
-  The later ones are better renderers of the same spec: fixes, speed, closer
-  equivalence with kit, tooling.
-- Renderer `0.4.0` is the first release that reads `version="0.4"` documents.
-- The renderer never gets a `MINOR` bump on its own, and never gets a `PATCH`
-  bump for implementing new spec vocabulary.
+- **Same chapter.** The renderer's `MAJOR.MINOR` is the spec chapter it reads.
+  Every renderer `0.3.x` reads 0.3 documents; renderer `0.4.0` is the first that
+  reads 0.4.
+- **Own patch.** The renderer's `PATCH` is its own counter. It goes up for
+  anything it releases — a bug fix, speed, tooling, *or* implementing the next
+  RFC in the chapter. So renderer `0.3.7` may read spec `0.3.4`; the numbers
+  share a chapter, not a patch.
+- **Declared support.** `SUPPORTED_VERSION` names the newest spec point the
+  renderer reads in full, e.g. `"0.3.4"`. That, not the renderer's own patch,
+  is what a document is checked against.
+- The renderer never gets a `MINOR` bump on its own: it moves to `0.4.0` only
+  when it reads spec 0.4.
 
-A patch in a document's version is ignored: `version="0.3.1"` reads as `0.3`.
-The spec does not version documents that finely.
+Why not identical numbers: the renderer needs somewhere to put a fix. If
+renderer `0.3.4` had to mean spec `0.3.4`, the next fix would need `0.3.5` —
+which is already the next RFC. Four-part versions (`0.3.4.1`) are not valid on
+crates.io or npm, so the patch belongs to the renderer and the spec point is
+declared instead.
+
+A document declaring only `MAJOR.MINOR` (`version="0.3"`) reads as the start of
+that chapter (`0.3.0`).
 
 ## Compatibility
 
 Support is **cumulative**. A renderer reads every spec version up to its own,
 and refuses anything newer.
 
-| Renderer | Document declares | Result |
+| Renderer (reads spec) | Document declares | Result |
 |---|---|---|
-| `0.3.x` | `0.1`, `0.2`, or no version (read as `0.2`) | Renders exactly as it always did |
-| `0.3.x` | `0.3` | Renders, with 0.3 rules enforced |
-| `0.3.x` | `0.4`, `1.0`, … | **Refused**: "a newer renderer is needed" |
+| `0.3.x` (`0.3.4`) | `0.1`, `0.2`, or no version (read as `0.2`) | Renders exactly as it always did |
+| `0.3.x` (`0.3.4`) | `0.3`, `0.3.0` … `0.3.4` | Renders, with 0.3 rules enforced |
+| `0.3.x` (`0.3.4`) | `0.3.5` and up | **Refused**: "a newer renderer is needed" |
+| `0.3.x` (`0.3.4`) | `0.4`, `1.0`, … | **Refused** |
 | `0.2.x` | `0.3` | Refused (from 0.3.0 onward; see below) |
 
 **Why refuse instead of trying.** An older renderer has never heard of the newer
@@ -84,23 +104,37 @@ version that introduced it.
 | | Value today |
 |---|---|
 | `RENDERER_VERSION` (Rust) | `0.3.0`, read from `Cargo.toml` at build time |
-| `SUPPORTED_VERSION` (Rust) | `"0.3"`, in `parser.rs` |
-| `render_png --version` | `dotgui renderer 0.3.0 (reads .gui up to version 0.3)` |
-| WASM `renderer_version()` / `supported_spec_version()` | `"0.3.0"` / `"0.3"` |
-| Error for a newer document | `the document declares version 0.4, but this renderer (0.3.0) reads documents up to version 0.3; a newer renderer is needed` |
+| `SUPPORTED_VERSION` (Rust) | `"0.3.4"`, in `parser.rs` |
+| `render_png --version` | `dotgui renderer 0.3.0 (reads .gui up to version 0.3.4)` |
+| WASM `renderer_version()` / `supported_spec_version()` | `"0.3.0"` / `"0.3.4"` |
+| Error for a newer document | `the document declares version 0.3.5, but this renderer (0.3.0) reads documents up to version 0.3.4; a newer renderer is needed` |
 
 The test `the_renderer_version_names_the_spec_it_implements` in `parser.rs`
-fails if `Cargo.toml`'s `MAJOR.MINOR` and `SUPPORTED_VERSION` disagree. Treat a
+fails if `Cargo.toml`'s `MAJOR.MINOR` and `SUPPORTED_VERSION`'s chapter disagree. Treat a
 failure as a question, not an obstacle: either the spec was implemented without
 bumping the renderer, or the renderer was bumped without implementing the spec.
 
-## Checklist: implementing a new spec version
+## Checklist: implementing the next RFC in a chapter
 
-Say core defines spec `0.4`.
+Say core accepts slots as spec `0.3.4`, and the renderer reads `0.3.3`.
 
-1. **Find what 0.4 contains.** Every RFC in `core/rfcs/` with `targets: 0.4`,
-   plus the spec changes in `core/spec/`. A renderer that claims a version
-   implements all of it, not a subset (RFC-0042, *The version is the contract*).
+1. **Work on the RFC's branch**, named like core's: `rfc/0044-slots`.
+2. **Gate new errors on the version** (see *New rules apply only to new documents*)
+   and **add fixtures declaring `0.3.4`**. Never edit an existing fixture's version.
+3. **Check nothing old moved** (the test commands below).
+4. **Bump in one commit**, once complete: `SUPPORTED_VERSION = "0.3.4"`, and the
+   renderer's own `PATCH` by one (`0.3.6` → `0.3.7`).
+5. **Merge with core.** Core, parser, renderer and kit merge the RFC together;
+   see core's [GOVERNANCE.md](https://github.com/dotgui/core/blob/main/GOVERNANCE.md#branches-and-merging).
+
+## Checklist: opening a new chapter
+
+Say core opens spec `0.4`.
+
+1. **Find what 0.4 contains.** Every RFC in `core/rfcs/` with `targets: 0.4.x`,
+   plus the spec changes in `core/spec/`. A renderer reads the chapter one RFC
+   at a time, but never claims a spec point without implementing it in full
+   (RFC-0042, *The version is the contract*).
 2. **Refresh the vendored spec**, then regenerate coverage so new attributes
    show up as rows:
    ```bash
@@ -128,7 +162,7 @@ Say core defines spec `0.4`.
    ```
 7. **Bump both numbers in one commit**, once the work is complete:
    - `Cargo.toml`: `version = "0.4.0"`
-   - `parser.rs`: `SUPPORTED_VERSION = "0.4"` and `SUPPORTED = (0, 4)`
+   - `parser.rs`: `SUPPORTED_VERSION = "0.4.0"` and `SUPPORTED = (0, 4, 0)`
 8. **Update the docs.** The version table above, the README's feature list and
    Versions section, and `COVERAGE.md`.
 9. **Release after core ships the version.** Core's RFC README marks each
@@ -151,9 +185,10 @@ which spec is read:
 ## After 1.0
 
 Core applies semver to the spec from `1.0`: `MAJOR` = breaking, `MINOR` =
-additive, `PATCH` = clarification only. The renderer's rule doesn't change: its
-`MAJOR.MINOR` still names the newest spec version it reads. A spec `PATCH` is a
-clarification, so it needs at most a renderer `PATCH`.
+additive, `PATCH` = clarification only. Chapters end there — a new RFC becomes a
+spec `MINOR`. The renderer's rule doesn't change: its `MAJOR.MINOR` names the
+spec version it reads, its `PATCH` is its own, and `SUPPORTED_VERSION` declares
+the exact spec point.
 
 ## Tags
 
