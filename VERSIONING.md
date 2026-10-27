@@ -56,10 +56,10 @@ and refuses anything newer.
 
 | Renderer (reads spec) | Document declares | Result |
 |---|---|---|
-| `0.3.x` (`0.3.4`) | `0.1`, `0.2`, or no version (read as `0.2`) | Renders exactly as it always did |
-| `0.3.x` (`0.3.4`) | `0.3`, `0.3.0` … `0.3.4` | Renders, with 0.3 rules enforced |
-| `0.3.x` (`0.3.4`) | `0.3.5` and up | **Refused**: "a newer renderer is needed" |
-| `0.3.x` (`0.3.4`) | `0.4`, `1.0`, … | **Refused** |
+| `0.3.x` (`0.3.5`) | `0.1`, `0.2`, or no version (read as `0.2`) | Renders exactly as it always did |
+| `0.3.x` (`0.3.5`) | `0.3`, `0.3.0` … `0.3.5` | Renders, with 0.3 rules enforced |
+| `0.3.x` (`0.3.5`) | `0.3.6` and up | **Refused**: "a newer renderer is needed" |
+| `0.3.x` (`0.3.5`) | `0.4`, `1.0`, … | **Refused** |
 | `0.2.x` | `0.3` | Refused (from 0.3.0 onward; see below) |
 
 **Why refuse instead of trying.** An older renderer has never heard of the newer
@@ -104,10 +104,10 @@ version that introduced it.
 | | Value today |
 |---|---|
 | `RENDERER_VERSION` (Rust) | `0.3.0`, read from `Cargo.toml` at build time |
-| `SUPPORTED_VERSION` (Rust) | `"0.3.4"`, in `parser.rs` |
-| `render_png --version` | `dotgui renderer 0.3.0 (reads .gui up to version 0.3.4)` |
-| WASM `renderer_version()` / `supported_spec_version()` | `"0.3.0"` / `"0.3.4"` |
-| Error for a newer document | `the document declares version 0.3.5, but this renderer (0.3.0) reads documents up to version 0.3.4; a newer renderer is needed` |
+| `SUPPORTED_VERSION` (Rust) | `"0.3.5"`, in `parser.rs` |
+| `render_png --version` | `dotgui renderer 0.3.0 (reads .gui up to version 0.3.5)` |
+| WASM `renderer_version()` / `supported_spec_version()` | `"0.3.0"` / `"0.3.5"` |
+| Error for a newer document | `the document declares version 0.3.6, but this renderer (0.3.0) reads documents up to version 0.3.5; a newer renderer is needed` |
 
 The test `the_renderer_version_names_the_spec_it_implements` in `parser.rs`
 fails if `Cargo.toml`'s `MAJOR.MINOR` and `SUPPORTED_VERSION`'s chapter disagree. Treat a

@@ -1,3 +1,5 @@
+warning: component 'comp-card': <prop type="text"> is the old name; use type="string"
+warning: component 'comp-card': <prop type="text"> is the old name; use type="string"
 col 700x240 @ 0,0
   row 660x104.8 @ 20,20
     col 200x104.8 @ 20,20

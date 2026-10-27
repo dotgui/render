@@ -29,8 +29,8 @@ pub const RENDERER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// cumulative: every earlier point is implemented too, and a document declaring
 /// a newer one is refused rather than drawn with features this renderer does
 /// not know.
-pub const SUPPORTED_VERSION: &str = "0.3.4";
-const SUPPORTED: (u32, u32, u32) = (0, 3, 4);
+pub const SUPPORTED_VERSION: &str = "0.3.5";
+const SUPPORTED: (u32, u32, u32) = (0, 3, 5);
 const MULTI_DOCUMENT: (u32, u32, u32) = (0, 3, 0);
 
 #[derive(Debug, Error)]
@@ -727,8 +727,9 @@ mod tests {
         let xml = format!(r#"<gui version="{next}"><col /></gui>"#);
         let err = parse_gui_xml(&xml).unwrap_err();
         assert!(
-            err.to_string()
-                .contains(&format!("reads documents up to version {SUPPORTED_VERSION}")),
+            err.to_string().contains(&format!(
+                "reads documents up to version {SUPPORTED_VERSION}"
+            )),
             "{err}"
         );
         assert!(matches!(err, ParseError::UnsupportedVersion(v) if v == next));
