@@ -1497,12 +1497,7 @@ fn paint_one_fill(
     );
 }
 
-fn draw_fill(
-    pixmap: &mut Pixmap,
-    node: &SceneNode,
-    fill: &Fill,
-    asset_cache: Option<&AssetCache>,
-) {
+fn draw_fill(pixmap: &mut Pixmap, node: &SceneNode, fill: &Fill, asset_cache: Option<&AssetCache>) {
     if fill.kind == "image" {
         paint_image_fill(pixmap, node, fill, asset_cache);
         return;
@@ -5298,7 +5293,10 @@ mod tests {
             png_row(&[[0, 0, 0]]),
         );
         let grey = painted.get_pixel(20, 20).0[0];
-        assert!((125..=131).contains(&grey), "half black over white, got {grey}");
+        assert!(
+            (125..=131).contains(&grey),
+            "half black over white, got {grey}"
+        );
     }
 
     #[test]
@@ -5313,11 +5311,19 @@ mod tests {
             )
             .get_pixel(20, 20)
             .0[0..3]
-            .to_vec()
+                .to_vec()
         };
         assert_eq!(stack(""), [0, 255, 0], "normal paints over");
-        assert_eq!(stack(r#"blend="multiply""#), [0, 0, 0], "red times green is black");
-        assert_eq!(stack(r#"blend="screen""#), [255, 255, 0], "screen lightens to yellow");
+        assert_eq!(
+            stack(r#"blend="multiply""#),
+            [0, 0, 0],
+            "red times green is black"
+        );
+        assert_eq!(
+            stack(r#"blend="screen""#),
+            [255, 255, 0],
+            "screen lightens to yellow"
+        );
     }
 
     #[test]
