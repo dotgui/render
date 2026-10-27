@@ -1,0 +1,906 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dotgui viewer</title>
+<style>
+  :root {
+    --bg: #f6f6f4;
+    --panel: #ffffff;
+    --sunken: #ecece8;
+    --line: #dcdcd6;
+    --text: #1d1d1b;
+    --muted: #6d6d66;
+    --accent: #2f6fdf;
+    --native: #1f8a5b;
+    --kit: #b4572b;
+    --warn: #a86a00;
+    --bad: #c53030;
+    --checker: #e4e4df;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514;
+      --panel: #1d1d1c;
+      --sunken: #111110;
+      --line: #2f2f2d;
+      --text: #ecece8;
+      --muted: #9a9a92;
+      --accent: #6f9ff5;
+      --native: #4cc28c;
+      --kit: #e98b5d;
+      --warn: #e3a93a;
+      --bad: #f07070;
+      --checker: #232322;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  button, select, input { font: inherit; color: inherit; }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 14px; margin: 0 8px 0 0; font-weight: 600; letter-spacing: -0.01em; }
+  .file-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 36ch; }
+  .spacer { flex: 1; }
+  .btn {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    border-radius: 6px;
+    padding: 5px 10px;
+    cursor: pointer;
+  }
+  .btn:hover { border-color: var(--muted); }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+  select.btn { padding-right: 4px; max-width: 280px; }
+
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--line);
+    flex-wrap: wrap;
+  }
+  .segmented { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; background: var(--panel); }
+  .segmented button { border: 0; background: transparent; padding: 5px 10px; cursor: pointer; }
+  .segmented button + button { border-left: 1px solid var(--line); }
+  .segmented button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  .segmented kbd { opacity: 0.55; font: 10px ui-monospace, monospace; margin-left: 4px; }
+  .control { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  .control input[type=range] { width: 120px; }
+  .zoom-level { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 5ch; }
+
+  .stats { display: flex; gap: 16px; padding: 8px 16px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+  .stat { display: flex; align-items: baseline; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; align-self: center; }
+  .dot.native { background: var(--native); }
+  .dot.kit { background: var(--kit); }
+  .stat .label { font-weight: 600; }
+  .stat .meta { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .pill { font-size: 11px; padding: 1px 7px; border-radius: 99px; border: 1px solid currentColor; }
+  .pill.warn { color: var(--warn); }
+  .pill.bad { color: var(--bad); }
+  .pill.good { color: var(--native); }
+
+  main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .stage { flex: 1; min-height: 0; overflow: auto; background: var(--sunken); position: relative; }
+  .stage.split { display: grid; grid-template-columns: 1fr 1fr; overflow: hidden; }
+  .pane { overflow: auto; min-width: 0; position: relative; }
+  .pane + .pane { border-left: 1px solid var(--line); }
+  .pane-title {
+    position: sticky; top: 0; left: 0; z-index: 2;
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 12px; font-weight: 600;
+    background: color-mix(in srgb, var(--sunken) 88%, transparent);
+    backdrop-filter: blur(6px);
+  }
+  /* max-content, so a frame wider than its pane widens the scroll area instead
+     of overflowing to the left, where nothing can scroll to it. */
+  .canvas-wrap { padding: 16px; display: flex; justify-content: center; width: max-content; min-width: 100%; }
+  .frame {
+    position: relative;
+    background-color: var(--checker);
+    background-image:
+      linear-gradient(45deg, var(--sunken) 25%, transparent 25%, transparent 75%, var(--sunken) 75%),
+      linear-gradient(45deg, var(--sunken) 25%, transparent 25%, transparent 75%, var(--sunken) 75%);
+    background-size: 16px 16px;
+    background-position: 0 0, 8px 8px;
+    box-shadow: 0 0 0 1px var(--line);
+    flex: none;
+  }
+  .frame img, .frame canvas { display: block; position: absolute; top: 0; left: 0; }
+  .zoomed img, .zoomed canvas { image-rendering: pixelated; }
+  .corner-tag {
+    position: absolute; top: 8px; z-index: 3; pointer-events: none;
+    font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; color: #fff;
+  }
+  .corner-tag.native { background: var(--native); left: 8px; }
+  .corner-tag.kit { background: var(--kit); right: 8px; }
+
+  .swipe-handle {
+    position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px;
+    background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.35); z-index: 4; pointer-events: none;
+  }
+  .swipe-handle::after {
+    content: "⇆"; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+    background: #fff; color: #222; box-shadow: 0 1px 4px rgba(0,0,0,.4); font-size: 14px;
+  }
+
+  iframe.live { border: 0; background: transparent; display: block; }
+
+  .empty, .overlay-msg {
+    position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 24px;
+  }
+  .empty strong { display: block; color: var(--text); font-size: 16px; margin-bottom: 6px; }
+  .drop-target {
+    position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    border: 3px dashed var(--accent); font-size: 18px; font-weight: 600; color: var(--accent);
+    pointer-events: none;
+  }
+  .spinner {
+    width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid var(--line); border-top-color: var(--accent);
+    animation: spin 0.8s linear infinite; display: inline-block; vertical-align: -2px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  details.notes { border-top: 1px solid var(--line); background: var(--panel); max-height: 30vh; overflow: auto; }
+  details.notes summary { padding: 7px 16px; cursor: pointer; color: var(--muted); }
+  details.notes ul { margin: 0; padding: 0 16px 10px 32px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  details.notes li.native::marker { color: var(--native); }
+  details.notes li.kit::marker { color: var(--kit); }
+  .error { color: var(--bad); white-space: pre-wrap; font: 12px/1.5 ui-monospace, monospace; max-width: 70ch; text-align: left; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>dotgui viewer</h1>
+  <button class="btn" id="open">Open .gui…</button>
+  <input type="file" id="file" accept=".gui,.guix" hidden>
+  <select class="btn" id="library" title="Documents in this repository">
+    <option value="">Pick from repo…</option>
+  </select>
+  <span class="file-name" id="name"></span>
+  <span class="spacer"></span>
+  <button class="btn" id="rerender" disabled title="Render again — picks up Rust changes (R)">Re-render</button>
+</header>
+
+<div class="toolbar">
+  <div class="segmented" id="modes" role="group" aria-label="View">
+    <button data-mode="side">Side by side<kbd>1</kbd></button>
+    <button data-mode="flip">Flip<kbd>2</kbd></button>
+    <button data-mode="swipe">Swipe<kbd>3</kbd></button>
+    <button data-mode="onion">Onion<kbd>4</kbd></button>
+    <button data-mode="diff">Difference<kbd>5</kbd></button>
+    <button data-mode="live">Live kit<kbd>6</kbd></button>
+  </div>
+  <div class="segmented" id="zooms" role="group" aria-label="Zoom">
+    <button data-zoom="fit">Fit</button>
+    <button data-zoom="1">100%</button>
+    <button data-zoom="2">200%</button>
+    <button data-zoom="4">400%</button>
+  </div>
+  <span class="zoom-level" id="zoom-level" title="Pinch or ⌘/Ctrl + scroll to zoom around the cursor; + − 0 on the keyboard"></span>
+  <label class="control" id="onion-control" hidden>kit opacity
+    <input type="range" id="onion" min="0" max="100" value="50">
+  </label>
+  <label class="control" id="threshold-control" hidden>tolerance
+    <input type="range" id="threshold" min="0" max="128" value="24">
+    <span id="threshold-value">24</span>
+  </label>
+  <span class="control" id="flip-hint" hidden>Space or click to flip</span>
+</div>
+
+<div class="stats" id="stats" hidden>
+  <div class="stat"><span class="dot native"></span><span class="label">native</span><span class="meta" id="native-meta">—</span></div>
+  <div class="stat"><span class="dot kit"></span><span class="label">kit</span><span class="meta" id="kit-meta">—</span></div>
+  <div class="stat" id="agreement"></div>
+</div>
+
+<main>
+  <div class="stage" id="stage">
+    <div class="empty">
+      <div>
+        <strong>Drop a .gui or .guix anywhere</strong>
+        or open one, or pick a document from this repository.<br>
+        It renders through the native renderer and through kit, for comparison.
+      </div>
+    </div>
+  </div>
+  <details class="notes" id="notes" hidden>
+    <summary id="notes-summary">Renderer notes</summary>
+    <ul id="notes-list"></ul>
+  </details>
+</main>
+
+<div class="drop-target" id="drop" hidden>Drop to render</div>
+
+<script type="module">
+const $ = (id) => document.getElementById(id)
+
+const state = {
+  name: '',
+  bytes: null,
+  native: null,   // { ok, png, ms, notes, error, image }
+  kit: null,
+  mode: stored('mode', 'side'),
+  zoom: parseZoom(stored('zoom', 'fit')),
+  flipShowsKit: false,
+  swipe: 0.5,
+  onion: 50,
+  threshold: 24,
+  diff: null,     // { differing, total, width, height } for the pair and threshold it was computed at
+}
+
+function parseZoom(value) {
+  return value === 'fit' ? 'fit' : Number(value) || 'fit'
+}
+
+function stored(key, fallback) {
+  try { return localStorage.getItem(`dotgui-viewer:${key}`) ?? fallback } catch { return fallback }
+}
+function store(key, value) {
+  try { localStorage.setItem(`dotgui-viewer:${key}`, value) } catch {}
+}
+
+// ---------------------------------------------------------------- loading
+
+async function loadLibrary() {
+  try {
+    const groups = await (await fetch('/api/library')).json()
+    for (const group of groups) {
+      const optgroup = document.createElement('optgroup')
+      optgroup.label = group.dir
+      for (const file of group.files) {
+        const option = document.createElement('option')
+        option.value = `${group.dir}/${file}`
+        option.textContent = file
+        optgroup.append(option)
+      }
+      $('library').append(optgroup)
+    }
+  } catch {
+    $('library').hidden = true
+  }
+}
+
+async function openBytes(name, bytes) {
+  state.name = name
+  state.bytes = bytes
+  $('name').textContent = name
+  document.title = `${name} — dotgui viewer`
+  $('rerender').disabled = false
+  await renderBoth()
+}
+
+async function renderBoth() {
+  if (!state.bytes) return
+  state.native = { pending: true }
+  state.kit = { pending: true }
+  state.diff = null
+  paint()
+
+  const request = (engine) =>
+    fetch(`/api/render/${engine}?name=${encodeURIComponent(state.name)}`, { method: 'POST', body: state.bytes })
+      .then((response) => response.json())
+      .catch((err) => ({ ok: false, ms: 0, notes: [], error: `request failed: ${err}` }))
+      .then(async (result) => {
+        if (result.ok) result.image = await decode(result.png)
+        return result
+      })
+
+  // Whichever finishes first is shown straight away.
+  const token = (state.token = Symbol())
+  await Promise.all(['native', 'kit'].map(async (engine) => {
+    const result = await request(engine)
+    if (state.token !== token) return
+    state[engine] = result
+    state.diff = null
+    paint()
+  }))
+}
+
+function decode(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = reject
+    image.src = src
+  })
+}
+
+// ---------------------------------------------------------------- drawing
+
+const ready = (side) => side && side.ok && side.image
+const bothReady = () => ready(state.native) && ready(state.kit)
+
+function paint() {
+  for (const button of $('modes').children) button.setAttribute('aria-pressed', button.dataset.mode === state.mode)
+  paintZoomControls()
+  $('onion-control').hidden = state.mode !== 'onion'
+  $('threshold-control').hidden = state.mode !== 'diff'
+  $('flip-hint').hidden = state.mode !== 'flip'
+  $('zooms').hidden = state.mode === 'live'
+
+  if (!state.bytes) return
+  paintStats()
+  paintNotes()
+
+  // The area in view survives a repaint — a new render arriving, a flip, a
+  // change of view — so a detail zoomed into stays under the eye. A different
+  // document starts from the top.
+  const view = state.viewOf === state.bytes ? captureView() : null
+
+  const stage = $('stage')
+  stage.className = 'stage'
+  stage.replaceChildren()
+
+  if (state.mode === 'live') return paintLive(stage)
+  if (state.mode === 'side') paintSide(stage)
+  else if (!bothReady()) stage.append(waiting())
+  else if (state.mode === 'flip') paintFlip(stage)
+  else if (state.mode === 'swipe') paintSwipe(stage)
+  else if (state.mode === 'onion') paintOnion(stage)
+  else if (state.mode === 'diff') paintDiff(stage)
+
+  if (stage.querySelector('.frame')) {
+    if (view) restoreView(view)
+    state.viewOf = state.bytes
+  }
+  paintZoomControls()
+}
+
+/** A message for a view that needs both renders. */
+function waiting() {
+  const box = document.createElement('div')
+  box.className = 'overlay-msg'
+  const failed = ['native', 'kit'].filter((engine) => state[engine] && !state[engine].pending && !state[engine].ok)
+  if (failed.length) {
+    box.innerHTML = failed.map((engine) =>
+      `<div><strong>${engine} failed</strong><div class="error"></div></div>`).join('')
+    box.querySelectorAll('.error').forEach((el, index) => { el.textContent = state[failed[index]].error })
+  } else {
+    box.innerHTML = '<div><span class="spinner"></span> Rendering both…</div>'
+  }
+  return box
+}
+
+/** The display size of the pair: the larger of the two, so nothing is cropped. */
+function pairSize() {
+  const images = [state.native?.image, state.kit?.image].filter(Boolean)
+  return {
+    width: Math.max(1, ...images.map((image) => image.naturalWidth)),
+    height: Math.max(1, ...images.map((image) => image.naturalHeight)),
+  }
+}
+
+function zoomFor(container, width) {
+  if (state.zoom !== 'fit') return state.zoom
+  const available = container.clientWidth - 32
+  return Math.min(1, available / width)
+}
+
+/** A checkered frame at the pair's size, scaled, holding the given layers. */
+function frame(container, layers) {
+  const { width, height } = pairSize()
+  const zoom = zoomFor(container, width)
+  const wrap = document.createElement('div')
+  wrap.className = 'canvas-wrap' + (zoom > 1 ? ' zoomed' : '')
+  const box = document.createElement('div')
+  box.className = 'frame'
+  box.dataset.width = width
+  box.dataset.height = height
+  box.append(...layers)
+  sizeFrame(box, zoom)
+  wrap.append(box)
+  return { wrap, box, zoom }
+}
+
+/** Scales a frame and its layers in place, without rebuilding anything. */
+function sizeFrame(box, zoom) {
+  box.dataset.zoom = zoom
+  box.style.width = `${box.dataset.width * zoom}px`
+  box.style.height = `${box.dataset.height * zoom}px`
+  box.parentElement?.classList.toggle('zoomed', zoom > 1)
+  for (const layer of box.querySelectorAll(':scope > img, :scope > canvas')) {
+    // A cloned image may not have decoded yet, so its size travels with it.
+    layer.style.width = `${Number(layer.dataset.width ?? layer.width) * zoom}px`
+    layer.style.height = `${Number(layer.dataset.height ?? layer.height) * zoom}px`
+  }
+  box.relayout?.()
+}
+
+// ---------------------------------------------------------------- zoom
+
+/**
+ * The scrolling boxes that show a frame: both panes side by side, the stage
+ * otherwise. Every one shows the pair at the same size, so the same scroll
+ * offset is the same area of the document in each.
+ */
+function scrollers() {
+  const stage = $('stage')
+  const candidates = stage.classList.contains('split') ? [...stage.querySelectorAll('.pane')] : [stage]
+  return candidates.filter((scroller) => scroller.querySelector('.frame'))
+}
+
+const zoomOf = (scroller) => Number(scroller.querySelector('.frame').dataset.zoom)
+
+/**
+ * The document point at a spot in a scroller, in unscaled pixels. `x` and `y`
+ * are relative to the scroller's visible top-left.
+ */
+function documentPoint(scroller, x, y) {
+  const box = scroller.querySelector('.frame')
+  const zoom = zoomOf(scroller)
+  return {
+    u: (scroller.scrollLeft + x - box.offsetLeft) / zoom,
+    v: (scroller.scrollTop + y - box.offsetTop) / zoom,
+  }
+}
+
+/** Scrolls every scroller so document point (u, v) sits at (x, y). */
+function scrollPointTo({ u, v }, x, y) {
+  for (const scroller of scrollers()) {
+    const box = scroller.querySelector('.frame')
+    const zoom = zoomOf(scroller)
+    scroller.scrollLeft = u * zoom + box.offsetLeft - x
+    scroller.scrollTop = v * zoom + box.offsetTop - y
+  }
+}
+
+const viewCentre = (scroller) => ({ x: scroller.clientWidth / 2, y: scroller.clientHeight / 2 })
+
+function captureView() {
+  const [scroller] = scrollers()
+  if (!scroller) return null
+  const { x, y } = viewCentre(scroller)
+  return documentPoint(scroller, x, y)
+}
+
+function restoreView(point) {
+  const [scroller] = scrollers()
+  if (!scroller) return
+  const { x, y } = viewCentre(scroller)
+  scrollPointTo(point, x, y)
+}
+
+const MIN_ZOOM = 0.05
+const MAX_ZOOM = 32
+
+/**
+ * Zooms every frame to `zoom`, keeping the document point under (x, y) of
+ * `anchor` where it is. Side by side, the other pane follows to the same
+ * point, so the same detail is magnified in both.
+ */
+function zoomTo(zoom, anchor = scrollers()[0], at = anchor && viewCentre(anchor), point) {
+  if (!anchor) return
+  zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom))
+  point ??= documentPoint(anchor, at.x, at.y)
+  for (const box of $('stage').querySelectorAll('.frame')) sizeFrame(box, zoom)
+  scrollPointTo(point, at.x, at.y)
+  state.zoom = zoom
+  store('zoom', zoom)
+  paintZoomControls()
+}
+
+function paintZoomControls() {
+  for (const button of $('zooms').children) {
+    button.setAttribute('aria-pressed', String(button.dataset.zoom) === String(state.zoom))
+  }
+  const [scroller] = scrollers()
+  $('zoom-level').hidden = state.mode === 'live' || !scroller
+  if (scroller) $('zoom-level').textContent = `${Math.round(zoomOf(scroller) * 100)}%`
+}
+
+function clone(image) {
+  const copy = image.cloneNode()
+  copy.draggable = false
+  copy.dataset.width = image.naturalWidth
+  copy.dataset.height = image.naturalHeight
+  return copy
+}
+
+function paintSide(stage) {
+  stage.classList.add('split')
+  const panes = ['native', 'kit'].map((engine) => {
+    const pane = document.createElement('div')
+    pane.className = 'pane'
+    const title = document.createElement('div')
+    title.className = 'pane-title'
+    title.innerHTML = `<span class="dot ${engine}"></span>${engine}`
+    pane.append(title)
+    stage.append(pane)
+    return pane
+  })
+
+  // Sized after both panes are in the document, so "fit" measures a half.
+  ;['native', 'kit'].forEach((engine, index) => {
+    const pane = panes[index]
+    const side = state[engine]
+    if (ready(side)) {
+      pane.append(frame(pane, [clone(side.image)]).wrap)
+    } else {
+      const message = document.createElement('div')
+      message.className = 'overlay-msg'
+      if (side?.pending) {
+        message.innerHTML = '<div><span class="spinner"></span> Rendering…</div>'
+      } else {
+        message.innerHTML = '<div class="error"></div>'
+        message.firstChild.textContent = side?.error ?? 'no render'
+      }
+      pane.append(message)
+    }
+  })
+
+  // Scrolling one side scrolls the other, so the same spot stays in view.
+  let syncing = false
+  for (const pane of panes) {
+    pane.addEventListener('scroll', () => {
+      if (syncing) return
+      syncing = true
+      for (const other of panes) {
+        if (other !== pane) {
+          other.scrollTop = pane.scrollTop
+          other.scrollLeft = pane.scrollLeft
+        }
+      }
+      requestAnimationFrame(() => { syncing = false })
+    })
+  }
+}
+
+function tag(engine) {
+  const el = document.createElement('span')
+  el.className = `corner-tag ${engine}`
+  el.textContent = engine
+  return el
+}
+
+function paintFlip(stage) {
+  const engine = state.flipShowsKit ? 'kit' : 'native'
+  const { wrap, box } = frame(stage, [clone(state[engine].image)])
+  box.append(tag(engine))
+  box.style.cursor = 'pointer'
+  box.addEventListener('click', flip)
+  stage.append(wrap)
+}
+
+function flip() {
+  state.flipShowsKit = !state.flipShowsKit
+  paint()
+}
+
+function paintSwipe(stage) {
+  const native = clone(state.native.image)
+  const kit = clone(state.kit.image)
+  const { wrap, box } = frame(stage, [kit, native])
+  const handle = document.createElement('div')
+  handle.className = 'swipe-handle'
+  box.append(handle, tag('native'), tag('kit'))
+
+  const place = () => {
+    const width = parseFloat(box.style.width)
+    const x = state.swipe * width
+    native.style.clipPath = `inset(0 ${width - x}px 0 0)`
+    handle.style.left = `${x}px`
+  }
+  box.relayout = place
+  place()
+
+  const move = (event) => {
+    const rect = box.getBoundingClientRect()
+    state.swipe = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
+    place()
+  }
+  box.style.cursor = 'ew-resize'
+  box.addEventListener('pointerdown', (event) => {
+    box.setPointerCapture(event.pointerId)
+    move(event)
+    box.addEventListener('pointermove', move)
+  })
+  box.addEventListener('pointerup', () => box.removeEventListener('pointermove', move))
+  stage.append(wrap)
+}
+
+function paintOnion(stage) {
+  const kit = clone(state.kit.image)
+  kit.style.opacity = state.onion / 100
+  const { wrap, box } = frame(stage, [clone(state.native.image), kit])
+  box.append(tag('native'), tag('kit'))
+  stage.append(wrap)
+}
+
+/**
+ * Pixels where the two renders differ by more than the tolerance on any
+ * channel, in red over a faded copy of kit's render.
+ *
+ * Glyph antialiasing never matches between two rasterisers, so a zero
+ * tolerance lights up every line of text; the slider is there to push that
+ * noise down until what is left is a real difference.
+ */
+function paintDiff(stage) {
+  const { width, height } = pairSize()
+  const pixels = (image) => {
+    const canvas = new OffscreenCanvas(width, height)
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    context.drawImage(image, 0, 0)
+    return context.getImageData(0, 0, width, height).data
+  }
+  const a = pixels(state.native.image)
+  const b = pixels(state.kit.image)
+
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext('2d')
+  const out = context.createImageData(width, height)
+  const threshold = state.threshold
+  let differing = 0
+  for (let i = 0; i < a.length; i += 4) {
+    const delta = Math.max(
+      Math.abs(a[i] - b[i]), Math.abs(a[i + 1] - b[i + 1]),
+      Math.abs(a[i + 2] - b[i + 2]), Math.abs(a[i + 3] - b[i + 3]))
+    if (delta > threshold) {
+      differing++
+      out.data[i] = 235; out.data[i + 1] = 40; out.data[i + 2] = 40; out.data[i + 3] = 255
+    } else {
+      // kit's pixel, washed out, so the red has something to sit on.
+      const grey = (b[i] * 0.3 + b[i + 1] * 0.59 + b[i + 2] * 0.11)
+      const faded = 255 - (255 - grey) * 0.25
+      out.data[i] = out.data[i + 1] = out.data[i + 2] = faded
+      out.data[i + 3] = Math.max(b[i + 3], 60)
+    }
+  }
+  context.putImageData(out, 0, 0)
+  state.diff = { differing, total: width * height }
+  paintStats()
+
+  const { wrap } = frame(stage, [canvas])
+  stage.append(wrap)
+}
+
+function paintLive(stage) {
+  const note = document.createElement('div')
+  note.className = 'pane-title'
+  note.innerHTML = '<span class="dot kit"></span>kit, live in this page — right-click → Inspect to see its DOM and styles'
+  stage.append(note)
+
+  const iframe = document.createElement('iframe')
+  iframe.className = 'live'
+  const { width, height } = pairSize()
+  iframe.style.width = `${Math.max(width, 320) + 32}px`
+  iframe.style.height = `${Math.max(height, 200) + 32}px`
+  iframe.style.margin = '0 auto'
+  stage.append(iframe)
+
+  fetch('/api/unpack', { method: 'POST', body: state.bytes })
+    .then((response) => response.json())
+    .then(({ xml, assets, error }) => {
+      if (error) throw new Error(error)
+      iframe.srcdoc = `<!doctype html><html><head><meta charset="utf-8">
+<style>html,body{margin:0;background:transparent}body{padding:16px}#root{display:inline-block}</style>
+</head><body><div id="root"></div><script type="module">
+import { render } from '/kit/render.js'
+const { xml, assets } = JSON.parse(decodeURIComponent(${JSON.stringify(encodeURIComponent(JSON.stringify({ xml, assets })))}))
+render(xml, document.getElementById('root'), assets)
+<\/script></body></html>`
+    })
+    .catch((err) => {
+      const message = document.createElement('div')
+      message.className = 'overlay-msg'
+      message.innerHTML = '<div class="error"></div>'
+      message.firstChild.textContent = String(err)
+      stage.append(message)
+    })
+}
+
+// ---------------------------------------------------------------- stats
+
+function describe(side) {
+  if (!side) return '—'
+  if (side.pending) return '<span class="spinner"></span>'
+  if (!side.ok) return '<span class="pill bad">failed</span>'
+  const image = side.image
+  const warnings = side.notes.length ? ` · <span class="pill warn">${side.notes.length} note${side.notes.length > 1 ? 's' : ''}</span>` : ''
+  return `${image.naturalWidth}×${image.naturalHeight} · ${side.ms} ms${warnings}`
+}
+
+function paintStats() {
+  $('stats').hidden = false
+  $('native-meta').innerHTML = describe(state.native)
+  $('kit-meta').innerHTML = describe(state.kit)
+
+  const agreement = $('agreement')
+  if (!bothReady()) {
+    agreement.innerHTML = ''
+    return
+  }
+  const n = state.native.image
+  const k = state.kit.image
+  const dw = n.naturalWidth - k.naturalWidth
+  const dh = n.naturalHeight - k.naturalHeight
+  const signed = (v) => (v > 0 ? `+${v}` : `${v}`)
+  const size = dw === 0 && dh === 0
+    ? '<span class="pill good">same size</span>'
+    : `<span class="pill bad">size differs: w ${signed(dw)}, h ${signed(dh)}</span>`
+  const diff = state.diff
+    ? ` <span class="meta">${(100 * state.diff.differing / state.diff.total).toFixed(2)}% of pixels differ at tolerance ${state.threshold}</span>`
+    : ''
+  agreement.innerHTML = size + diff
+}
+
+function paintNotes() {
+  const items = []
+  for (const engine of ['native', 'kit']) {
+    const side = state[engine]
+    if (!side || side.pending) continue
+    for (const note of side.notes ?? []) items.push([engine, note])
+    if (!side.ok && side.error && !(side.notes ?? []).includes(side.error)) items.push([engine, side.error])
+  }
+  $('notes').hidden = items.length === 0
+  $('notes-summary').textContent = `Renderer notes (${items.length})`
+  $('notes-list').replaceChildren(...items.map(([engine, note]) => {
+    const li = document.createElement('li')
+    li.className = engine
+    li.textContent = `${engine}: ${note}`
+    return li
+  }))
+}
+
+// ---------------------------------------------------------------- input
+
+$('open').addEventListener('click', () => $('file').click())
+$('file').addEventListener('change', async () => {
+  const file = $('file').files[0]
+  if (file) {
+    $('library').value = ''
+    await openBytes(file.name, new Uint8Array(await file.arrayBuffer()))
+  }
+  $('file').value = ''
+})
+
+$('library').addEventListener('change', async () => {
+  const path = $('library').value
+  if (!path) return
+  const response = await fetch(`/api/library/file?path=${encodeURIComponent(path)}`)
+  await openBytes(path.split('/').pop(), new Uint8Array(await response.arrayBuffer()))
+})
+
+$('rerender').addEventListener('click', renderBoth)
+
+$('modes').addEventListener('click', (event) => {
+  const mode = event.target.closest('button')?.dataset.mode
+  if (mode) setMode(mode)
+})
+function setMode(mode) {
+  state.mode = mode
+  store('mode', mode)
+  paint()
+}
+
+$('zooms').addEventListener('click', (event) => {
+  const zoom = event.target.closest('button')?.dataset.zoom
+  if (zoom) setZoom(zoom)
+})
+
+/** A preset: a number zooms about the middle of the view; fit re-measures. */
+function setZoom(zoom) {
+  if (zoom === 'fit') {
+    state.zoom = 'fit'
+    store('zoom', 'fit')
+    paint()
+  } else {
+    zoomTo(Number(zoom))
+  }
+}
+
+const currentZoom = () => {
+  const [scroller] = scrollers()
+  return scroller ? zoomOf(scroller) : 1
+}
+
+// A trackpad pinch arrives as a wheel event with ctrlKey set; a mouse wheel
+// zooms while ⌘ or Ctrl is held. Plain scrolling still pans, in both panes.
+$('stage').addEventListener('wheel', (event) => {
+  if (!(event.ctrlKey || event.metaKey)) return
+  const stage = $('stage')
+  const anchor = stage.classList.contains('split') ? event.target.closest('.pane') : stage
+  if (!anchor?.querySelector('.frame')) return
+  event.preventDefault()
+  const lines = event.deltaMode === 1 ? 16 : 1
+  const delta = Math.max(-50, Math.min(50, event.deltaY * lines))
+  const rect = anchor.getBoundingClientRect()
+  const at = { x: event.clientX - rect.left, y: event.clientY - rect.top }
+
+  // One gesture keeps the point it started on. While the frame is still
+  // smaller than the pane the scroll clamps at zero, so reading the point back
+  // after each step would let it drift away from the cursor.
+  const now = performance.now()
+  const gesture = state.gesture
+  const continuing = gesture && gesture.anchor === anchor && now - gesture.time < 300 &&
+    Math.abs(gesture.at.x - at.x) < 4 && Math.abs(gesture.at.y - at.y) < 4
+  const point = continuing ? gesture.point : documentPoint(anchor, at.x, at.y)
+  state.gesture = { anchor, at, point, time: now }
+
+  zoomTo(currentZoom() * Math.exp(-delta * 0.01), anchor, at, point)
+}, { passive: false })
+
+$('onion').addEventListener('input', () => {
+  state.onion = Number($('onion').value)
+  const kit = $('stage').querySelectorAll('.frame img')[1]
+  if (kit) kit.style.opacity = state.onion / 100
+})
+
+let thresholdTimer
+$('threshold').addEventListener('input', () => {
+  state.threshold = Number($('threshold').value)
+  $('threshold-value').textContent = state.threshold
+  clearTimeout(thresholdTimer)
+  thresholdTimer = setTimeout(paint, 60)
+})
+
+document.addEventListener('keydown', (event) => {
+  if (event.target.closest('input, select, textarea') || event.metaKey || event.ctrlKey || event.altKey) return
+  const modes = ['side', 'flip', 'swipe', 'onion', 'diff', 'live']
+  if (/^[1-6]$/.test(event.key)) setMode(modes[Number(event.key) - 1])
+  else if (event.key === ' ' && state.mode === 'flip') { event.preventDefault(); flip() }
+  else if (event.key === 'r' && state.bytes) renderBoth()
+  else if (event.key === '+' || event.key === '=') zoomTo(currentZoom() * 1.5)
+  else if (event.key === '-' || event.key === '_') zoomTo(currentZoom() / 1.5)
+  else if (event.key === '0') setZoom('fit')
+})
+
+let dragDepth = 0
+document.addEventListener('dragenter', (event) => {
+  if (![...event.dataTransfer.types].includes('Files')) return
+  dragDepth++
+  $('drop').hidden = false
+})
+document.addEventListener('dragleave', () => {
+  if (--dragDepth <= 0) { dragDepth = 0; $('drop').hidden = true }
+})
+document.addEventListener('dragover', (event) => event.preventDefault())
+document.addEventListener('drop', async (event) => {
+  event.preventDefault()
+  dragDepth = 0
+  $('drop').hidden = true
+  const file = event.dataTransfer.files[0]
+  if (!file) return
+  $('library').value = ''
+  await openBytes(file.name, new Uint8Array(await file.arrayBuffer()))
+})
+
+let resizeTimer
+window.addEventListener('resize', () => {
+  if (state.zoom !== 'fit' || state.mode === 'live') return
+  clearTimeout(resizeTimer)
+  resizeTimer = setTimeout(paint, 100)
+})
+
+paint()
+loadLibrary()
+</script>
+</body>
+</html>
