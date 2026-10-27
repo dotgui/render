@@ -727,8 +727,9 @@ mod tests {
         let xml = format!(r#"<gui version="{next}"><col /></gui>"#);
         let err = parse_gui_xml(&xml).unwrap_err();
         assert!(
-            err.to_string()
-                .contains(&format!("reads documents up to version {SUPPORTED_VERSION}")),
+            err.to_string().contains(&format!(
+                "reads documents up to version {SUPPORTED_VERSION}"
+            )),
             "{err}"
         );
         assert!(matches!(err, ParseError::UnsupportedVersion(v) if v == next));
