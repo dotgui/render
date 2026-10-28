@@ -30,8 +30,8 @@ pub const RENDERER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// cumulative: every earlier point is implemented too, and a document declaring
 /// a newer one is refused rather than drawn with features this renderer does
 /// not know.
-pub const SUPPORTED_VERSION: &str = "0.3.4";
-const SUPPORTED: (u32, u32, u32) = (0, 3, 4);
+pub const SUPPORTED_VERSION: &str = "0.3.5";
+const SUPPORTED: (u32, u32, u32) = (0, 3, 5);
 const MULTI_DOCUMENT: (u32, u32, u32) = (0, 3, 0);
 
 #[derive(Debug, Error)]

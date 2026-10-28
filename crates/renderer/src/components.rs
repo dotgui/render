@@ -188,7 +188,7 @@ fn insert_component(components: &mut Components, node: &GuiNode, issues: &mut Is
     components.by_id.insert(
         id.clone(),
         Component {
-            props: read_props(node),
+            props: read_props(id, node, body, issues),
             slots: read_slots(id, body, issues),
             body: body.clone(),
         },
@@ -247,29 +247,97 @@ fn collect_slots(
     }
 }
 
-fn read_props(component: &GuiNode) -> Vec<Prop> {
-    let Some(props) = component.children.iter().find(|child| child.tag == "props") else {
+/// RFC-0034's prop types: data types.
+const PROP_TYPES: &[&str] = &[
+    "string",
+    "boolean",
+    "number",
+    "color",
+    "image",
+    "component",
+    "style",
+];
+/// The 0.1 names, still rendered, and what replaced them.
+const LEGACY_PROP_TYPES: &[(&str, &str)] = &[
+    ("text", "string"),
+    ("visible", "boolean"),
+    ("fill", "color"),
+    ("src", "image"),
+];
+const STYLE_BINDS: &[&str] = &["text-style", "fill-style", "effect-style", "stroke-style"];
+
+/// A component's props, checked against RFC-0034. A string prop may omit
+/// `target` when its name is the id of exactly one `<text>` in the body.
+fn read_props(component: &str, node: &GuiNode, body: &GuiNode, issues: &mut Issues) -> Vec<Prop> {
+    let Some(props) = node.children.iter().find(|child| child.tag == "props") else {
         return Vec::new();
     };
 
-    props
+    let mut out = Vec::new();
+    for prop in props.children.iter().filter(|child| child.tag == "prop") {
+        let (Some(name), Some(kind)) = (prop.attributes.get("name"), prop.attributes.get("type"))
+        else {
+            continue;
+        };
+        let bind = prop.attributes.get("bind").cloned();
+
+        if let Some((_, new)) = LEGACY_PROP_TYPES.iter().find(|(old, _)| old == kind) {
+            issues.advise(format!(
+                "component '{component}': <prop type=\"{kind}\"> is the old name; use type=\"{new}\""
+            ));
+        } else if !PROP_TYPES.contains(&kind.as_str()) {
+            issues.violation(format!(
+                "component '{component}': <prop type=\"{kind}\"> must be one of {}",
+                PROP_TYPES.join(", ")
+            ));
+        }
+        if matches!(kind.as_str(), "number" | "style") && bind.is_none() {
+            issues.violation(format!(
+                "component '{component}': <prop name=\"{name}\" type=\"{kind}\"> needs bind: a {kind} could mean several attributes"
+            ));
+        }
+        if let Some(bind) = bind.as_deref().filter(|_| kind == "style") {
+            if !STYLE_BINDS.contains(&bind) {
+                issues.violation(format!(
+                    "component '{component}': <prop type=\"style\"> bind must be one of {}, got \"{bind}\"",
+                    STYLE_BINDS.join(", ")
+                ));
+            }
+        }
+
+        let targets: Vec<String> = match prop.attributes.get("target") {
+            Some(target) => target.split_whitespace().map(ToOwned::to_owned).collect(),
+            None if matches!(kind.as_str(), "string" | "text")
+                && count_text_ids(body, name) == 1 =>
+            {
+                vec![name.clone()]
+            }
+            None => {
+                issues.violation(format!(
+                    "component '{component}': <prop name=\"{name}\"> needs target: only a string prop named for exactly one <text> id may omit it"
+                ));
+                continue;
+            }
+        };
+
+        out.push(Prop {
+            name: name.clone(),
+            kind: kind.clone(),
+            targets,
+            bind,
+        });
+    }
+    out
+}
+
+fn count_text_ids(node: &GuiNode, id: &str) -> usize {
+    let own =
+        usize::from(node.tag == "text" && node.attributes.get("id").is_some_and(|it| it == id));
+    own + node
         .children
         .iter()
-        .filter(|child| child.tag == "prop")
-        .filter_map(|prop| {
-            Some(Prop {
-                name: prop.attributes.get("name")?.clone(),
-                kind: prop.attributes.get("type")?.clone(),
-                targets: prop
-                    .attributes
-                    .get("target")?
-                    .split_whitespace()
-                    .map(ToOwned::to_owned)
-                    .collect(),
-                bind: prop.attributes.get("bind").cloned(),
-            })
-        })
-        .collect()
+        .map(|child| count_text_ids(child, id))
+        .sum::<usize>()
 }
 
 /// Replaces every `<instance>` in the tree with the component it names.
@@ -1161,6 +1229,99 @@ mod tests {
 
         let track = find(&root.children[0], "track").unwrap();
         assert_eq!(track.attributes.get("w").map(String::as_str), Some("80"));
+    }
+
+    /// A chip component with the given props, placed once with `instance`.
+    fn chip(version: &str, props: &str, instance: &str) -> String {
+        format!(
+            r##"<gui version="{version}">
+              <components>
+                <component id="comp-chip">
+                  <props>{props}</props>
+                  <row><text id="label" value="Default label" /><text id="note" value="n" /><rect id="surface" w="10" h="10" /></row>
+                </component>
+              </components>
+              <col w="200">{instance}</col>
+            </gui>"##
+        )
+    }
+
+    #[test]
+    fn a_string_prop_named_for_one_text_id_needs_no_target() {
+        let root = root_of(&chip(
+            "0.3",
+            r#"<prop name="label" type="string" />"#,
+            r#"<instance component="comp-chip" label="Implicit works" />"#,
+        ));
+        let label = find(&root.children[0], "label").unwrap();
+        assert_eq!(label.attributes["value"], "Implicit works");
+    }
+
+    #[test]
+    fn prop_rules_are_errors_in_0_3() {
+        let cases = [
+            (
+                r#"<prop name="r" type="number" target="surface" />"#,
+                "needs bind: a number",
+            ),
+            (
+                r#"<prop name="ts" type="style" target="label" />"#,
+                "needs bind: a style",
+            ),
+            (
+                r#"<prop name="b" type="style" target="label" bind="radius" />"#,
+                "bind must be one of",
+            ),
+            (
+                r#"<prop name="x" type="enum" target="label" />"#,
+                r#"<prop type="enum"> must be one of"#,
+            ),
+            (r#"<prop name="title" type="string" />"#, "needs target"),
+            (r#"<prop name="label" type="color" />"#, "needs target"),
+        ];
+        for (prop, expected) in cases {
+            let err = parse_err(&chip("0.3", prop, r#"<instance component="comp-chip" />"#));
+            assert!(err.contains(expected), "{prop}\n→ {err}");
+        }
+    }
+
+    #[test]
+    fn every_data_type_and_the_old_names_still_render() {
+        let props = r#"
+            <prop name="label" type="string" target="label" />
+            <prop name="off" type="boolean" target="surface" />
+            <prop name="bg" type="color" target="surface" />
+            <prop name="r" type="number" target="surface" bind="radius" />
+            <prop name="ts" type="style" target="label" bind="text-style" />
+            <prop name="both" type="color" target="label note" />
+            <prop name="old" type="text" target="note" />"#;
+        let doc = parse_gui_xml(&chip(
+            "0.3",
+            props,
+            r#"<instance component="comp-chip" old="Old name" />"#,
+        ))
+        .expect("valid props render");
+        assert!(
+            doc.warnings
+                .iter()
+                .any(|w| w.contains(r#"type="text"> is the old name"#)),
+            "{:?}",
+            doc.warnings
+        );
+        assert_eq!(
+            find(&doc.root.children[0], "note").unwrap().attributes["value"],
+            "Old name"
+        );
+    }
+
+    #[test]
+    fn prop_rules_only_warn_in_0_2() {
+        assert!(parse_gui_xml(&chip(
+            "0.2",
+            r#"<prop name="r" type="number" target="surface" />"#,
+            r#"<instance component="comp-chip" />"#
+        ))
+        .is_ok());
     }
 
     fn parse_err(xml: &str) -> String {
