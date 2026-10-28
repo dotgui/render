@@ -25,6 +25,9 @@
  *   el.loadMarkup(xml)              → show bare markup, leaving any loaded package behind
  *   events: select, render, error, pages
  *
+ * An edit repaints only the areas it changed; `render.detail.repainted` says how
+ * many, and is null when the page was painted whole.
+ *
  * An id is the element's position among layer elements, "0.2.1": it survives
  * attribute edits, and is re-derived whenever the source is replaced.
  *
@@ -446,6 +449,8 @@ export class GuiCanvas extends HTMLElement {
           height,
           pixels: [frame.width, frame.height],
           warnings: frame.warnings,
+          // How many changed areas an edit repainted, when it did not repaint the page.
+          repainted: frame.repainted ?? null,
         })
         if (frame.missingImages > 0) this.#supplyImages(xml, library, proxy)
       } while (this.#pending)
