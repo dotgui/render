@@ -330,6 +330,82 @@ fn visit_fill_and_border(node: &GuiNode, parent: &str, report: &mut dyn FnMut(St
     }
 }
 
+/// The containers a mask may sit on.
+const MASK_CONTAINERS: &[&str] = &["frame", "stack", "row", "col", "grid", "group"];
+
+/// The attributes that mean nothing without `mask-src`.
+const MASK_FAMILY: &[&str] = &[
+    "mask-x",
+    "mask-y",
+    "mask-width",
+    "mask-height",
+    "mask-mode",
+    "mask-invert",
+];
+
+/// Reports a `clip-path` that is not `inset()`, `circle()`, `ellipse()` or
+/// `polygon()`; mask attributes without `mask-src`, or on a node that is not a
+/// container; a `mask-mode` other than `alpha` or `luminance`; and the retired
+/// `mask` flag and `mask-composite` (RFC-0028). Errors from 0.3.11
+/// (`strict`), advice before, when the retired forms still draw.
+pub(crate) fn check_masks(root: &GuiNode, strict: bool, issues: &mut Issues) {
+    let mut report = |message: String| {
+        if strict {
+            issues.error(message);
+        } else {
+            issues.advise(message);
+        }
+    };
+    visit_masks(root, &mut report);
+}
+
+fn visit_masks(node: &GuiNode, report: &mut dyn FnMut(String)) {
+    let tag = node.tag.as_str();
+    let get = |name: &str| node.attributes.get(name).map(String::as_str);
+    if let Some(clip) = get("clip-path").filter(|value| !value.starts_with('$')) {
+        let shape = ["inset(", "circle(", "ellipse(", "polygon("]
+            .iter()
+            .any(|start| clip.trim().starts_with(start) && clip.trim().ends_with(')'));
+        if !shape {
+            report(format!(
+                "clip-path=\"{clip}\": use inset(), circle(), ellipse() or polygon(); a free-form path is a mask-src asset"
+            ));
+        }
+    }
+    if get("mask-src").is_some() && !MASK_CONTAINERS.contains(&tag) {
+        report(format!(
+            "<{tag}> cannot carry mask-src; only a layout container can"
+        ));
+    }
+    let family: Vec<&str> = MASK_FAMILY
+        .iter()
+        .copied()
+        .filter(|name| node.attributes.contains_key(*name))
+        .collect();
+    if get("mask-src").is_none() && !family.is_empty() {
+        report(format!(
+            "<{tag}> {} without mask-src means nothing",
+            family.join(", ")
+        ));
+    }
+    if let Some(mode) = get("mask-mode").filter(|mode| !matches!(*mode, "alpha" | "luminance")) {
+        report(format!("mask-mode=\"{mode}\" must be alpha or luminance"));
+    }
+    if get("mask").is_some_and(|value| value != "false") {
+        report(format!(
+            "<{tag} mask>: a child no longer masks its siblings; write mask-src on the parent"
+        ));
+    }
+    if let Some(composite) = get("mask-composite") {
+        report(format!(
+            "mask-composite=\"{composite}\": write mask-invert to cut the shape out, or nothing"
+        ));
+    }
+    for child in &node.children {
+        visit_masks(child, report);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
