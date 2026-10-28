@@ -30,11 +30,13 @@ pub const RENDERER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// cumulative: every earlier point is implemented too, and a document declaring
 /// a newer one is refused rather than drawn with features this renderer does
 /// not know.
-pub const SUPPORTED_VERSION: &str = "0.3.6";
-const SUPPORTED: (u32, u32, u32) = (0, 3, 6);
+pub const SUPPORTED_VERSION: &str = "0.3.7";
+const SUPPORTED: (u32, u32, u32) = (0, 3, 7);
 const MULTI_DOCUMENT: (u32, u32, u32) = (0, 3, 0);
 /// From 0.3.6 provenance is `<gui source>`, and `<meta>` is obsolete (RFC-0036).
 const ROOT_SOURCE: (u32, u32, u32) = (0, 3, 6);
+/// From 0.3.7 nodes carry `id` and `source-id`, and prop targets may be paths (RFC-0046).
+const IDENTITY: (u32, u32, u32) = (0, 3, 7);
 
 #[derive(Debug, Error)]
 pub enum ParseError {
@@ -170,7 +172,7 @@ pub fn parse_gui_xml_with(xml: &str, options: ParseOptions) -> Result<GuiDocumen
         options.in_multi_document_package || options.library.is_some(),
     )?;
     let mut issues = Issues::new(parts.strict);
-    report_obsolete_meta(&parts, &mut issues);
+    report_provenance(&parts, &mut issues);
     let mut metadata = parts.metadata;
 
     if let Some(library) = options.library {
@@ -237,7 +239,7 @@ pub fn parse_gui_xml_with(xml: &str, options: ParseOptions) -> Result<GuiDocumen
 pub fn parse_library(xml: &str) -> Result<Library, ParseError> {
     let parts = read_parts(xml, true)?;
     let mut issues = Issues::new(true);
-    report_obsolete_meta(&parts, &mut issues);
+    report_provenance(&parts, &mut issues);
     let components = components::read_components(&parts.component_blocks, &mut issues);
     validate::check_styles(&parts.metadata, &mut issues);
 
@@ -333,6 +335,9 @@ struct Parts {
     strict: bool,
     /// A `<meta>` block in a document declaring 0.3.6 or higher.
     obsolete_meta: bool,
+    /// `source-id` values with no `source` on `<gui>` to read them against:
+    /// `Some(true)` from 0.3.7, where it is an error, `Some(false)` before.
+    source_id_without_source: Option<bool>,
     name: Option<String>,
     metadata: GuiMetadata,
     component_blocks: Vec<GuiNode>,
@@ -399,9 +404,16 @@ fn read_parts(xml: &str, requires_multi_document: bool) -> Result<Parts, ParseEr
             .children()
             .any(|child| child.is_element() && child.tag_name().name() == "meta");
 
+    let source_id_without_source = (attr(root, "source").is_none()
+        && root
+            .descendants()
+            .any(|node| node.is_element() && node.has_attribute("source-id")))
+    .then_some(parsed >= IDENTITY);
+
     Ok(Parts {
         strict: parsed >= MULTI_DOCUMENT,
         obsolete_meta,
+        source_id_without_source,
         version,
         name: attr(root, "name"),
         metadata,
@@ -410,11 +422,18 @@ fn read_parts(xml: &str, requires_multi_document: bool) -> Result<Parts, ParseEr
     })
 }
 
-fn report_obsolete_meta(parts: &Parts, issues: &mut Issues) {
+fn report_provenance(parts: &Parts, issues: &mut Issues) {
     if parts.obsolete_meta {
         issues.advise(
             "<meta> is obsolete from 0.3.6: write source=\"…\" on <gui>, and leave out exported-at and source-node",
         );
+    }
+    // A source-id means nothing without the tool it belongs to (RFC-0046).
+    let message = "the document has source-id values but no source on <gui> to read them against";
+    match parts.source_id_without_source {
+        Some(true) => issues.error(message),
+        Some(false) => issues.advise(message),
+        None => {}
     }
 }
 
@@ -929,6 +948,25 @@ mod tests {
         ))
         .expect("older documents keep their <meta>");
         assert!(!older.warnings.iter().any(|w| w.contains("<meta>")));
+    }
+
+    #[test]
+    fn source_id_needs_source_from_0_3_7() {
+        assert!(parse_gui_xml(
+            r#"<gui version="0.3.7" source="figma" source-id="1:2"><col w="10" source-id="1:3" /></gui>"#
+        )
+        .is_ok());
+
+        let err = parse_gui_xml(r#"<gui version="0.3.7"><col w="10" source-id="1:3" /></gui>"#)
+            .expect_err("a source-id with no source is refused from 0.3.7");
+        assert!(err.to_string().contains("no source on <gui>"), "{err}");
+
+        let older = parse_gui_xml(r#"<gui version="0.3.6"><col w="10" source-id="1:3" /></gui>"#)
+            .expect("before 0.3.7 it only advises");
+        assert!(older
+            .warnings
+            .iter()
+            .any(|w| w.contains("no source on <gui>")));
     }
 
     #[test]
