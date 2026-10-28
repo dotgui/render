@@ -56,10 +56,10 @@ and refuses anything newer.
 
 | Renderer (reads spec) | Document declares | Result |
 |---|---|---|
-| `0.3.x` (`0.3.11`) | `0.1`, `0.2`, or no version (read as `0.2`) | Renders exactly as it always did |
-| `0.3.x` (`0.3.11`) | `0.3`, `0.3.0` … `0.3.11` | Renders, with 0.3 rules enforced |
-| `0.3.x` (`0.3.11`) | `0.3.12` and up | **Refused**: "a newer renderer is needed" |
-| `0.3.x` (`0.3.11`) | `0.4`, `1.0`, … | **Refused** |
+| `0.4.x` (`0.4.1`) | `0.1`, `0.2`, or no version (read as `0.2`) | Renders exactly as it always did |
+| `0.4.x` (`0.4.1`) | `0.3`, `0.3.0` … `0.3.11`, `0.4`, `0.4.1` | Renders, with each point's rules enforced |
+| `0.4.x` (`0.4.1`) | `0.4.2` and up | **Refused**: "a newer renderer is needed" |
+| `0.4.x` (`0.4.1`) | `0.5`, `1.0`, … | **Refused** |
 | `0.2.x` | `0.3` | Refused (from 0.3.0 onward; see below) |
 
 **Why refuse instead of trying.** An older renderer has never heard of the newer
@@ -154,11 +154,11 @@ chapter of its own.
 
 | | Value today |
 |---|---|
-| `RENDERER_VERSION` (Rust) | `0.3.1`, read from `Cargo.toml` at build time |
-| `SUPPORTED_VERSION` (Rust) | `"0.3.11"`, in `parser.rs` |
-| `render_png --version` | `dotgui renderer 0.3.1 (reads .gui up to version 0.3.11)` |
-| WASM `renderer_version()` / `supported_spec_version()` | `"0.3.1"` / `"0.3.11"` |
-| Error for a newer document | `the document declares version 0.3.12, but this renderer (0.3.1) reads documents up to version 0.3.11; a newer renderer is needed` |
+| `RENDERER_VERSION` (Rust) | `0.4.0`, read from `Cargo.toml` at build time |
+| `SUPPORTED_VERSION` (Rust) | `"0.4.1"`, in `parser.rs` |
+| `render_png --version` | `dotgui renderer 0.4.0 (reads .gui up to version 0.4.1)` |
+| WASM `renderer_version()` / `supported_spec_version()` | `"0.4.0"` / `"0.4.1"` |
+| Error for a newer document | `the document declares version 0.4.2, but this renderer (0.4.0) reads documents up to version 0.4.1; a newer renderer is needed` |
 
 The test `the_renderer_version_names_the_spec_it_implements` in `parser.rs`
 fails if `Cargo.toml`'s `MAJOR.MINOR` and `SUPPORTED_VERSION`'s chapter disagree. Treat a

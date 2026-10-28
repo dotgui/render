@@ -5,6 +5,12 @@
 //! and no manifest: every `.guix` at the root is a document, whatever it is
 //! called, except `library.guix`, which holds the package's shared
 //! declarations. Order is the lexical sort of the filenames.
+//!
+//! RFC-0054 lets a package be a directory named `*.gui` as well as a ZIP. Both
+//! forms pass through [`read_gui_entries`], which applies the same rules:
+//! dotfiles and anything outside the package are ignored and listed, and a
+//! path that leaves the package, two paths that differ only in case or
+//! Unicode normalization, or (in a directory) a symbolic link, are refused.
 
 use crate::parser::{parse_gui_xml_with, parse_library, Library, ParseError, ParseOptions};
 use crate::{GuiDocument, Modes};
@@ -13,6 +19,7 @@ use std::{
     io::{Cursor, Read},
 };
 use thiserror::Error;
+use unicode_normalization::UnicodeNormalization;
 use zip::ZipArchive;
 
 /// The one reserved filename: the package's shared declarations, never a
@@ -38,6 +45,18 @@ pub enum PackageError {
 
     #[error("input is neither a .gui package nor .guix markup")]
     UnknownInput,
+
+    #[error("entry \"{0}\" resolves outside the package")]
+    EscapesPackage(String),
+
+    #[error("entries \"{0}\" and \"{1}\" differ only in case or Unicode normalization, which a file system cannot hold apart")]
+    Collision(String, String),
+
+    #[error("\"{0}\" is a symbolic link; a package holds files, never links")]
+    SymbolicLink(String),
+
+    #[error("{0} is not a package: a package directory's name ends in .gui")]
+    NotAPackageDirectory(String),
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +68,9 @@ pub struct GuiPackage {
     pub library: Option<PackageDocument>,
     /// Everything that is not a root `.guix`: `assets/`, `preview.webp`.
     pub assets: BTreeMap<String, Vec<u8>>,
+    /// Entries read but not part of the package — dotfiles, stray files, a
+    /// `.guix` below the root — in path order (RFC-0054).
+    pub ignored: Vec<String>,
 }
 
 /// One `.guix` file in a package, as bytes.
@@ -231,30 +253,125 @@ pub fn read_gui_package_xml(bytes: &[u8]) -> Result<String, PackageError> {
 
 pub fn read_gui_package(bytes: &[u8]) -> Result<GuiPackage, PackageError> {
     let mut archive = ZipArchive::new(Cursor::new(bytes))?;
-    let mut documents = Vec::new();
-    let mut library = None;
-    let mut assets = BTreeMap::new();
-
+    let mut entries = Vec::new();
     for index in 0..archive.len() {
         let mut file = archive.by_index(index)?;
         if file.is_dir() {
             continue;
         }
-
         let name = file.name().to_owned();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
+        entries.push((name, bytes));
+    }
+    read_gui_entries(entries)
+}
 
-        // Documents sit at the root. A `.guix` inside a directory is not one.
-        if name.ends_with(".guix") && !name.contains('/') {
-            let document = PackageDocument { name, bytes };
-            if document.name == LIBRARY_FILENAME {
-                library = Some(document);
-            } else {
-                documents.push(document);
+/// Reads a package directory: a directory whose name ends in `.gui`, holding
+/// the same entries a ZIP would (RFC-0054). Symbolic links are refused, never
+/// followed.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_gui_directory(path: &std::path::Path) -> Result<GuiPackage, PackageError> {
+    let is_package = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".gui"));
+    if !is_package {
+        return Err(PackageError::NotAPackageDirectory(
+            path.display().to_string(),
+        ));
+    }
+
+    fn walk(
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        entries: &mut Vec<(String, Vec<u8>)>,
+    ) -> Result<(), PackageError> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let relative = entry
+                .path()
+                .strip_prefix(root)
+                .map(|it| it.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            let kind = entry.file_type()?;
+            if kind.is_symlink() {
+                return Err(PackageError::SymbolicLink(relative));
             }
+            if kind.is_dir() {
+                walk(root, &entry.path(), entries)?;
+            } else {
+                entries.push((relative, std::fs::read(entry.path())?));
+            }
+        }
+        Ok(())
+    }
+
+    let mut entries = Vec::new();
+    walk(path, path, &mut entries)?;
+    read_gui_entries(entries)
+}
+
+/// What an entry is to the package, or `None` when it is not part of it.
+fn entry_kind(path: &str) -> Option<EntryKind> {
+    // A dotfile is a tool's state, at any depth — never part of the package.
+    if path.split('/').any(|segment| segment.starts_with('.')) {
+        return None;
+    }
+    if !path.contains('/') {
+        return if path.ends_with(".guix") {
+            Some(EntryKind::Document)
+        } else if path == "preview.webp" {
+            Some(EntryKind::Asset)
         } else {
-            assets.insert(name, bytes);
+            None
+        };
+    }
+    path.starts_with("assets/").then_some(EntryKind::Asset)
+}
+
+enum EntryKind {
+    Document,
+    Asset,
+}
+
+/// Builds a package from its entries — a ZIP's, or a walked directory's —
+/// applying the rules both forms share (RFC-0054).
+pub fn read_gui_entries(entries: Vec<(String, Vec<u8>)>) -> Result<GuiPackage, PackageError> {
+    let mut documents = Vec::new();
+    let mut library = None;
+    let mut assets = BTreeMap::new();
+    let mut ignored = Vec::new();
+    let mut seen: BTreeMap<String, String> = BTreeMap::new();
+
+    for (raw, bytes) in entries {
+        let name: String = raw.nfc().collect();
+        let escapes = name.starts_with('/')
+            || name.starts_with('\\')
+            || name.as_bytes().get(1) == Some(&b':')
+            || name.split(['/', '\\']).any(|segment| segment == "..");
+        if escapes {
+            return Err(PackageError::EscapesPackage(raw));
+        }
+        let key = name.to_lowercase();
+        if let Some(other) = seen.get(&key) {
+            return Err(PackageError::Collision(other.clone(), raw));
+        }
+        seen.insert(key, raw);
+
+        match entry_kind(&name) {
+            Some(EntryKind::Document) => {
+                let document = PackageDocument { name, bytes };
+                if document.name == LIBRARY_FILENAME {
+                    library = Some(document);
+                } else {
+                    documents.push(document);
+                }
+            }
+            Some(EntryKind::Asset) => {
+                assets.insert(name, bytes);
+            }
+            None => ignored.push(name),
         }
     }
 
@@ -262,11 +379,13 @@ pub fn read_gui_package(bytes: &[u8]) -> Result<GuiPackage, PackageError> {
         return Err(PackageError::NoDocuments);
     }
     documents.sort_by(|a, b| a.name.cmp(&b.name));
+    ignored.sort();
 
     Ok(GuiPackage {
         documents,
         library,
         assets,
+        ignored,
     })
 }
 
@@ -289,6 +408,140 @@ pub(crate) mod tests {
             zip.finish().expect("zip finishes");
         }
         bytes.into_inner()
+    }
+
+    const FILES: &[(&str, &[u8])] = &[
+        (
+            "01-welcome.guix",
+            b"<gui version=\"0.4.1\"><col w=\"390\" /></gui>",
+        ),
+        ("library.guix", b"<gui version=\"0.4.1\"><tokens /></gui>"),
+        ("preview.webp", b"webp"),
+        ("assets/logo.svg", b"<svg />"),
+    ];
+
+    fn owned(files: &[(&str, &[u8])]) -> Vec<(String, Vec<u8>)> {
+        files
+            .iter()
+            .map(|(name, bytes)| ((*name).to_owned(), bytes.to_vec()))
+            .collect()
+    }
+
+    #[test]
+    fn a_zip_and_its_directory_are_the_same_package() {
+        let from_zip = read_gui_package(&zip(FILES)).expect("zip reads");
+        let dir = std::env::temp_dir().join(format!("dotgui-folder-{}.gui", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (name, bytes) in FILES {
+            let path = dir.join(name);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+            std::fs::write(path, bytes).expect("write");
+        }
+        std::fs::write(dir.join(".DS_Store"), b"x").expect("write");
+        let from_dir = read_gui_directory(&dir).expect("directory reads");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let names = |p: &GuiPackage| {
+            p.documents
+                .iter()
+                .map(|d| d.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&from_dir), names(&from_zip));
+        assert_eq!(from_dir.assets, from_zip.assets);
+        assert_eq!(
+            from_dir.library.map(|l| l.bytes),
+            from_zip.library.map(|l| l.bytes)
+        );
+        assert_eq!(from_dir.ignored, vec![".DS_Store".to_owned()]);
+    }
+
+    #[test]
+    fn a_directory_must_be_named_gui_and_hold_no_links() {
+        let base = std::env::temp_dir().join(format!("dotgui-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let plain = base.join("plain");
+        std::fs::create_dir_all(&plain).expect("dir");
+        assert!(matches!(
+            read_gui_directory(&plain),
+            Err(PackageError::NotAPackageDirectory(_))
+        ));
+
+        let package = base.join("linked.gui");
+        std::fs::create_dir_all(package.join("assets")).expect("dir");
+        std::fs::write(
+            package.join("01.guix"),
+            b"<gui version=\"0.4.1\"><col /></gui>",
+        )
+        .expect("write");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/etc/hosts", package.join("assets/hosts.svg"))
+                .expect("link");
+            assert!(matches!(
+                read_gui_directory(&package),
+                Err(PackageError::SymbolicLink(path)) if path == "assets/hosts.svg"
+            ));
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn litter_is_ignored_and_listed() {
+        let mut files = owned(FILES);
+        for name in [
+            ".git/config",
+            "assets/.hidden.png",
+            "notes.txt",
+            "nested/02.guix",
+        ] {
+            files.push((name.to_owned(), b"x".to_vec()));
+        }
+        let package = read_gui_entries(files).expect("reads");
+        assert_eq!(
+            package.ignored,
+            [
+                ".git/config",
+                "assets/.hidden.png",
+                "nested/02.guix",
+                "notes.txt"
+            ]
+        );
+        assert!(!package.assets.contains_key("assets/.hidden.png"));
+    }
+
+    #[test]
+    fn escaping_paths_and_collisions_are_refused() {
+        for bad in [
+            "../outside.svg",
+            "/abs.svg",
+            "assets/../../x.svg",
+            "C:/x.svg",
+        ] {
+            let mut files = owned(FILES);
+            files.push((bad.to_owned(), b"x".to_vec()));
+            assert!(
+                matches!(
+                    read_gui_entries(files),
+                    Err(PackageError::EscapesPackage(_))
+                ),
+                "{bad}"
+            );
+        }
+        let mut files = owned(FILES);
+        files.push(("assets/Logo.svg".to_owned(), b"x".to_vec()));
+        assert!(matches!(
+            read_gui_entries(files),
+            Err(PackageError::Collision(..))
+        ));
+
+        let mut files = owned(FILES);
+        files.push(("assets/caf\u{e9}.svg".to_owned(), b"x".to_vec()));
+        files.push(("assets/cafe\u{301}.svg".to_owned(), b"y".to_vec()));
+        assert!(matches!(
+            read_gui_entries(files),
+            Err(PackageError::Collision(..))
+        ));
     }
 
     #[test]

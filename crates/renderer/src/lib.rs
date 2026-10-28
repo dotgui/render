@@ -38,9 +38,11 @@ pub use fonts::{
 pub use layout::{ApproxTextMeasurer, LayoutBox, LayoutRect, TextMeasurer};
 pub use model::{FontInfo, GuiDocument, GuiMetadata, GuiNode};
 pub use modes::{ModeAxis, Modes};
+#[cfg(not(target_arch = "wasm32"))]
+pub use package::read_gui_directory;
 pub use package::{
-    read_gui_input, read_gui_package, read_gui_package_xml, GuiInput, GuiPackage, PackageDocument,
-    PackageError, PackagePage, LIBRARY_FILENAME,
+    read_gui_entries, read_gui_input, read_gui_package, read_gui_package_xml, GuiInput, GuiPackage,
+    PackageDocument, PackageError, PackagePage, LIBRARY_FILENAME,
 };
 pub use page::Page;
 pub use paint::{
