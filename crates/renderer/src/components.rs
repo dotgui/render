@@ -41,6 +41,7 @@ const POSITIONAL: &[&str] = &[
     "component",
     "name",
     "id",
+    "source-id",
     "x",
     "y",
     "w",
@@ -386,7 +387,7 @@ impl Expander<'_> {
             match child.tag.as_str() {
                 // An instance that cannot be expanded is dropped rather than
                 // left in the tree, where it would lay out as an unknown block.
-                "instance" => expanded.extend(self.instantiate(&child, scope, depth)),
+                "instance" => expanded.extend(self.instantiate(&child, scope, depth, &[])),
                 "slot" => self.issues.violation(format!(
                     "<slot name=\"{}\"> is only valid directly inside an <instance>",
                     child.attributes.get("name").map_or("", String::as_str)
@@ -400,7 +401,13 @@ impl Expander<'_> {
         node.children = expanded;
     }
 
-    fn instantiate(&mut self, node: &GuiNode, scope: Scope, depth: usize) -> Option<GuiNode> {
+    fn instantiate(
+        &mut self,
+        node: &GuiNode,
+        scope: Scope,
+        depth: usize,
+        handed: &[Handed],
+    ) -> Option<GuiNode> {
         let Some(id) = node.attributes.get("component") else {
             self.issues
                 .violation("an <instance> has no component attribute");
@@ -425,8 +432,22 @@ impl Expander<'_> {
         let fills = self.read_fills(node, id, component);
 
         let mut body = component.body.clone();
-        apply_declared_props(&mut body, node, &component.props);
+        let mut down = apply_declared_props(&mut body, node, &component.props);
         apply_ad_hoc_overrides(&mut body, node, &component.props);
+        // Values handed down a path by an enclosing component come last, so
+        // they win over this instance's own.
+        for value in handed {
+            match value.path.split_once('/') {
+                None => apply_override(
+                    &mut body,
+                    &value.path,
+                    &value.kind,
+                    &value.value,
+                    value.bind.as_deref(),
+                ),
+                Some((first, rest)) => down.push((first.to_owned(), value.rest(rest))),
+            }
+        }
         apply_positional(&mut body, node);
         scale_to_instance(&mut body, &component.body);
 
@@ -457,10 +478,48 @@ impl Expander<'_> {
             self.fill_slots(&mut body, &mut fills, id, body_scope);
         }
 
+        // Instances a path reaches into are expanded first, with the values
+        // meant for them; the rest of the body after.
+        if !down.is_empty() {
+            self.expand_targeted(&mut body, &down, body_scope, depth + 1);
+        }
         // A component body may itself hold instances.
         self.expand_at(&mut body, body_scope, depth + 1);
         self.stack.pop();
         Some(body)
+    }
+
+    /// Expands each instance in `node` that a path names, handing it the values
+    /// addressed to it. An instance's children are slot content, written in
+    /// another scope, so they are not searched.
+    fn expand_targeted(
+        &mut self,
+        node: &mut GuiNode,
+        down: &[(String, Handed)],
+        scope: Scope,
+        depth: usize,
+    ) {
+        let mut children = Vec::with_capacity(node.children.len());
+        for mut child in std::mem::take(&mut node.children) {
+            let id = child.attributes.get("id");
+            let handed: Vec<Handed> = match id {
+                Some(id) if child.tag == "instance" => down
+                    .iter()
+                    .filter(|(first, _)| first == id)
+                    .map(|(_, value)| value.clone())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            if !handed.is_empty() {
+                children.extend(self.instantiate(&child, scope, depth, &handed));
+                continue;
+            }
+            if child.tag != "instance" {
+                self.expand_targeted(&mut child, down, scope, depth);
+            }
+            children.push(child);
+        }
+        node.children = children;
     }
 
     /// An instance's children, by slot name, checked against the rules for
@@ -589,15 +648,54 @@ impl Expander<'_> {
     }
 }
 
-fn apply_declared_props(body: &mut GuiNode, instance: &GuiNode, props: &[Prop]) {
+/// A prop value on its way down a path (RFC-0046): `tab-1/label` cannot be
+/// reached until `tab-1` is expanded, so it travels with that instance.
+#[derive(Debug, Clone)]
+struct Handed {
+    /// What is left of the path, below the instance it is handed to.
+    path: String,
+    kind: String,
+    bind: Option<String>,
+    value: String,
+}
+
+impl Handed {
+    fn rest(&self, path: &str) -> Handed {
+        Handed {
+            path: path.to_owned(),
+            ..self.clone()
+        }
+    }
+}
+
+/// Applies each declared prop the instance sets. A target that is a path is
+/// returned instead, keyed by the instance it passes through.
+fn apply_declared_props(
+    body: &mut GuiNode,
+    instance: &GuiNode,
+    props: &[Prop],
+) -> Vec<(String, Handed)> {
+    let mut down = Vec::new();
     for prop in props {
         let Some(value) = instance.attributes.get(&prop.name) else {
             continue;
         };
         for target in &prop.targets {
-            apply_override(body, target, &prop.kind, value, prop.bind.as_deref());
+            match target.split_once('/') {
+                None => apply_override(body, target, &prop.kind, value, prop.bind.as_deref()),
+                Some((first, rest)) => down.push((
+                    first.to_owned(),
+                    Handed {
+                        path: rest.to_owned(),
+                        kind: prop.kind.clone(),
+                        bind: prop.bind.clone(),
+                        value: value.clone(),
+                    },
+                )),
+            }
         }
     }
+    down
 }
 
 /// Instance attributes that name a layer directly, with no `<prop>` declaring
@@ -696,9 +794,9 @@ const TYPOGRAPHY: &[&str] = &[
 /// Copies the instance's own placement onto the body it expands to.
 fn apply_positional(body: &mut GuiNode, instance: &GuiNode) {
     for name in POSITIONAL {
-        // `component` names what to expand and `id` identifies the instance;
-        // neither belongs on the box that replaces it.
-        if matches!(*name, "component" | "id") {
+        // `component` names what to expand, and `id` and `source-id` identify
+        // the instance; none belongs on the box that replaces it.
+        if matches!(*name, "component" | "id" | "source-id") {
             continue;
         }
         if let Some(value) = instance.attributes.get(*name) {
@@ -1624,5 +1722,91 @@ mod tests {
             find(empty, "card-body").is_none(),
             "and so does the slot it was the only content of"
         );
+    }
+
+    /// RFC-0046: a tab bar exposing its tabs' labels and dot colors by path.
+    fn tabbar(props: &str, instance: &str) -> String {
+        format!(
+            r##"
+            <gui version="0.3.7">
+              <components>
+                <component id="comp-tab-item">
+                  <props><prop name="tint" type="color" target="dot" /></props>
+                  <row id="tab"><rect id="dot" w="8" h="8" fill="#000000" /><text id="label" value="Tab" /></row>
+                </component>
+                <component id="comp-tabbar">
+                  <props>{props}</props>
+                  <row id="bar" gap="8">
+                    <instance id="tab-1" component="comp-tab-item" />
+                    <instance id="tab-2" component="comp-tab-item" tint="#00FF00" />
+                  </row>
+                </component>
+              </components>
+              <col w="400">{instance}</col>
+            </gui>
+            "##
+        )
+    }
+
+    fn tabs(root: &crate::GuiNode) -> Vec<&crate::GuiNode> {
+        root.children[0].children.iter().collect()
+    }
+
+    fn attr<'a>(node: &'a crate::GuiNode, id: &str, name: &str) -> Option<&'a str> {
+        find(node, id)
+            .and_then(|it| it.attributes.get(name))
+            .map(String::as_str)
+    }
+
+    #[test]
+    fn a_path_sets_a_node_inside_a_nested_instance() {
+        let root = root_of(&tabbar(
+            r#"<prop name="first-label" type="string" target="tab-1/label" />
+               <prop name="second-label" type="string" target="tab-2/label" />"#,
+            r#"<instance component="comp-tabbar" first-label="Library" second-label="Settings" />"#,
+        ));
+        let tabs = tabs(&root);
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(attr(tabs[0], "label", "value"), Some("Library"));
+        assert_eq!(attr(tabs[1], "label", "value"), Some("Settings"));
+    }
+
+    #[test]
+    fn a_value_handed_down_a_path_wins_over_the_nested_instances_own() {
+        let root = root_of(&tabbar(
+            r#"<prop name="second-tint" type="color" target="tab-2/dot" />"#,
+            r##"<instance component="comp-tabbar" second-tint="#FF0000" />"##,
+        ));
+        let tabs = tabs(&root);
+        assert_eq!(attr(tabs[0], "dot", "fill"), Some("#000000"));
+        assert_eq!(attr(tabs[1], "dot", "fill"), Some("#FF0000"));
+    }
+
+    #[test]
+    fn a_path_that_does_not_reach_an_instance_changes_nothing() {
+        let root = root_of(&tabbar(
+            r#"<prop name="x" type="string" target="bar/label" />"#,
+            r#"<instance component="comp-tabbar" x="Nope" />"#,
+        ));
+        for tab in tabs(&root) {
+            assert_eq!(attr(tab, "label", "value"), Some("Tab"));
+        }
+    }
+
+    #[test]
+    fn an_instances_id_and_source_id_stay_off_the_body() {
+        let root = root_of(
+            &tabbar(
+                "",
+                r#"<instance id="nav" source-id="1:2" component="comp-tabbar" />"#,
+            )
+            .replace(
+                r#"<gui version="0.3.7">"#,
+                r#"<gui version="0.3.7" source="figma">"#,
+            ),
+        );
+        let bar = &root.children[0];
+        assert_eq!(bar.attributes.get("id").map(String::as_str), Some("bar"));
+        assert!(!bar.attributes.contains_key("source-id"));
     }
 }
