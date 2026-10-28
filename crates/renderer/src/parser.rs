@@ -30,13 +30,15 @@ pub const RENDERER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// cumulative: every earlier point is implemented too, and a document declaring
 /// a newer one is refused rather than drawn with features this renderer does
 /// not know.
-pub const SUPPORTED_VERSION: &str = "0.3.7";
-const SUPPORTED: (u32, u32, u32) = (0, 3, 7);
+pub const SUPPORTED_VERSION: &str = "0.3.8";
+const SUPPORTED: (u32, u32, u32) = (0, 3, 8);
 const MULTI_DOCUMENT: (u32, u32, u32) = (0, 3, 0);
 /// From 0.3.6 provenance is `<gui source>`, and `<meta>` is obsolete (RFC-0036).
 const ROOT_SOURCE: (u32, u32, u32) = (0, 3, 6);
 /// From 0.3.7 nodes carry `id` and `source-id`, and prop targets may be paths (RFC-0046).
 const IDENTITY: (u32, u32, u32) = (0, 3, 7);
+/// From 0.3.8 `detached-from` must resolve and `component` is `<instance>`'s alone (RFC-0035).
+const DETACHED: (u32, u32, u32) = (0, 3, 8);
 
 #[derive(Debug, Error)]
 pub enum ParseError {
@@ -193,14 +195,12 @@ pub fn parse_gui_xml_with(xml: &str, options: ParseOptions) -> Result<GuiDocumen
             }
         }
     }
-    components::expand(
-        &mut layout_root,
-        Scope {
-            local: &local,
-            library: options.library.map(|library| &library.components),
-        },
-        &mut issues,
-    );
+    let scope = Scope {
+        local: &local,
+        library: options.library.map(|library| &library.components),
+    };
+    components::check_detached(&layout_root, scope, parts.detached_rules, &mut issues);
+    components::expand(&mut layout_root, scope, &mut issues);
 
     // Modes resolve once the tree is whole — after instances are expanded, so
     // a component body placed inside a pinned subtree is drawn in that
@@ -338,6 +338,8 @@ struct Parts {
     /// `source-id` values with no `source` on `<gui>` to read them against:
     /// `Some(true)` from 0.3.7, where it is an error, `Some(false)` before.
     source_id_without_source: Option<bool>,
+    /// Whether `detached-from` and `component` are held to 0.3.8's rules.
+    detached_rules: bool,
     name: Option<String>,
     metadata: GuiMetadata,
     component_blocks: Vec<GuiNode>,
@@ -414,6 +416,7 @@ fn read_parts(xml: &str, requires_multi_document: bool) -> Result<Parts, ParseEr
         strict: parsed >= MULTI_DOCUMENT,
         obsolete_meta,
         source_id_without_source,
+        detached_rules: parsed >= DETACHED,
         version,
         name: attr(root, "name"),
         metadata,

@@ -341,6 +341,54 @@ fn count_text_ids(node: &GuiNode, id: &str) -> usize {
         .sum::<usize>()
 }
 
+/// Layout containers, the only tags that may say what they were detached from.
+const DETACHED_TAGS: &[&str] = &["frame", "stack", "row", "col", "grid", "group"];
+
+/// RFC-0035: `detached-from` names a component or variant the document or its
+/// library declares, and sits on layout containers only; `component` belongs
+/// to `<instance>` alone. Errors from 0.3.8 (`strict`), advice before. The
+/// document's tree and its own component bodies are checked as written,
+/// before instances are expanded.
+pub(crate) fn check_detached(root: &GuiNode, scope: Scope, strict: bool, issues: &mut Issues) {
+    fn visit(node: &GuiNode, scope: Scope, report: &mut dyn FnMut(String)) {
+        if let Some(origin) = node.attributes.get("detached-from") {
+            if !DETACHED_TAGS.contains(&node.tag.as_str()) {
+                report(format!(
+                    "<{}> cannot carry detached-from; only a layout container can",
+                    node.tag
+                ));
+            } else if scope.lookup(origin).is_none() {
+                report(format!(
+                    "detached-from=\"{origin}\" names no component or variant declared in the document or its library"
+                ));
+            }
+        }
+        if node.tag != "instance" {
+            if let Some(id) = node.attributes.get("component") {
+                report(format!(
+                    "<{} component=\"{id}\">: component is only valid on <instance>; a detached container uses detached-from",
+                    node.tag
+                ));
+            }
+        }
+        for child in &node.children {
+            visit(child, scope, report);
+        }
+    }
+
+    let mut report = |message: String| {
+        if strict {
+            issues.error(message);
+        } else {
+            issues.advise(message);
+        }
+    };
+    visit(root, scope, &mut report);
+    for (_, body) in scope.local.bodies() {
+        visit(body, scope, &mut report);
+    }
+}
+
 /// Replaces every `<instance>` in the tree with the component it names.
 pub(crate) fn expand(node: &mut GuiNode, scope: Scope, issues: &mut Issues) {
     let mut expander = Expander {
@@ -616,11 +664,14 @@ impl Expander<'_> {
                 .collect();
 
             for child in content {
-                let fits = child.tag == "instance"
-                    && child
-                        .attributes
-                        .get("component")
-                        .is_some_and(|id| accepted.contains(id));
+                // A container detached from an accepted component still fits
+                // (RFC-0035).
+                let origin = if child.tag == "instance" {
+                    child.attributes.get("component")
+                } else {
+                    child.attributes.get("detached-from")
+                };
+                let fits = origin.is_some_and(|id| accepted.contains(id));
                 if !fits {
                     let what = match child.attributes.get("component") {
                         Some(id) if child.tag == "instance" => format!("an instance of '{id}'"),
@@ -1808,5 +1859,95 @@ mod tests {
         let bar = &root.children[0];
         assert_eq!(bar.attributes.get("id").map(String::as_str), Some("bar"));
         assert!(!bar.attributes.contains_key("source-id"));
+    }
+
+    /// RFC-0035: a heading component, a tab set, and a tab bar whose slot
+    /// accepts only tab items.
+    fn detached(version: &str, body: &str) -> String {
+        format!(
+            r##"
+            <gui version="{version}">
+              <components>
+                <component id="comp-heading"><col><text value="Heading" /></col></component>
+                <component-set id="compset-tab-item">
+                  <variant id="comp-tab-item"><row><text value="Tab" /></row></variant>
+                  <variant id="comp-tab-item-active"><row><text value="Tab" /></row></variant>
+                </component-set>
+                <component id="comp-other"><row /></component>
+                <component id="comp-tabbar"><col><row slot="tabs" slot-accept="compset-tab-item" /></col></component>
+              </components>
+              <col w="390">{body}</col>
+            </gui>
+            "##
+        )
+    }
+
+    #[test]
+    fn detached_from_changes_nothing_on_screen() {
+        let with = root_of(&detached(
+            "0.3.8",
+            r#"<col detached-from="comp-heading"><text value="SEO" /></col>"#,
+        ));
+        let without = root_of(&detached("0.3.8", r#"<col><text value="SEO" /></col>"#));
+        assert_eq!(with.children[0].children, without.children[0].children);
+        assert_eq!(
+            with.children[0]
+                .attributes
+                .get("detached-from")
+                .map(String::as_str),
+            Some("comp-heading")
+        );
+    }
+
+    #[test]
+    fn detached_from_must_name_a_declared_component_from_0_3_8() {
+        for origin in ["comp-missing", "compset-tab-item"] {
+            let body = format!(r#"<col detached-from="{origin}" />"#);
+            assert!(
+                parse_err(&detached("0.3.8", &body)).contains("names no component"),
+                "{origin}"
+            );
+            let older = parse_gui_xml(&detached("0.3.7", &body)).expect("only advice before 0.3.8");
+            assert!(older
+                .warnings
+                .iter()
+                .any(|w| w.contains("names no component")));
+        }
+        assert!(parse_gui_xml(&detached(
+            "0.3.8",
+            r#"<row detached-from="comp-tab-item-active" />"#
+        ))
+        .is_ok());
+    }
+
+    #[test]
+    fn detached_from_and_component_stay_on_their_own_tags() {
+        assert!(parse_err(&detached(
+            "0.3.8",
+            r#"<text value="x" detached-from="comp-heading" />"#
+        ))
+        .contains("cannot carry detached-from"));
+        assert!(
+            parse_err(&detached("0.3.8", r#"<col component="comp-heading" />"#))
+                .contains("component is only valid on <instance>")
+        );
+    }
+
+    #[test]
+    fn slot_accept_takes_a_container_detached_from_an_accepted_component() {
+        let fill = |child: &str| {
+            detached(
+                "0.3.8",
+                &format!(
+                    r#"<instance component="comp-tabbar"><slot name="tabs">{child}</slot></instance>"#
+                ),
+            )
+        };
+        assert!(parse_gui_xml(&fill(
+            r#"<row detached-from="comp-tab-item-active"><text value="Hot" /></row>"#
+        ))
+        .is_ok());
+        assert!(parse_err(&fill(r#"<row detached-from="comp-other" />"#)).contains("accepts only"));
+        assert!(parse_err(&fill("<row />")).contains("accepts only"));
     }
 }
