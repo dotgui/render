@@ -1,5 +1,6 @@
 use crate::components::{self, Components, Scope};
 use crate::issues::Issues;
+use crate::modes::{self, ModeAxis, Modes};
 use crate::validate;
 use crate::{FontInfo, GuiDocument, GuiMetadata, GuiNode};
 use roxmltree::{Document, Node};
@@ -82,6 +83,14 @@ pub struct ParseOptions<'a> {
     /// The document sits in a package with a library or several documents, so
     /// it must declare 0.3 or higher.
     pub in_multi_document_package: bool,
+    /// The mode to render in, by axis (RFC-0037) — a viewer offering a dark
+    /// switch passes `{"theme": "dark"}` here.
+    ///
+    /// It is the weakest voice in the cascade: a subtree that pins
+    /// `mode-{axis}` keeps its own mode whatever this says, which is what lets
+    /// a light hero sit on a page the consumer has turned dark. An axis the
+    /// document never declared, or a value it does not list, is ignored.
+    pub mode: Option<&'a Modes>,
 }
 
 impl Default for ParseOptions<'_> {
@@ -90,6 +99,7 @@ impl Default for ParseOptions<'_> {
             form: DocumentForm::Packaged,
             library: None,
             in_multi_document_package: false,
+            mode: None,
         }
     }
 }
@@ -186,6 +196,11 @@ pub fn parse_gui_xml_with(xml: &str, options: ParseOptions) -> Result<GuiDocumen
         &mut issues,
     );
 
+    // Modes resolve once the tree is whole — after instances are expanded, so
+    // a component body placed inside a pinned subtree is drawn in that
+    // subtree's mode — and before anything reads a token.
+    modes::apply(&mut layout_root, &metadata, options.mode);
+
     // A 0.2 document keeps its old leniency about what it refers to: it
     // renders as it always did, and nothing new is said about it.
     if parts.strict {
@@ -273,6 +288,16 @@ fn merge_library(library: &GuiMetadata, local: GuiMetadata, issues: &mut Issues)
             issues.error(redeclared("token", &format!("${name}")));
         }
     }
+    // A token redeclared is already reported above, so these only carry the
+    // per-mode values across; an axis the document declares again is not a
+    // redeclaration, because both halves have to agree for the names to mean
+    // anything, and the document's own wins for its own tokens.
+    merged.token_modes.extend(local.token_modes);
+    for axis in local.mode_axes {
+        if !merged.mode_axes.iter().any(|known| known.name == axis.name) {
+            merged.mode_axes.push(axis);
+        }
+    }
     for (family, font) in local.fonts {
         if merged.fonts.insert(family.clone(), font).is_some() {
             issues.error(redeclared("font", &family));
@@ -329,9 +354,25 @@ fn read_parts(xml: &str, requires_multi_document: bool) -> Result<Parts, ParseEr
     let mut layout_root: Option<GuiNode> = None;
     let mut component_blocks = Vec::new();
 
+    // Axes are read first: a token's per-mode attributes are named after them,
+    // so `<tokens>` cannot be understood until they are known, and the spec
+    // does not fix the order the two blocks appear in.
+    for child in root.children().filter(Node::is_element) {
+        match child.tag_name().name() {
+            "mode" => read_mode_axis(child, &mut metadata),
+            "modes" => {
+                for axis in child.children().filter(Node::is_element) {
+                    read_mode_axis(axis, &mut metadata);
+                }
+            }
+            _ => {}
+        }
+    }
+
     for child in root.children().filter(Node::is_element) {
         let tag = child.tag_name().name();
         match tag {
+            "mode" | "modes" => {}
             "tokens" => read_tokens(child, &mut metadata),
             "fonts" => read_fonts(child, &mut metadata),
             "styles" => read_styles(child, &mut metadata),
@@ -498,10 +539,76 @@ fn read_tokens(tokens_el: Node, metadata: &mut GuiMetadata) {
                 .filter(|s| !s.is_empty())
                 .map(str::to_owned)
         });
-        if let Some(value) = value {
-            metadata.tokens.insert(name, value);
+
+        // `theme-dark="#000"` and friends: one value per mode of a declared
+        // axis. A token carrying these and no plain `value` used to be read as
+        // holding nothing at all, so it was never declared and every fill that
+        // named it came out empty.
+        let per_mode = read_token_modes(child, metadata);
+
+        match (value, per_mode) {
+            (value, Some(per_mode)) => {
+                // A plain `value` beside per-mode ones is the constant to fall
+                // back to; the modes still decide wherever they have an answer.
+                if let Some(default) =
+                    modes::default_value(&per_mode, &metadata.mode_axes).or(value)
+                {
+                    metadata.tokens.insert(name.clone(), default);
+                }
+                metadata.token_modes.insert(name, per_mode);
+            }
+            (Some(value), None) => {
+                metadata.tokens.insert(name, value);
+            }
+            (None, None) => {}
         }
     }
+}
+
+/// A token's `{axis}-{value}` attributes, for the axes the document declared.
+///
+/// Only declared axes are read, so an attribute that merely looks like one —
+/// `font-weight` on a token element, say — is left alone.
+fn read_token_modes(
+    token: Node,
+    metadata: &GuiMetadata,
+) -> Option<std::collections::BTreeMap<String, String>> {
+    let mut per_mode = std::collections::BTreeMap::new();
+
+    for axis in &metadata.mode_axes {
+        for value in &axis.values {
+            let key = format!("{}-{}", axis.name, value);
+            if let Some(declared) = attr(token, &key) {
+                per_mode.insert(key, declared);
+            }
+        }
+    }
+
+    (!per_mode.is_empty()).then_some(per_mode)
+}
+
+/// `<mode name="theme" values="light dark" default="light" />`.
+fn read_mode_axis(axis_el: Node, metadata: &mut GuiMetadata) {
+    let Some(name) = attr(axis_el, "name") else {
+        return;
+    };
+    let values: Vec<String> = attr(axis_el, "values")
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+
+    // "must be one of `values` (falls back to the first value if omitted)".
+    let default = attr(axis_el, "default")
+        .filter(|chosen| values.iter().any(|value| value == chosen))
+        .or_else(|| values.first().cloned())
+        .unwrap_or_default();
+
+    metadata.mode_axes.push(ModeAxis {
+        name,
+        values,
+        default,
+    });
 }
 
 /// Splits a `<styles>` block into text styles and effect styles.

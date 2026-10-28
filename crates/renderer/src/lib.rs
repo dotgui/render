@@ -6,6 +6,7 @@
 
 mod assets;
 mod blur;
+mod changes;
 mod clip_path;
 mod components;
 pub mod coverage;
@@ -16,6 +17,7 @@ mod grid;
 mod issues;
 mod layout;
 mod model;
+pub mod modes;
 mod package;
 mod page;
 mod paint;
@@ -28,12 +30,14 @@ mod text_style;
 mod validate;
 
 pub use assets::{AssetCache, AssetError, ResolvedAsset};
+pub use changes::{scene_changes, SceneChanges};
 pub use fonts::{
     font_urls_in_stylesheet, google_stylesheet_urls, missing_system_font_files, FontAxes,
     FontError, FontFace, FontStore,
 };
 pub use layout::{ApproxTextMeasurer, LayoutBox, LayoutRect, TextMeasurer};
 pub use model::{FontInfo, GuiDocument, GuiMetadata, GuiNode};
+pub use modes::{ModeAxis, Modes};
 pub use package::{
     read_gui_input, read_gui_package, read_gui_package_xml, GuiInput, GuiPackage, PackageDocument,
     PackageError, PackagePage, LIBRARY_FILENAME,

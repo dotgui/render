@@ -9,8 +9,8 @@ use dotgui_renderer::{
     build_scene, compute_taffy_layout_with_text, font_urls_in_stylesheet, google_stylesheet_urls,
     missing_system_font_files, normalize_presence_attrs, paint_scene_to_png_bytes, parse_gui_xml,
     parse_gui_xml_with, parse_library, parse_standalone_xml, read_gui_package, AssetCache,
-    FontStore, GuiDocument, GuiNode, LayoutRect, Library, Page, ParseError, ParseOptions,
-    PixelRect, RENDERER_VERSION, SUPPORTED_VERSION,
+    FontStore, GuiDocument, GuiNode, LayoutRect, Library, Modes, Page, ParseError, ParseOptions,
+    PixelRect, SceneChanges, RENDERER_VERSION, SUPPORTED_VERSION,
 };
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use wasm_bindgen::prelude::*;
@@ -103,8 +103,13 @@ pub struct Engine {
     /// shows several pages at once paints the same markup over and over, and
     /// only the first paint should pay for parsing and layout.
     pages: RefCell<Vec<Rc<KeptPage>>>,
-    /// Bumped whenever the library changes, which changes what every other
-    /// document resolves to.
+    /// The mode to render in, by axis (RFC-0037), as the host last set it.
+    ///
+    /// Empty means every axis takes the document's own default, which is what
+    /// a host that never calls [`Engine::set_mode`] gets.
+    mode: RefCell<Modes>,
+    /// Bumped whenever something outside a document changes what it resolves
+    /// to: the library, or the active mode.
     library_generation: std::cell::Cell<u64>,
 }
 
@@ -160,6 +165,7 @@ impl Default for Engine {
             fonts: RefCell::new(None),
             package: RefCell::new(None),
             pages: RefCell::new(Vec::new()),
+            mode: RefCell::new(Modes::new()),
             library_generation: std::cell::Cell::new(0),
         }
     }
@@ -296,6 +302,41 @@ impl Engine {
         }
         self.fonts.replace(None);
         serde_json::to_string(&pages).map_err(to_js)
+    }
+
+    /// The mode to render in, as `{"theme": "dark"}` (RFC-0037).
+    ///
+    /// It applies to every document read from here on, and only to the axes a
+    /// document declares — asking for an axis it does not have changes
+    /// nothing. A subtree that pins `mode-{axis}` keeps its own mode whatever
+    /// is set here, so a light card stays light on a page turned dark.
+    ///
+    /// One axis at a time, because that is how a viewer uses it: a theme
+    /// switch sets `theme`, and leaves `density` alone. `None` drops the axis
+    /// and returns it to the document's own default.
+    pub fn set_mode(&self, axis: &str, value: Option<String>) {
+        let mut mode = self.mode.borrow_mut();
+        let changed = match value {
+            Some(value) => mode.insert(axis.to_owned(), value.clone()) != Some(value),
+            None => mode.remove(axis).is_some(),
+        };
+        drop(mode);
+
+        if changed {
+            // Every laid-out page held was resolved in the old mode.
+            self.library_generation
+                .set(self.library_generation.get() + 1);
+        }
+    }
+
+    /// Returns every axis to the document's own default.
+    pub fn clear_modes(&self) {
+        if self.mode.borrow().is_empty() {
+            return;
+        }
+        self.mode.borrow_mut().clear();
+        self.library_generation
+            .set(self.library_generation.get() + 1);
     }
 
     /// The font files on the host, by path — what a native renderer would find
@@ -597,6 +638,77 @@ impl Engine {
             .map_err(to_js)
     }
 
+    /// What an edit changed: the areas, in document pixels, that paint
+    /// differently in `after` than in `before`, as `[x, y, width, height, …]`.
+    /// Empty when nothing changed; nothing at all when the whole page should be
+    /// painted again — its size changed, most of it changed, or `library` is
+    /// set, since a library edit reaches every document.
+    pub fn changed_areas(
+        &self,
+        before: &str,
+        after: &str,
+        library: Option<bool>,
+    ) -> Result<Option<Vec<f32>>, JsValue> {
+        if library == Some(true) {
+            return Ok(None);
+        }
+        let earlier = self.page_for(before, library)?;
+        let later = self.page_for(after, library)?;
+        Ok(match later.page.changes_since(&earlier.page) {
+            SceneChanges::Nothing => Some(Vec::new()),
+            SceneChanges::Everything => None,
+            SceneChanges::Areas(areas) => Some(
+                areas
+                    .iter()
+                    .flat_map(|area| [area.x, area.y, area.width, area.height])
+                    .collect(),
+            ),
+        })
+    }
+
+    /// After an edit, the frames to put over the last frame of `before` at
+    /// `scale` to show `after`: one per changed area, each at its own `x` and
+    /// `y`. None when nothing changed; a single whole-page frame when the page
+    /// should be painted again — check its `density`, since a page too large
+    /// for a canvas is drawn smaller.
+    pub fn repaint(
+        &self,
+        before: &str,
+        after: &str,
+        scale: f32,
+        library: Option<bool>,
+    ) -> Result<Vec<Frame>, JsValue> {
+        let Some(areas) = self.changed_areas(before, after, library)? else {
+            return Ok(vec![self.render(after, scale, library)?]);
+        };
+        let scale = usable_density(scale);
+        areas
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&[x, y, width, height]| {
+                let region = PixelRect::covering(
+                    LayoutRect {
+                        x,
+                        y,
+                        width,
+                        height,
+                    },
+                    scale,
+                );
+                self.render_region(
+                    after,
+                    scale,
+                    region.x,
+                    region.y,
+                    region.width,
+                    region.height,
+                    library,
+                )
+            })
+            .collect()
+    }
+
     /// The page's size in document pixels, `[width, height]`, for a host
     /// planning which regions to ask for. Lays the page out if it is not yet.
     pub fn page_size(&self, xml: &str, library: Option<bool>) -> Result<Vec<f32>, JsValue> {
@@ -636,19 +748,32 @@ impl Engine {
     fn read(&self, xml: &str, library: Option<bool>) -> Result<GuiDocument, JsValue> {
         if library == Some(true) {
             self.sync_library(xml)?;
+            let mode = self.mode.borrow();
             return parse_gui_xml_with(
                 xml,
                 ParseOptions {
                     in_multi_document_package: true,
+                    mode: (!mode.is_empty()).then_some(&mode),
                     ..ParseOptions::default()
                 },
             )
             .map_err(to_js);
         }
 
+        let mode = self.mode.borrow();
+        let mode = (!mode.is_empty()).then_some(&*mode);
+
         let package = self.package.borrow();
         let Some(context) = package.as_ref() else {
-            return parse_standalone_xml(xml).map_err(to_js);
+            return parse_gui_xml_with(
+                xml,
+                ParseOptions {
+                    form: dotgui_renderer::DocumentForm::Standalone,
+                    mode,
+                    ..ParseOptions::default()
+                },
+            )
+            .map_err(to_js);
         };
         let library = match &context.library {
             Some(Ok(library)) => Some(library),
@@ -660,6 +785,7 @@ impl Engine {
             ParseOptions {
                 library,
                 in_multi_document_package: context.multi_document,
+                mode,
                 ..ParseOptions::default()
             },
         )
@@ -847,7 +973,7 @@ fn remote_urls_in(value: &str) -> Vec<String> {
     urls
 }
 
-/// This renderer's version, e.g. `0.3.0`. Its `major.minor` is the newest spec
+/// This renderer's version, e.g. `0.3.1`. Its `major.minor` is the newest spec
 /// version it reads.
 #[wasm_bindgen]
 pub fn renderer_version() -> String {
@@ -1216,5 +1342,41 @@ mod tests {
         ] {
             assert!(png.starts_with(b"\x89PNG"));
         }
+    }
+
+    #[test]
+    fn the_engine_repaints_only_what_an_edit_changed() {
+        let engine = Engine::new();
+        let before = r##"<gui version="0.2"><col w="200" h="100" fill="#ffffff" p="10" gap="10">
+            <rect id="a" w="20" h="20" fill="#ff0000" />
+            <rect id="b" w="20" h="20" fill="#00ff00" />
+          </col></gui>"##;
+        let after = before.replace("#00ff00", "#0000ff");
+
+        assert_eq!(
+            engine.changed_areas(before, before, None).unwrap(),
+            Some(vec![])
+        );
+        let areas = engine.changed_areas(before, &after, None).unwrap().unwrap();
+        assert_eq!(areas.len(), 4, "one area: {areas:?}");
+
+        let old = engine.render(before, 2.0, None).unwrap();
+        let mut patched = old.pixels();
+        for frame in engine.repaint(before, &after, 2.0, None).unwrap() {
+            for y in 0..frame.height() {
+                for x in 0..frame.width() {
+                    let from = ((y * frame.width() + x) * 4) as usize;
+                    let to = (((frame.y() as u32 + y) * old.width() + frame.x() as u32 + x) * 4)
+                        as usize;
+                    patched[to..to + 4].copy_from_slice(&frame.pixels()[from..from + 4]);
+                }
+            }
+        }
+        assert_eq!(patched, engine.render(&after, 2.0, None).unwrap().pixels());
+
+        let resized = before.replace(r#"h="100""#, r#"h="140""#);
+        assert_eq!(engine.changed_areas(before, &resized, None).unwrap(), None);
+        let whole = engine.repaint(before, &resized, 2.0, None).unwrap();
+        assert_eq!((whole.len(), whole[0].height()), (1, 280));
     }
 }
