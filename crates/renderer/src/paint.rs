@@ -1902,8 +1902,12 @@ impl<'a> RunStyle<'a> {
         fallback: Option<&'a Font>,
         fonts: Option<&'a FontStore>,
     ) -> Self {
+        // `face_or_default` rather than `get`: a run whose family never
+        // resolved draws with the host's UI font, which is what kit gets from
+        // the browser. It is also what layout measured the run with, so the
+        // glyphs land in the box that was reserved for them.
         let face = fonts.and_then(|fonts| {
-            fonts.get(
+            fonts.face_or_default(
                 segment.font_family.as_deref(),
                 segment.font_weight.as_deref(),
                 segment.font_style.as_deref(),
