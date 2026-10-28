@@ -24,6 +24,7 @@ tiny-skia.workspace = true
 ttf-parser.workspace = true
 ureq = { workspace = true, optional = true }
 zip.workspace = true
+unicode-normalization.workspace = true
 image.workspace = true
 rustybuzz = "0.20.1"
 

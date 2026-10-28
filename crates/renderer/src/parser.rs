@@ -31,8 +31,8 @@ pub const RENDERER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// cumulative: every earlier point is implemented too, and a document declaring
 /// a newer one is refused rather than drawn with features this renderer does
 /// not know.
-pub const SUPPORTED_VERSION: &str = "0.3.11";
-const SUPPORTED: (u32, u32, u32) = (0, 3, 11);
+pub const SUPPORTED_VERSION: &str = "0.4.1";
+const SUPPORTED: (u32, u32, u32) = (0, 4, 1);
 const MULTI_DOCUMENT: (u32, u32, u32) = (0, 3, 0);
 /// From 0.3.6 provenance is `<gui source>`, and `<meta>` is obsolete (RFC-0036).
 const ROOT_SOURCE: (u32, u32, u32) = (0, 3, 6);
@@ -860,8 +860,11 @@ mod tests {
 
     #[test]
     fn a_version_newer_than_the_renderer_is_refused() {
-        let err = parse_gui_xml(r#"<gui version="0.4"><col /></gui>"#).unwrap_err();
-        assert!(matches!(err, ParseError::UnsupportedVersion(v) if v == "0.4"));
+        // The next chapter, whatever this renderer reads.
+        let (major, minor, _) = SUPPORTED;
+        let next = format!("{major}.{}", minor + 1);
+        let err = parse_gui_xml(&format!(r#"<gui version="{next}"><col /></gui>"#)).unwrap_err();
+        assert!(matches!(err, ParseError::UnsupportedVersion(v) if v == next));
         assert!(matches!(
             parse_gui_xml(r#"<gui version="1.0"><col /></gui>"#),
             Err(ParseError::UnsupportedVersion(_))

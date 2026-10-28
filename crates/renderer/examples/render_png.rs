@@ -5,8 +5,9 @@ use std::{
 };
 
 use dotgui_renderer::{
-    parse_gui_xml_with, read_gui_input, AssetCache, DocumentForm, FontStore, GuiDocument, GuiInput,
-    LayoutRect, Modes, Page, ParseError, ParseOptions, RENDERER_VERSION, SUPPORTED_VERSION,
+    parse_gui_xml_with, read_gui_directory, read_gui_input, AssetCache, DocumentForm, FontStore,
+    GuiDocument, GuiInput, LayoutRect, Modes, Page, ParseError, ParseOptions, RENDERER_VERSION,
+    SUPPORTED_VERSION,
 };
 
 const USAGE: &str = "\
@@ -32,14 +33,20 @@ fn main() {
         process::exit(2);
     });
 
-    let bytes = fs::read(&options.input).unwrap_or_else(|err| {
-        eprintln!("failed to read {}: {err}", options.input);
-        process::exit(1);
-    });
+    // A `.gui` directory is a package too (RFC-0054).
+    let input = if Path::new(&options.input).is_dir() {
+        read_gui_directory(Path::new(&options.input)).map(GuiInput::Package)
+    } else {
+        let bytes = fs::read(&options.input).unwrap_or_else(|err| {
+            eprintln!("failed to read {}: {err}", options.input);
+            process::exit(1);
+        });
+        read_gui_input(&bytes)
+    };
 
     let mode = (!options.mode.is_empty()).then_some(&options.mode);
     let (mut pages, package_assets): (Vec<(String, Result<GuiDocument, ParseError>)>, _) =
-        match read_gui_input(&bytes) {
+        match input {
             Ok(GuiInput::Package(package)) => (
                 package
                     .pages_in_mode(mode)
