@@ -30,9 +30,11 @@ pub const RENDERER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// cumulative: every earlier point is implemented too, and a document declaring
 /// a newer one is refused rather than drawn with features this renderer does
 /// not know.
-pub const SUPPORTED_VERSION: &str = "0.3.5";
-const SUPPORTED: (u32, u32, u32) = (0, 3, 5);
+pub const SUPPORTED_VERSION: &str = "0.3.6";
+const SUPPORTED: (u32, u32, u32) = (0, 3, 6);
 const MULTI_DOCUMENT: (u32, u32, u32) = (0, 3, 0);
+/// From 0.3.6 provenance is `<gui source>`, and `<meta>` is obsolete (RFC-0036).
+const ROOT_SOURCE: (u32, u32, u32) = (0, 3, 6);
 
 #[derive(Debug, Error)]
 pub enum ParseError {
@@ -168,6 +170,7 @@ pub fn parse_gui_xml_with(xml: &str, options: ParseOptions) -> Result<GuiDocumen
         options.in_multi_document_package || options.library.is_some(),
     )?;
     let mut issues = Issues::new(parts.strict);
+    report_obsolete_meta(&parts, &mut issues);
     let mut metadata = parts.metadata;
 
     if let Some(library) = options.library {
@@ -234,6 +237,7 @@ pub fn parse_gui_xml_with(xml: &str, options: ParseOptions) -> Result<GuiDocumen
 pub fn parse_library(xml: &str) -> Result<Library, ParseError> {
     let parts = read_parts(xml, true)?;
     let mut issues = Issues::new(true);
+    report_obsolete_meta(&parts, &mut issues);
     let components = components::read_components(&parts.component_blocks, &mut issues);
     validate::check_styles(&parts.metadata, &mut issues);
 
@@ -327,6 +331,8 @@ struct Parts {
     version: String,
     /// Whether the document declares 0.3 or higher.
     strict: bool,
+    /// A `<meta>` block in a document declaring 0.3.6 or higher.
+    obsolete_meta: bool,
     name: Option<String>,
     metadata: GuiMetadata,
     component_blocks: Vec<GuiNode>,
@@ -388,14 +394,28 @@ fn read_parts(xml: &str, requires_multi_document: bool) -> Result<Parts, ParseEr
         }
     }
 
+    let obsolete_meta = parsed >= ROOT_SOURCE
+        && root
+            .children()
+            .any(|child| child.is_element() && child.tag_name().name() == "meta");
+
     Ok(Parts {
         strict: parsed >= MULTI_DOCUMENT,
+        obsolete_meta,
         version,
         name: attr(root, "name"),
         metadata,
         component_blocks,
         layout_root,
     })
+}
+
+fn report_obsolete_meta(parts: &Parts, issues: &mut Issues) {
+    if parts.obsolete_meta {
+        issues.advise(
+            "<meta> is obsolete from 0.3.6: write source=\"…\" on <gui>, and leave out exported-at and source-node",
+        );
+    }
 }
 
 /// `major.minor.patch`; a missing minor or patch reads as 0, so `0.3` is the
@@ -886,6 +906,29 @@ mod tests {
             r#"<gui version="0.2"><col><img src="assets/hero.webp" w="1" h="1" /></col></gui>"#
         )
         .is_ok());
+    }
+
+    #[test]
+    fn meta_is_obsolete_from_0_3_6_and_untouched_before() {
+        let meta =
+            r#"<meta source="figma" source-node="1:2" exported-at="2026-01-01T00:00:00Z" />"#;
+        let doc = parse_gui_xml(&format!(
+            r#"<gui version="0.3.6" platform="ios" source="figma">{meta}<col w="10" /></gui>"#
+        ))
+        .expect("an obsolete <meta> advises, never fails");
+        assert!(
+            doc.warnings
+                .iter()
+                .any(|w| w.contains("<meta> is obsolete from 0.3.6")),
+            "{:?}",
+            doc.warnings
+        );
+
+        let older = parse_gui_xml(&format!(
+            r#"<gui version="0.3.5">{meta}<col w="10" /></gui>"#
+        ))
+        .expect("older documents keep their <meta>");
+        assert!(!older.warnings.iter().any(|w| w.contains("<meta>")));
     }
 
     #[test]
