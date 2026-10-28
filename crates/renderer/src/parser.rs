@@ -17,6 +17,7 @@ const PRESENCE_ATTRS: &[(&str, &str)] = &[
     ("isolation", "isolate"),
     ("mask", "true"),
     ("mask-invert", "true"),
+    ("template", "true"),
     ("reverse-z", "true"),
     ("truncate", "true"),
     ("wrap", "true"),
@@ -31,8 +32,8 @@ pub const RENDERER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// cumulative: every earlier point is implemented too, and a document declaring
 /// a newer one is refused rather than drawn with features this renderer does
 /// not know.
-pub const SUPPORTED_VERSION: &str = "0.4.2";
-const SUPPORTED: (u32, u32, u32) = (0, 4, 2);
+pub const SUPPORTED_VERSION: &str = "0.4.3";
+const SUPPORTED: (u32, u32, u32) = (0, 4, 3);
 const MULTI_DOCUMENT: (u32, u32, u32) = (0, 3, 0);
 /// From 0.3.6 provenance is `<gui source>`, and `<meta>` is obsolete (RFC-0036).
 const ROOT_SOURCE: (u32, u32, u32) = (0, 3, 6);
@@ -46,6 +47,21 @@ const UNITS: (u32, u32, u32) = (0, 3, 9);
 const FILL_AND_BORDER: (u32, u32, u32) = (0, 3, 10);
 /// From 0.3.11 masks are `mask-src` on a container and `clip-path` is a basic shape (RFC-0028).
 const MASKS: (u32, u32, u32) = (0, 3, 11);
+/// From 0.4.3 `description` sits on library items only (RFC-0057).
+const DESCRIPTIONS: (u32, u32, u32) = (0, 4, 3);
+
+/// The library items a reader picks from — the only places `description` goes.
+const DESCRIBABLE: &[&str] = &[
+    "component",
+    "component-set",
+    "variant",
+    "color",
+    "number",
+    "string",
+    "text-style",
+    "fill-style",
+    "effect-style",
+];
 
 #[derive(Debug, Error)]
 pub enum ParseError {
@@ -254,6 +270,9 @@ pub fn parse_library(xml: &str) -> Result<Library, ParseError> {
     let parts = read_parts(xml, true)?;
     let mut issues = Issues::new(true);
     report_provenance(&parts, &mut issues);
+    if parts.template {
+        issues.error(TEMPLATE_IN_LIBRARY.to_owned());
+    }
     let has_page = parts.layout_root.is_some();
     finish_library(
         parts.metadata,
@@ -269,6 +288,9 @@ pub fn parse_library(xml: &str) -> Result<Library, ParseError> {
 pub(crate) fn has_layout_root(xml: &str) -> Result<bool, ParseError> {
     Ok(read_parts(xml, false)?.layout_root.is_some())
 }
+
+/// The library is declarations, never a starting point to copy (RFC-0057).
+const TEMPLATE_IN_LIBRARY: &str = "a library file cannot be a template; the library is declarations, not a starting point to copy";
 
 /// The first spec point a package with `library/` may declare (RFC-0055).
 const LIBRARY_DIRECTORY: (u32, u32, u32) = (0, 4, 2);
@@ -301,6 +323,9 @@ pub fn parse_library_files(files: &[(String, String)]) -> Result<Library, ParseE
             ));
         }
         report_provenance(&parts, &mut issues);
+        if parts.template {
+            issues.error(format!("{file}: {TEMPLATE_IN_LIBRARY}"));
+        }
         let own = parts.metadata;
         for name in own.tokens.keys() {
             claim("token", &format!("${name}"), file, &mut issues);
@@ -442,6 +467,15 @@ struct Parts {
     /// `source-id` values with no `source` on `<gui>` to read them against:
     /// `Some(true)` from 0.3.7, where it is an error, `Some(false)` before.
     source_id_without_source: Option<bool>,
+    /// `description` where it does not belong, by tag (RFC-0057); an
+    /// `<instance>`'s is a prop value and is never listed.
+    misplaced_descriptions: Vec<String>,
+    /// Library items whose `description` is empty.
+    empty_descriptions: Vec<String>,
+    /// Whether misplaced descriptions are held to 0.4.3's rules.
+    description_rules: bool,
+    /// `<gui template>`: a starting point to copy, never a library file.
+    template: bool,
     /// Whether `detached-from` and `component` are held to 0.3.8's rules.
     detached_rules: bool,
     /// Whether dimensions are held to 0.3.9's rules.
@@ -516,6 +550,23 @@ fn read_parts(xml: &str, requires_multi_document: bool) -> Result<Parts, ParseEr
             .children()
             .any(|child| child.is_element() && child.tag_name().name() == "meta");
 
+    let mut misplaced_descriptions = Vec::new();
+    let mut empty_descriptions = Vec::new();
+    for node in root.descendants().filter(Node::is_element) {
+        let tag = node.tag_name().name();
+        let Some(description) = node.attribute("description") else {
+            continue;
+        };
+        if tag == "instance" {
+            continue;
+        }
+        if !DESCRIBABLE.contains(&tag) {
+            misplaced_descriptions.push(tag.to_owned());
+        } else if description.trim().is_empty() {
+            empty_descriptions.push(tag.to_owned());
+        }
+    }
+
     let source_id_without_source = (attr(root, "source").is_none()
         && root
             .descendants()
@@ -526,6 +577,10 @@ fn read_parts(xml: &str, requires_multi_document: bool) -> Result<Parts, ParseEr
         strict: parsed >= MULTI_DOCUMENT,
         obsolete_meta,
         source_id_without_source,
+        misplaced_descriptions,
+        empty_descriptions,
+        description_rules: parsed >= DESCRIPTIONS,
+        template: attr(root, "template").is_some_and(|value| value != "false"),
         detached_rules: parsed >= DETACHED,
         unit_rules: parsed >= UNITS,
         fill_rules: parsed >= FILL_AND_BORDER,
@@ -543,6 +598,22 @@ fn report_provenance(parts: &Parts, issues: &mut Issues) {
         issues.advise(
             "<meta> is obsolete from 0.3.6: write source=\"…\" on <gui>, and leave out exported-at and source-node",
         );
+    }
+    // A description belongs to a library item and says something (RFC-0057).
+    for tag in &parts.misplaced_descriptions {
+        let message = format!(
+            "<{tag}> cannot carry description; only components, component sets, variants, tokens and styles can"
+        );
+        if parts.description_rules {
+            issues.error(message);
+        } else {
+            issues.advise(message);
+        }
+    }
+    for tag in &parts.empty_descriptions {
+        issues.advise(format!(
+            "<{tag}> has an empty description, which says nothing; describe it or leave the attribute out"
+        ));
     }
     // A source-id means nothing without the tool it belongs to (RFC-0046).
     let message = "the document has source-id values but no source on <gui> to read them against";
@@ -1223,6 +1294,63 @@ mod tests {
             .expect("only advice before 0.3.11");
             assert!(older.warnings.iter().any(|w| w.contains(says)), "{node}");
         }
+    }
+
+    #[test]
+    fn descriptions_sit_on_library_items_from_0_4_3() {
+        let d = r#"description="Primary action. One per screen.""#;
+        let full = format!(
+            r##"<gui version="0.4.3">
+              <tokens><color name="primary" value="#3B5BFD" {d} /></tokens>
+              <styles><text-style name="H1" font-size="32" {d} /><fill-style name="Brand" value="#3B5BFD" {d} /></styles>
+              <components>
+                <component id="comp-a" {d}><row w="10" h="10" fill="#ff0000" /></component>
+                <component-set id="compset-b" {d}><variant id="comp-b" {d}><row /></variant></component-set>
+              </components>
+              <col w="40"><instance component="comp-a" description="a prop value" /></col>
+            </gui>"##
+        );
+        let described = parse_gui_xml(&full).expect("descriptions validate");
+        assert!(described.warnings.is_empty(), "{:?}", described.warnings);
+
+        for xml in [
+            format!(r#"<gui version="0.4.3"><col w="10" {d} /></gui>"#),
+            format!(r#"<gui version="0.4.3" {d}><col w="10" /></gui>"#),
+        ] {
+            let err = parse_gui_xml(&xml).expect_err("misplaced");
+            assert!(
+                err.to_string().contains("cannot carry description"),
+                "{err}"
+            );
+        }
+        let older = parse_gui_xml(&format!(r#"<gui version="0.4.2"><col w="10" {d} /></gui>"#))
+            .expect("only advice before 0.4.3");
+        assert!(older
+            .warnings
+            .iter()
+            .any(|w| w.contains("cannot carry description")));
+
+        let empty = parse_gui_xml(
+            r##"<gui version="0.4.3"><tokens><color name="a" value="#000000" description="" /></tokens><col w="10" /></gui>"##,
+        )
+        .expect("an empty description only warns");
+        assert!(empty
+            .warnings
+            .iter()
+            .any(|w| w.contains("empty description")));
+    }
+
+    #[test]
+    fn a_template_renders_as_a_document_and_never_as_a_library() {
+        let plain = parse_gui_xml(r#"<gui version="0.4.3"><col w="10" /></gui>"#).expect("plain");
+        let template = parse_gui_xml(
+            r#"<gui version="0.4.3" name="Settings — template" template><col w="10" /></gui>"#,
+        )
+        .expect("a template is a document");
+        assert_eq!(plain.root, template.root);
+        let err = parse_library(r#"<gui version="0.4.3" template><tokens /></gui>"#)
+            .expect_err("not a library");
+        assert!(err.to_string().contains("cannot be a template"), "{err}");
     }
 
     #[test]
