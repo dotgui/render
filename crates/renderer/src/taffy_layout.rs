@@ -584,11 +584,30 @@ fn gap_length(value: &str) -> LengthPercentage {
 /// Taffy defaults to `stretch`, so leaving this unset made absent behave as
 /// `fill` on the cross axis. `<line>` is the one element that still stretches,
 /// and says so with its own `align_self`.
+///
+/// `stretch` and `baseline` are whole values rather than a
+/// `vertical-horizontal` pair, so they are read before the split. Each names a
+/// cross-axis behaviour outright, which is why kit gives both a rule of their
+/// own instead of folding them into the nine-way grid.
+///
+/// `baseline` is as close as Taffy gets: a leaf reports no text baseline, so
+/// it aligns the boxes' bottom edges. For two runs at different sizes that
+/// sits a little below where the browser puts them, because the larger run
+/// keeps more room under its baseline — near enough to read as one line, and
+/// far nearer than the `start` this used to fall through to. True baselines
+/// need the measurer to report one, which Taffy has no way to take.
 fn align_items_for(node: &GuiNode) -> Option<AlignItems> {
     let Some(align) = node.attributes.get("align") else {
         return Some(AlignItems::START);
     };
-    let cross = if node.tag == "row" {
+
+    match align.as_str() {
+        "stretch" => return Some(AlignItems::STRETCH),
+        "baseline" => return Some(AlignItems::BASELINE),
+        _ => {}
+    }
+
+    let cross = if is_horizontal(node) {
         align.split('-').next().unwrap_or("top")
     } else {
         align.split('-').nth(1).unwrap_or("left")
@@ -601,6 +620,15 @@ fn align_items_for(node: &GuiNode) -> Option<AlignItems> {
     })
 }
 
+/// Whether this container lays its children out along the horizontal axis.
+///
+/// `align` reads `vertical-horizontal` whatever the tag, so which half is the
+/// cross axis follows the direction rather than the name. `<stack>` carries
+/// its axis in an attribute, so the tag alone does not answer it.
+fn is_horizontal(node: &GuiNode) -> bool {
+    matches!(flex_direction_for(node), FlexDirection::Row)
+}
+
 fn justify_content_for(node: &GuiNode) -> Option<JustifyContent> {
     if node
         .attributes
@@ -611,7 +639,12 @@ fn justify_content_for(node: &GuiNode) -> Option<JustifyContent> {
     }
 
     let align = node.attributes.get("align")?;
-    let main = if node.tag == "row" {
+    // `stretch` and `baseline` speak only to the cross axis; the main axis
+    // keeps its default, exactly as kit leaves `justify-content` unset.
+    if matches!(align.as_str(), "stretch" | "baseline") {
+        return Some(JustifyContent::START);
+    }
+    let main = if is_horizontal(node) {
         align.split('-').nth(1).unwrap_or("left")
     } else {
         align.split('-').next().unwrap_or("top")
@@ -1573,6 +1606,100 @@ mod tests {
         );
 
         assert_eq!(layout.children[0].rect.height, 6.0);
+    }
+
+    #[test]
+    fn align_stretch_makes_row_children_as_tall_as_the_tallest() {
+        // The default is hug, so a card row has to ask for equal heights.
+        // kit gives `align="stretch"` its own `align-items: stretch` rule;
+        // without this the attribute was read as the nine-way grid's
+        // vertical half, fell through to the catch-all, and did nothing.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <row w="300" align="stretch" gap="10">
+                <col w="80"><rect w="80" h="20" /></col>
+                <col w="80"><rect w="80" h="60" /></col>
+                <col w="80"><rect w="80" h="35" /></col>
+              </row>
+            </gui>
+            "#,
+        );
+
+        let heights: Vec<f32> = layout.children.iter().map(|c| c.rect.height).collect();
+        assert_eq!(
+            heights,
+            vec![60.0, 60.0, 60.0],
+            "every card takes the tallest"
+        );
+    }
+
+    #[test]
+    fn align_stretch_leaves_the_main_axis_at_the_start() {
+        // `stretch` answers the cross axis only. kit sets no
+        // `justify-content` for it, so the row still packs from the left.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <row w="300" align="stretch" gap="10">
+                <rect w="40" h="20" />
+                <rect w="40" h="20" />
+              </row>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.x, 0.0);
+        assert_eq!(layout.children[1].rect.x, 50.0);
+    }
+
+    #[test]
+    fn align_baseline_does_not_stretch_its_children() {
+        // `baseline` is the other whole-value answer, and it has to reach the
+        // same early return: read as a `vertical-horizontal` pair it became
+        // `start`, which is the one thing baseline never means.
+        let layout = layout_of(
+            r#"
+            <gui version="0.2">
+              <row w="300" align="baseline" gap="10">
+                <rect w="40" h="20" />
+                <rect w="40" h="60" />
+              </row>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(layout.children[0].rect.height, 20.0, "keeps its own height");
+        assert_eq!(layout.children[1].rect.height, 60.0);
+    }
+
+    #[test]
+    fn a_horizontal_stack_reads_align_on_the_same_axes_as_a_row() {
+        // `<stack direction="horizontal">` lays out as a row, so `align`'s
+        // vertical half is its cross axis. Keying off the tag alone swapped
+        // the two, leaving a horizontal stack aligned by the wrong halves.
+        let stack = layout_of(
+            r#"
+            <gui version="0.2">
+              <stack direction="horizontal" w="300" h="100" align="bottom-center">
+                <rect w="40" h="20" />
+              </stack>
+            </gui>
+            "#,
+        );
+        let row = layout_of(
+            r#"
+            <gui version="0.2">
+              <row w="300" h="100" align="bottom-center">
+                <rect w="40" h="20" />
+              </row>
+            </gui>
+            "#,
+        );
+
+        assert_eq!(stack.children[0].rect.x, row.children[0].rect.x, "centred");
+        assert_eq!(stack.children[0].rect.y, row.children[0].rect.y, "bottom");
+        assert_eq!(stack.children[0].rect.y, 80.0);
     }
 
     #[test]

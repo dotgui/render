@@ -1,4 +1,4 @@
-use crate::{AssetCache, AssetError, FontInfo, GuiDocument, TextMeasurer};
+use crate::{AssetCache, AssetError, FontInfo, GuiDocument, GuiNode, TextMeasurer};
 use fontdue::{Font, FontSettings};
 use sha2::{Digest, Sha256};
 use std::{
@@ -24,6 +24,10 @@ pub enum FontError {
 #[derive(Default)]
 pub struct FontStore {
     fonts: BTreeMap<FontFaceKey, Rc<FontFace>>,
+    /// The host's UI font, for text that names no face or names one the
+    /// document never declared. kit gets this from the browser, which always
+    /// has a default family; nothing here does unless it is resolved.
+    default_face: Option<Rc<FontFace>>,
     warnings: Vec<String>,
 }
 
@@ -550,6 +554,19 @@ impl FontStore {
             }
         }
 
+        // Text that resolves no declared face still has to draw. A document
+        // written without a `<fonts>` block at all is the common case — kit
+        // renders it in the browser's default family, and without an
+        // equivalent here every such run came out as a placeholder bar.
+        //
+        // Only a document that holds text pays for this: resolving the family
+        // scans the host's font directories, which is the one expensive step
+        // in building the store.
+        if needs_a_face(&document.root) {
+            store.default_face =
+                default_ui_face(&mut system_faces, &mut parsed_files, cache).map(Rc::new);
+        }
+
         Ok(store)
     }
 
@@ -596,6 +613,51 @@ impl FontStore {
             .map(Rc::as_ref)
     }
 
+    /// Every distinct font file the store holds, as raw bytes.
+    ///
+    /// resvg keeps a font database of its own and draws SVG text only with a
+    /// face it has been handed, so the files the document already loaded are
+    /// what it gets. Faces instanced from one file at several weights share
+    /// their bytes, so the same file is returned once.
+    pub(crate) fn face_files(&self) -> Vec<Rc<Vec<u8>>> {
+        let mut files: Vec<Rc<Vec<u8>>> = Vec::new();
+        for face in self.fonts.values().chain(self.default_face.iter()) {
+            if !files.iter().any(|bytes| Rc::ptr_eq(bytes, &face.bytes)) {
+                files.push(Rc::clone(&face.bytes));
+            }
+        }
+        files
+    }
+
+    /// The host's UI font, when one was found.
+    ///
+    /// This is what a run falls back to, so a host that cannot reach a font
+    /// directory — a browser running the WASM build — can tell from this
+    /// whether text will draw at all.
+    pub fn default_face(&self) -> Option<&FontFace> {
+        self.default_face.as_deref()
+    }
+
+    /// The declared face, or the host's UI font when none resolved.
+    ///
+    /// Measuring and painting both go through here so they agree: measuring a
+    /// run with the crude per-character estimate while painting it with a real
+    /// face laid the glyphs out against the wrong box.
+    pub(crate) fn face_or_default(
+        &self,
+        family: Option<&str>,
+        weight: Option<&str>,
+        style: Option<&str>,
+    ) -> Option<&FontFace> {
+        self.get(family, weight, style)
+            .or_else(|| self.default_face())
+    }
+
+    /// Whether the document declared no face that resolved.
+    ///
+    /// Not the same as having nothing to draw text with: a store with no
+    /// declared faces may still hold the host's UI font, which is what text
+    /// naming no family draws in. Ask [`FontStore::default_face`] for that.
     pub fn is_empty(&self) -> bool {
         self.fonts.is_empty()
     }
@@ -627,7 +689,7 @@ impl TextMeasurer for FontStore {
         font_style: Option<&str>,
         font_size: f32,
     ) -> f32 {
-        self.get(font_family, font_weight, font_style)
+        self.face_or_default(font_family, font_weight, font_style)
             .and_then(|face| face.normal_line_height(font_size))
             .unwrap_or(font_size * crate::layout::APPROX_LINE_HEIGHT_RATIO)
     }
@@ -641,7 +703,7 @@ impl TextMeasurer for FontStore {
         font_size: f32,
         axes: &FontAxes,
     ) -> f32 {
-        if let Some(face) = self.get(font_family, font_weight, font_style) {
+        if let Some(face) = self.face_or_default(font_family, font_weight, font_style) {
             return face.text_width(value, font_size, axes);
         }
 
@@ -656,7 +718,7 @@ impl TextMeasurer for FontStore {
         font_size: f32,
         line_height: f32,
     ) -> f32 {
-        self.get(font_family, font_weight, font_style)
+        self.face_or_default(font_family, font_weight, font_style)
             .map_or(0.0, |face| face.leading_trim(font_size, line_height))
     }
 }
@@ -965,6 +1027,12 @@ struct SystemFace {
 /// `system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`, so
 /// the browser lands on the host's UI font. Nothing resolves those generic
 /// names off a filesystem, so the equivalent concrete families are tried here.
+/// The name the default face asks for before the list below is tried.
+///
+/// Nothing is installed under this name; it is the CSS generic the HTML
+/// renderer emits, kept here so the chain reads the same in both renderers.
+const DEFAULT_UI_FAMILY: &str = "system-ui";
+
 const SYSTEM_UI_FALLBACKS: &[&str] = &[
     "SF Pro",      // macOS
     "Segoe UI",    // Windows
@@ -1114,6 +1182,46 @@ fn read_system_font(path: &Path, assets: &AssetCache) -> Result<Vec<u8>, String>
     }
 }
 
+/// The host's UI font at regular weight, for text that resolves no face.
+///
+/// Goes through the same chain a declared `source="system"` family does, so a
+/// host that supplies font files rather than a filesystem — the WASM build in
+/// a browser — serves this the same way it serves everything else.
+fn default_ui_face(
+    system_faces: &mut BTreeMap<String, Vec<SystemFace>>,
+    parsed_files: &mut BTreeMap<String, ParsedFont>,
+    cache: &AssetCache,
+) -> Option<FontFace> {
+    let (_, faces) = resolve_system_family(DEFAULT_UI_FAMILY, system_faces, cache)?;
+    let source = FontSource::System(choose_system_face(&faces, "400", "normal")?.clone());
+
+    let parsed = match parsed_files.entry(source.cache_key()) {
+        std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            let (bytes, collection_index) = source.load(cache).ok()?;
+            entry.insert(ParsedFont::new(bytes, collection_index).ok()?)
+        }
+    };
+
+    Some(FontFace::instance(parsed, "400"))
+}
+
+/// Whether the tree needs a face to draw with.
+///
+/// Its own `<text>` is the obvious case. An asset counts too: an SVG may hold
+/// text of its own, and resvg draws that only with a face it is handed, so a
+/// document of nothing but icons can still need one. Both are cheaper to
+/// over-answer than the alternative — a run with no face draws as a
+/// placeholder bar, and SVG text with no face does not draw at all.
+fn needs_a_face(node: &GuiNode) -> bool {
+    node.tag == "text"
+        || node
+            .attributes
+            .keys()
+            .any(|attribute| attribute == "src" || attribute == "mask-src")
+        || node.children.iter().any(needs_a_face)
+}
+
 /// The system font files a document needs whose bytes the host has not
 /// supplied yet, for a host that listed its files with
 /// [`AssetCache::with_host_font_files`].
@@ -1129,14 +1237,20 @@ pub fn missing_system_font_files(document: &GuiDocument, assets: &AssetCache) ->
     }
 
     let mut missing = Vec::new();
-    for (family, _) in document
+    // The default face comes down the same chain, so a document with text asks
+    // for it whether or not it declares a `source="system"` family — otherwise
+    // a document with no `<fonts>` block at all would never fetch anything and
+    // every run would fall through to the placeholder bar.
+    let families = document
         .metadata
         .fonts
         .iter()
         .filter(|(_, info)| info.source == "system")
-    {
-        for candidate in std::iter::once(family.as_str()).chain(SYSTEM_UI_FALLBACKS.iter().copied())
-        {
+        .map(|(family, _)| family.as_str())
+        .chain(needs_a_face(&document.root).then_some(DEFAULT_UI_FAMILY));
+
+    for family in families {
+        for candidate in std::iter::once(family).chain(SYSTEM_UI_FALLBACKS.iter().copied()) {
             let paths = system_font_paths(candidate, assets);
             let waiting: Vec<String> = paths
                 .iter()
@@ -1792,6 +1906,56 @@ mod tests {
             "Georgia should be discoverable in the macOS font directories"
         );
         assert!(choose_system_face(&candidates, "400", "normal").is_some());
+    }
+
+    #[test]
+    #[cfg_attr(not(target_os = "macos"), ignore = "reads macOS font files")]
+    fn text_with_no_fonts_block_still_resolves_a_face() {
+        // What Popover writes: markup with text and no `<fonts>` at all. kit
+        // draws it in the browser's default family; without a default face
+        // here every run of it came out as a placeholder bar.
+        let document = crate::parse_gui_xml(
+            r##"<gui version="0.2"><col w="200" h="50"><text value="Hello" font-size="16" fill="#000000" /></col></gui>"##,
+        )
+        .unwrap();
+
+        let store = FontStore::from_document(&document, &AssetCache::new(".")).unwrap();
+        assert!(store.is_empty(), "nothing was declared to load");
+        assert!(store.default_face().is_some(), "but text still has a face");
+    }
+
+    #[test]
+    fn a_document_with_no_text_asks_for_no_default_face() {
+        // Resolving the default scans the host's font directories, so a
+        // document that draws neither text nor an asset must not pay for it.
+        let document =
+            crate::parse_gui_xml(r#"<gui version="0.2"><col w="10" h="10" /></gui>"#).unwrap();
+
+        let store = FontStore::from_document(&document, &AssetCache::new(".")).unwrap();
+        assert!(store.default_face().is_none());
+    }
+
+    #[test]
+    fn a_host_listing_asks_for_the_ui_font_for_undeclared_text() {
+        // The WASM path: a browser has no font directory to scan, so the
+        // default face only exists if the host is asked for its bytes first.
+        let document = crate::parse_gui_xml(
+            r##"<gui version="0.2"><col w="200" h="50"><text value="Hello" font-size="16" fill="#000000" /></col></gui>"##,
+        )
+        .unwrap();
+        let listed = AssetCache::new(".")
+            .with_host_font_files(vec![PathBuf::from("/System/Library/Fonts/SFNS.ttf")]);
+
+        assert_eq!(
+            missing_system_font_files(&document, &listed),
+            vec!["/System/Library/Fonts/SFNS.ttf".to_owned()],
+            "the UI font is asked for though nothing declared a family"
+        );
+
+        // Still nothing for a document that draws no text.
+        let empty =
+            crate::parse_gui_xml(r#"<gui version="0.2"><col w="10" h="10" /></gui>"#).unwrap();
+        assert!(missing_system_font_files(&empty, &listed).is_empty());
     }
 
     #[test]

@@ -375,6 +375,38 @@ engine.screenshot_element_png(xml, "id", "hero", scale, padding)
 The PNG screenshots are not held to a canvas's size limit, only to 16384×16384
 pixels in all.
 
+### Repainting after an edit
+
+After an edit, only what changed needs painting again. `scene_changes` (or
+`Page::changes_since`) walks the scenes before and after together and returns
+the areas that paint differently, in document pixels — through transforms and
+blurred layers, and past backdrop blurs — or `Everything` when the page changed
+size or mostly changed. Painting those areas of the new page over an image of
+the old one gives the new image:
+
+```rust
+match after.changes_since(&before) {
+    SceneChanges::Nothing => {}
+    SceneChanges::Areas(areas) => for area in areas {
+        let region = PixelRect::covering(area, scale);
+        let (w, h, rgba) = after.paint_region(scale, region, Some(&assets), Some(&fonts))?;
+        // put `rgba` at region.x, region.y
+    },
+    SceneChanges::Everything => { /* paint the page whole */ }
+}
+```
+
+```js
+engine.changed_areas(before, after)        // [x, y, w, h, …], [] for nothing, undefined for everything
+engine.repaint(before, after, scale)       // frames to put at their x and y
+```
+
+The canvas demo repaints this way as you edit, and says how many areas it
+repainted. On the IBM deck, typical edits — a number, a name, a severity pill —
+repaint 1–16% of a slide. Layout still runs for the whole page, and is now the
+larger part of an edit's cost. Fonts or images arriving change pixels without
+changing the markup, so those still call for a whole paint.
+
 A region is painted the same as that part of the whole page. The one exception
 is the anti-aliased outline of a shape that crosses the region's edge, which
 tiny-skia rasterises slightly differently when clipped; no pixel in a flat part
