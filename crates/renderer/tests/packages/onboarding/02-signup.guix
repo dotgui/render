@@ -10,9 +10,9 @@
         <prop name="placeholder" type="string" target="placeholder" />
       </props>
       <col w="fill" gap="6">
-        <text id="label" text-style="Caption" value="Label" color="$muted" />
+        <text id="label" text-style="Caption" value="Label" fill="$muted" />
         <row w="fill" h="48" p="0 14" radius="10" fill="$field" border="1 $line" align="middle-left">
-          <text id="placeholder" text-style="Body" value="Placeholder" color="$muted" />
+          <text id="placeholder" text-style="Body" value="Placeholder" fill="$muted" />
         </row>
       </col>
     </component>
@@ -24,7 +24,7 @@
         <instance component="comp-field" label="Password" placeholder="At least 8 characters" />
         <instance component="comp-card" heading="Why we ask">
           <slot name="content">
-            <text text-style="Body" value="Your email is how friends find your trips." color="$muted" w="fill" />
+            <text text-style="Body" value="Your email is how friends find your trips." fill="$muted" w="fill" />
           </slot>
         </instance>
       </slot>

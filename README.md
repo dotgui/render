@@ -51,7 +51,7 @@ This is an early native renderer. It can already:
   do not declare against the package's `library.guix` (spec 0.3)
 - render `library.guix`'s own page, the package's style guide, when it has one
 - fill component slots with instance content (spec 0.3)
-- refuse documents declaring a spec version newer than 0.3.9
+- refuse documents declaring a spec version newer than 0.3.10
 - parse tokens, fonts, text styles, nodes, attributes, and children
 - compute a flexbox layout tree (Taffy) for rows, columns, stacks, frames,
   groups, and leaves
@@ -258,8 +258,8 @@ names the exact spec point it reads in full — so renderer `0.3.7` may read spe
 
 Support is cumulative. A newer renderer reads every older document as it always
 rendered. An older renderer refuses a document from a newer spec by name
-instead of drawing features it does not know: a renderer reading up to `0.3.9`
-meeting a `version="0.3.10"` or `version="0.4"` document reports that a newer
+instead of drawing features it does not know: a renderer reading up to `0.3.10`
+meeting a `version="0.3.11"` or `version="0.4"` document reports that a newer
 renderer is needed. A test fails if the crate's chapter and the supported spec
 version's chapter drift apart.
 

@@ -4,7 +4,7 @@
       <slot name="body">
         <rect w="fill" h="240" radius="24" fill="$primary" />
         <img src="assets/logo.svg" w="48" h="48" />
-        <text text-style="Body" value="Plan trips with the people you travel with. No tabs yet: this screen leaves that slot unfilled, and it takes no space." color="$muted" w="fill" />
+        <text text-style="Body" value="Plan trips with the people you travel with. No tabs yet: this screen leaves that slot unfilled, and it takes no space." fill="$muted" w="fill" />
       </slot>
     </instance>
   </col>

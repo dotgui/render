@@ -25,7 +25,7 @@
           <prop name="label" type="string" target="label" />
         </props>
         <row h="48" p="0 20" radius="12" fill="$primary" align="middle-center">
-          <text id="label" text-style="Label" value="Continue" color="$on-primary" />
+          <text id="label" text-style="Label" value="Continue" fill="$on-primary" />
         </row>
       </variant>
       <variant id="comp-button-secondary" name="Button/Secondary">
@@ -33,7 +33,7 @@
           <prop name="label" type="string" target="label" />
         </props>
         <row h="48" p="0 20" radius="12" fill="$surface" border="1 $line" align="middle-center">
-          <text id="label" text-style="Label" value="Cancel" color="$ink" />
+          <text id="label" text-style="Label" value="Cancel" fill="$ink" />
         </row>
       </variant>
     </component-set>
@@ -45,7 +45,7 @@
         </props>
         <col w="fill" gap="4" align="top-center">
           <rect w="24" h="24" radius="6" fill="$line" />
-          <text id="label" text-style="Caption" value="Tab" color="$muted" />
+          <text id="label" text-style="Caption" value="Tab" fill="$muted" />
         </col>
       </variant>
       <variant id="comp-tab-active" name="Tab/Active">
@@ -54,7 +54,7 @@
         </props>
         <col w="fill" gap="4" align="top-center">
           <rect w="24" h="24" radius="6" fill="$primary" />
-          <text id="label" text-style="Caption" value="Tab" color="$primary" />
+          <text id="label" text-style="Caption" value="Tab" fill="$primary" />
         </col>
       </variant>
     </component-set>
@@ -64,7 +64,7 @@
         <prop name="heading" type="string" target="heading" />
       </props>
       <col w="fill" p="16" gap="8" radius="16" fill="$surface" border="1 $line">
-        <text id="heading" text-style="Label" value="Card" color="$ink" />
+        <text id="heading" text-style="Label" value="Card" fill="$ink" />
         <col slot="content" w="fill" gap="6" />
       </col>
     </component>
@@ -76,10 +76,10 @@
       </props>
       <col w="390" h="844" fill="$bg">
         <row w="fill" h="44" p="0 24" align="middle-left">
-          <text text-style="Label" value="9:41" color="$ink" />
+          <text text-style="Label" value="9:41" fill="$ink" />
         </row>
         <col w="fill" p="16 24 0">
-          <text id="title" text-style="Title" value="Title" color="$ink" w="fill" />
+          <text id="title" text-style="Title" value="Title" fill="$ink" w="fill" />
         </col>
         <col slot="body" w="fill" h="fill" p="24" gap="16" />
         <col slot="actions" w="fill" p="0 24 16" gap="12">
@@ -92,9 +92,9 @@
 
   <!-- Local to this file: the library's own page, a style guide for the above. -->
   <col w="900" p="48" gap="32" fill="$bg">
-    <text text-style="Title" value="Onboarding library" color="$ink" />
+    <text text-style="Title" value="Onboarding library" fill="$ink" />
     <col gap="12">
-      <text text-style="Label" value="Colour" color="$muted" />
+      <text text-style="Label" value="Colour" fill="$muted" />
       <row gap="12">
         <rect w="64" h="64" radius="12" fill="$bg" border="1 $line" />
         <rect w="64" h="64" radius="12" fill="$surface" border="1 $line" />
@@ -105,14 +105,14 @@
       </row>
     </col>
     <col gap="12">
-      <text text-style="Label" value="Buttons" color="$muted" />
+      <text text-style="Label" value="Buttons" fill="$muted" />
       <row gap="12">
         <instance component="comp-button-primary" label="Primary" />
         <instance component="comp-button-secondary" label="Secondary" />
       </row>
     </col>
     <col gap="12">
-      <text text-style="Label" value="Tabs" color="$muted" />
+      <text text-style="Label" value="Tabs" fill="$muted" />
       <row w="360" gap="8">
         <instance component="comp-tab-active" label="Home" />
         <instance component="comp-tab" label="Search" />
@@ -120,46 +120,46 @@
       </row>
     </col>
     <col w="360" gap="12">
-      <text text-style="Label" value="Card" color="$muted" />
+      <text text-style="Label" value="Card" fill="$muted" />
       <instance component="comp-card" heading="Card with content">
         <slot name="content">
-          <text text-style="Body" value="Anything can go in a card's content slot." color="$muted" w="fill" />
+          <text text-style="Body" value="Anything can go in a card's content slot." fill="$muted" w="fill" />
         </slot>
       </instance>
     </col>
 
     <!-- The page template, shown with its slots marked. -->
     <col gap="16">
-      <text text-style="Label" value="Templates" color="$muted" />
+      <text text-style="Label" value="Templates" fill="$muted" />
       <col w="804" gap="4">
-        <text text-style="Label" value="Screen · comp-screen" color="$ink" />
-        <text text-style="Body" value="The page template every screen in this package is built on. The status bar and title stay in place; the middle changes per screen. Prop: title. Slots: body; actions, which falls back to a Continue button; tabs, which accepts only tabs (2 to 5). A slot left empty takes no space." color="$muted" w="fill" />
+        <text text-style="Label" value="Screen · comp-screen" fill="$ink" />
+        <text text-style="Body" value="The page template every screen in this package is built on. The status bar and title stay in place; the middle changes per screen. Prop: title. Slots: body; actions, which falls back to a Continue button; tabs, which accepts only tabs (2 to 5). A slot left empty takes no space." fill="$muted" w="fill" />
       </col>
       <row gap="24" align="top-left">
         <col gap="8">
-          <text text-style="Caption" value="Body filled · actions fall back · no tabs" color="$muted" />
+          <text text-style="Caption" value="Body filled · actions fall back · no tabs" fill="$muted" />
           <col radius="24" border="1 $line" clip>
           <instance component="comp-screen" title="Title prop">
             <slot name="body">
               <row w="fill" h="fill" radius="12" border-width="1" border-color="$muted" border-style="dashed" align="middle-center">
-                  <text text-style="Caption" value="body slot" color="$muted" />
+                  <text text-style="Caption" value="body slot" fill="$muted" />
                 </row>
             </slot>
           </instance>
           </col>
         </col>
         <col gap="8">
-          <text text-style="Caption" value="Every slot filled" color="$muted" />
+          <text text-style="Caption" value="Every slot filled" fill="$muted" />
           <col radius="24" border="1 $line" clip>
           <instance component="comp-screen" title="Title prop">
             <slot name="body">
               <row w="fill" h="fill" radius="12" border-width="1" border-color="$muted" border-style="dashed" align="middle-center">
-                  <text text-style="Caption" value="body slot" color="$muted" />
+                  <text text-style="Caption" value="body slot" fill="$muted" />
                 </row>
             </slot>
             <slot name="actions">
               <row w="fill" h="48" radius="12" border-width="1" border-color="$muted" border-style="dashed" align="middle-center">
-                  <text text-style="Caption" value="actions slot" color="$muted" />
+                  <text text-style="Caption" value="actions slot" fill="$muted" />
                 </row>
             </slot>
             <slot name="tabs">

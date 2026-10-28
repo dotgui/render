@@ -1,3 +1,36 @@
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$body">: write fill="$body" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$body">: write fill="$body" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$yellow">: write fill="$yellow" — fill colors text
+warning: <text color="$body">: write fill="$body" — fill colors text
+warning: <text color="$body">: write fill="$body" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$body">: write fill="$body" — fill colors text
+warning: <text color="$body">: write fill="$body" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$body">: write fill="$body" — fill colors text
+warning: <text color="$body">: write fill="$body" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$body">: write fill="$body" — fill colors text
+warning: <text color="#111111">: write fill="#111111" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$body">: write fill="$body" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$body">: write fill="$body" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$body">: write fill="$body" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$body">: write fill="$body" — fill colors text
+warning: <text color="$muted">: write fill="$muted" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$body">: write fill="$body" — fill colors text
+warning: <text color="$body">: write fill="$body" — fill colors text
+warning: <text color="$body">: write fill="$body" — fill colors text
 col 390x1108 @ 0,0
   row 390x54 @ 0,0
     text 284x18 @ 20,25
