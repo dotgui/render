@@ -7,7 +7,7 @@
 //! declarations. Order is the lexical sort of the filenames.
 
 use crate::parser::{parse_gui_xml_with, parse_library, Library, ParseError, ParseOptions};
-use crate::GuiDocument;
+use crate::{GuiDocument, Modes};
 use std::{
     collections::BTreeMap,
     io::{Cursor, Read},
@@ -104,6 +104,19 @@ impl GuiPackage {
         document: &PackageDocument,
         library: Option<&Result<Library, ParseError>>,
     ) -> Result<GuiDocument, ParseError> {
+        self.parse_document_in_mode(document, library, None)
+    }
+
+    /// Parses one document in a chosen mode (RFC-0037).
+    ///
+    /// The mode names an axis's active value — `{"theme": "dark"}` — for the
+    /// axes the document declares. A subtree that pins its own keeps it.
+    pub fn parse_document_in_mode(
+        &self,
+        document: &PackageDocument,
+        library: Option<&Result<Library, ParseError>>,
+        mode: Option<&Modes>,
+    ) -> Result<GuiDocument, ParseError> {
         let library = match library {
             Some(Ok(library)) => Some(library),
             // A document cannot be read against a library that did not parse:
@@ -119,6 +132,7 @@ impl GuiPackage {
             ParseOptions {
                 library,
                 in_multi_document_package: self.is_multi_document(),
+                mode,
                 ..ParseOptions::default()
             },
         )
@@ -130,6 +144,11 @@ impl GuiPackage {
     /// Each page parses on its own, so one broken document is reported by
     /// name while the rest still render.
     pub fn pages(&self) -> Vec<PackagePage> {
+        self.pages_in_mode(None)
+    }
+
+    /// Every page the package renders, in a chosen mode (RFC-0037).
+    pub fn pages_in_mode(&self, mode: Option<&Modes>) -> Vec<PackagePage> {
         let library = self.parse_library();
 
         let mut pages: Vec<PackagePage> = self
@@ -138,7 +157,7 @@ impl GuiPackage {
             .map(|document| PackagePage {
                 name: document.name.clone(),
                 is_library: false,
-                document: self.parse_document(document, library.as_ref()),
+                document: self.parse_document_in_mode(document, library.as_ref(), mode),
             })
             .collect();
 

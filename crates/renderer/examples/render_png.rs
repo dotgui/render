@@ -5,8 +5,8 @@ use std::{
 };
 
 use dotgui_renderer::{
-    parse_standalone_xml, read_gui_input, AssetCache, FontStore, GuiDocument, GuiInput, LayoutRect,
-    Page, ParseError, RENDERER_VERSION, SUPPORTED_VERSION,
+    parse_gui_xml_with, read_gui_input, AssetCache, DocumentForm, FontStore, GuiDocument, GuiInput,
+    LayoutRect, Modes, Page, ParseError, ParseOptions, RENDERER_VERSION, SUPPORTED_VERSION,
 };
 
 const USAGE: &str = "\
@@ -17,6 +17,7 @@ usage: cargo run -p dotgui-renderer --example render_png -- <file.gui|file.guix>
   --area <x,y,w,h>         only this area, in document pixels
   --element <attr=value>   only this element, e.g. id=hero or name=Card
   --padding <n>            document pixels around --element (default 0)
+  --mode <axis=value>      render in this mode, e.g. theme=dark (repeatable)
   --version                print the renderer version";
 
 /// Renders a `.gui` package or bare `.guix` markup to PNG: whole pages, or a
@@ -36,11 +37,12 @@ fn main() {
         process::exit(1);
     });
 
+    let mode = (!options.mode.is_empty()).then_some(&options.mode);
     let (mut pages, package_assets): (Vec<(String, Result<GuiDocument, ParseError>)>, _) =
         match read_gui_input(&bytes) {
             Ok(GuiInput::Package(package)) => (
                 package
-                    .pages()
+                    .pages_in_mode(mode)
                     .into_iter()
                     .map(|page| (page.name, page.document))
                     .collect(),
@@ -51,7 +53,15 @@ fn main() {
                     || options.input.clone(),
                     |name| name.to_string_lossy().into_owned(),
                 );
-                (vec![(name, parse_standalone_xml(&xml))], Default::default())
+                let document = parse_gui_xml_with(
+                    &xml,
+                    ParseOptions {
+                        form: DocumentForm::Standalone,
+                        mode,
+                        ..ParseOptions::default()
+                    },
+                );
+                (vec![(name, document)], Default::default())
             }
             Err(err) => {
                 eprintln!("failed to open {}: {err}", options.input);
@@ -147,6 +157,9 @@ struct Options {
     input: String,
     output: String,
     scale: f32,
+    /// The mode to render in, by axis (RFC-0037). A subtree that pins its own
+    /// `mode-{axis}` keeps it whatever is asked for here.
+    mode: Modes,
     page: Option<String>,
     area: Option<LayoutRect>,
     element: Option<(String, String)>,
@@ -167,6 +180,7 @@ impl Options {
             input: String::new(),
             output: String::new(),
             scale: 1.0,
+            mode: Modes::new(),
             page: None,
             area: None,
             element: None,
@@ -207,6 +221,13 @@ impl Options {
                     options.element = Some((attribute.to_owned(), value.to_owned()));
                 }
                 "--padding" => options.padding = number(&value("--padding")?, "--padding")?,
+                "--mode" => {
+                    let raw = value("--mode")?;
+                    let (axis, chosen) = raw
+                        .split_once('=')
+                        .ok_or_else(|| format!("--mode takes axis=value, not {raw}"))?;
+                    options.mode.insert(axis.to_owned(), chosen.to_owned());
+                }
                 flag if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
                 _ => positional.push(arg),
             }

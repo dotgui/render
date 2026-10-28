@@ -99,15 +99,66 @@ routes each finding:
 replace the flag with the document's parsed version, so each rule can check the
 version that introduced it.
 
+## Vocabulary implemented ahead of the spec
+
+Sometimes the renderer implements an RFC before the spec version that carries
+it exists. The version number cannot say so — `MAJOR.MINOR` is the spec chapter
+read and `SUPPORTED_VERSION` names a spec point that exists — so such work is
+*carried*, not claimed.
+
+What that requires:
+
+- **It must not change how a conforming document renders.** A document that does
+  not use the new vocabulary comes out exactly as before. Vocabulary that cannot
+  be added that way waits for its spec version instead. Show it, rather than
+  reasoning it: render every example with the commit before and the commit
+  after and compare the bytes, and run the goldens.
+  ```bash
+  cargo test -p dotgui-renderer --test golden_tests -- --ignored
+  ```
+  Render both sets **from the same directory**, so they share one
+  `.gui-render/cache`. Examples pull charts and icons over the network, and two
+  runs from different working directories differ on cache state alone — which
+  looks exactly like a rendering change and is not one.
+- **It moves no version number.** Not `MAJOR.MINOR` or `SUPPORTED_VERSION`,
+  which belong to the spec, and it is not the reason for a `PATCH`: a release
+  that includes it is numbered for whatever else it ships.
+- **It is listed below**, so the gap between what the renderer does and what its
+  version claims is written down rather than inferred from the source.
+- **It is revisited when its RFC moves.** An RFC in Draft or Proposed can change
+  shape or be rejected, and what is implemented here follows it — including
+  being taken out again.
+
+### Carried today
+
+| Vocabulary | RFC | Status in core | Chapter it belongs to |
+|---|---|---|---|
+| Token modes — `<mode>`/`<modes>`, per-mode token values, `mode-{axis}` pins | [0037](https://github.com/dotgui/core/blob/main/rfcs/0037-token-modes-theming.md) | Proposed | 1.0 |
+
+Token modes shipped ahead of its chapter because kit already resolves them. A
+document using them rendered in one renderer and failed to parse in the other,
+which is a divergence about whole documents rather than about pixels. It meets
+the additive rule: `modes::apply` returns before touching the tree unless the
+document declares an axis *and* a token that varies along one. Checked rather
+than assumed — all 27 examples render byte-identical across the commit that
+added it, and the 18 goldens hold.
+
+It cannot be versioned `0.3.x`, because it is not in the 0.3 chapter. It cannot
+be `1.0` either — that chapter also holds composite token types (RFC-0038,
+Draft), and a renderer claiming a version implements all of it, not a subset
+(RFC-0042, *The version is the contract*). So the renderer stays `0.3.x` and
+token modes sits outside the number until RFC-0037 is Accepted and lands in a
+chapter of its own.
+
 ## Where the versions show
 
 | | Value today |
 |---|---|
-| `RENDERER_VERSION` (Rust) | `0.3.0`, read from `Cargo.toml` at build time |
+| `RENDERER_VERSION` (Rust) | `0.3.1`, read from `Cargo.toml` at build time |
 | `SUPPORTED_VERSION` (Rust) | `"0.3.5"`, in `parser.rs` |
-| `render_png --version` | `dotgui renderer 0.3.0 (reads .gui up to version 0.3.5)` |
-| WASM `renderer_version()` / `supported_spec_version()` | `"0.3.0"` / `"0.3.5"` |
-| Error for a newer document | `the document declares version 0.3.6, but this renderer (0.3.0) reads documents up to version 0.3.5; a newer renderer is needed` |
+| `render_png --version` | `dotgui renderer 0.3.1 (reads .gui up to version 0.3.5)` |
+| WASM `renderer_version()` / `supported_spec_version()` | `"0.3.1"` / `"0.3.5"` |
+| Error for a newer document | `the document declares version 0.3.6, but this renderer (0.3.1) reads documents up to version 0.3.5; a newer renderer is needed` |
 
 The test `the_renderer_version_names_the_spec_it_implements` in `parser.rs`
 fails if `Cargo.toml`'s `MAJOR.MINOR` and `SUPPORTED_VERSION`'s chapter disagree. Treat a
@@ -163,9 +214,13 @@ Say core opens spec `0.4`.
 7. **Bump both numbers in one commit**, once the work is complete:
    - `Cargo.toml`: `version = "0.4.0"`
    - `parser.rs`: `SUPPORTED_VERSION = "0.4.0"` and `SUPPORTED = (0, 4, 0)`
-8. **Update the docs.** The version table above, the README's feature list and
+8. **Clear anything the new version now carries.** If the chapter includes an
+   RFC listed under *Vocabulary implemented ahead of the spec*, the version now
+   claims it: take its row out of that table, since it is no longer a gap
+   between what the renderer does and what its number says.
+9. **Update the docs.** The version table above, the README's feature list and
    Versions section, and `COVERAGE.md`.
-9. **Release after core ships the version.** Core's RFC README marks each
+10. **Release after core ships the version.** Core's RFC README marks each
    version `in progress` or `shipped`. The renderer can carry `0.4.0` on a
    branch while core is still in progress, but don't tag the release until 0.4
    is shipped there, because the contract can still change.
@@ -175,8 +230,11 @@ Say core opens spec `0.4`.
 For fixes, performance, kit-equivalence work, tooling and docs that don't change
 which spec is read:
 
-1. Bump `PATCH` in `Cargo.toml`: `0.3.0` → `0.3.1`.
-2. Leave `SUPPORTED_VERSION` alone.
+1. Bump `PATCH` in `Cargo.toml`: `0.3.1` → `0.3.2`.
+2. Leave `SUPPORTED_VERSION` alone — and leave it alone for carried vocabulary
+   too. New vocabulary is not a patch, so a release that happens to include
+   some does not get a bigger number for it; it is the fixes beside it that
+   earn the `PATCH`.
 3. Run the workspace tests and clippy with CI's toolchain:
    ```bash
    cargo +1.98 clippy --workspace --all-targets -- -D warnings
