@@ -116,7 +116,14 @@ pub(crate) fn check_assets(
     standalone: bool,
     issues: &mut Issues,
 ) {
-    for (name, value) in &metadata.tokens {
+    // Every value a token can hold, in any mode — a data: URI hidden in the
+    // dark-mode value is the same rule broken.
+    let per_mode = metadata
+        .token_modes
+        .iter()
+        .flat_map(|(name, values)| values.values().map(move |value| (name, value)));
+
+    for (name, value) in metadata.tokens.iter().chain(per_mode) {
         if is_data_uri(value) || url_functions(value).any(is_data_uri) {
             issues.violation(format!(
                 "token '{name}' holds a data: URI; assets are referenced, never inlined"

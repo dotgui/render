@@ -16,7 +16,23 @@ pub struct GuiDocument {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuiMetadata {
+    /// Every token's value in the default mode.
+    ///
+    /// A token that varies by mode is in here too, holding what it comes to in
+    /// each axis's default — so anything reading tokens without knowing about
+    /// modes sees a complete, single-valued map, as it did before modes
+    /// existed.
     pub tokens: BTreeMap<String, String>,
+    /// The mode axes the document declares, in the order it declares them
+    /// (RFC-0037). Empty for a document that declares none.
+    #[serde(default)]
+    pub mode_axes: Vec<crate::modes::ModeAxis>,
+    /// Per-mode token values: token name, then `{axis}-{value}`, then value.
+    ///
+    /// Only tokens that actually vary appear here; a token with a plain
+    /// `value` is constant across every mode and lives in `tokens` alone.
+    #[serde(default)]
+    pub token_modes: BTreeMap<String, BTreeMap<String, String>>,
     pub fonts: BTreeMap<String, FontInfo>,
     pub styles: BTreeMap<String, BTreeMap<String, String>>,
     /// Named effect stacks from `<styles>`, keyed by name.

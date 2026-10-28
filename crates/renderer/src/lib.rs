@@ -17,6 +17,7 @@ mod grid;
 mod issues;
 mod layout;
 mod model;
+pub mod modes;
 mod package;
 mod page;
 mod paint;
@@ -36,6 +37,7 @@ pub use fonts::{
 };
 pub use layout::{ApproxTextMeasurer, LayoutBox, LayoutRect, TextMeasurer};
 pub use model::{FontInfo, GuiDocument, GuiMetadata, GuiNode};
+pub use modes::{ModeAxis, Modes};
 pub use package::{
     read_gui_input, read_gui_package, read_gui_package_xml, GuiInput, GuiPackage, PackageDocument,
     PackageError, PackagePage, LIBRARY_FILENAME,

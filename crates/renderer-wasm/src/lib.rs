@@ -9,7 +9,7 @@ use dotgui_renderer::{
     build_scene, compute_taffy_layout_with_text, font_urls_in_stylesheet, google_stylesheet_urls,
     missing_system_font_files, normalize_presence_attrs, paint_scene_to_png_bytes, parse_gui_xml,
     parse_gui_xml_with, parse_library, parse_standalone_xml, read_gui_package, AssetCache,
-    FontStore, GuiDocument, GuiNode, LayoutRect, Library, Page, ParseError, ParseOptions,
+    FontStore, GuiDocument, GuiNode, LayoutRect, Library, Modes, Page, ParseError, ParseOptions,
     PixelRect, SceneChanges, RENDERER_VERSION, SUPPORTED_VERSION,
 };
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
@@ -103,8 +103,13 @@ pub struct Engine {
     /// shows several pages at once paints the same markup over and over, and
     /// only the first paint should pay for parsing and layout.
     pages: RefCell<Vec<Rc<KeptPage>>>,
-    /// Bumped whenever the library changes, which changes what every other
-    /// document resolves to.
+    /// The mode to render in, by axis (RFC-0037), as the host last set it.
+    ///
+    /// Empty means every axis takes the document's own default, which is what
+    /// a host that never calls [`Engine::set_mode`] gets.
+    mode: RefCell<Modes>,
+    /// Bumped whenever something outside a document changes what it resolves
+    /// to: the library, or the active mode.
     library_generation: std::cell::Cell<u64>,
 }
 
@@ -160,6 +165,7 @@ impl Default for Engine {
             fonts: RefCell::new(None),
             package: RefCell::new(None),
             pages: RefCell::new(Vec::new()),
+            mode: RefCell::new(Modes::new()),
             library_generation: std::cell::Cell::new(0),
         }
     }
@@ -296,6 +302,41 @@ impl Engine {
         }
         self.fonts.replace(None);
         serde_json::to_string(&pages).map_err(to_js)
+    }
+
+    /// The mode to render in, as `{"theme": "dark"}` (RFC-0037).
+    ///
+    /// It applies to every document read from here on, and only to the axes a
+    /// document declares — asking for an axis it does not have changes
+    /// nothing. A subtree that pins `mode-{axis}` keeps its own mode whatever
+    /// is set here, so a light card stays light on a page turned dark.
+    ///
+    /// One axis at a time, because that is how a viewer uses it: a theme
+    /// switch sets `theme`, and leaves `density` alone. `None` drops the axis
+    /// and returns it to the document's own default.
+    pub fn set_mode(&self, axis: &str, value: Option<String>) {
+        let mut mode = self.mode.borrow_mut();
+        let changed = match value {
+            Some(value) => mode.insert(axis.to_owned(), value.clone()) != Some(value),
+            None => mode.remove(axis).is_some(),
+        };
+        drop(mode);
+
+        if changed {
+            // Every laid-out page held was resolved in the old mode.
+            self.library_generation
+                .set(self.library_generation.get() + 1);
+        }
+    }
+
+    /// Returns every axis to the document's own default.
+    pub fn clear_modes(&self) {
+        if self.mode.borrow().is_empty() {
+            return;
+        }
+        self.mode.borrow_mut().clear();
+        self.library_generation
+            .set(self.library_generation.get() + 1);
     }
 
     /// The font files on the host, by path — what a native renderer would find
@@ -707,19 +748,32 @@ impl Engine {
     fn read(&self, xml: &str, library: Option<bool>) -> Result<GuiDocument, JsValue> {
         if library == Some(true) {
             self.sync_library(xml)?;
+            let mode = self.mode.borrow();
             return parse_gui_xml_with(
                 xml,
                 ParseOptions {
                     in_multi_document_package: true,
+                    mode: (!mode.is_empty()).then_some(&mode),
                     ..ParseOptions::default()
                 },
             )
             .map_err(to_js);
         }
 
+        let mode = self.mode.borrow();
+        let mode = (!mode.is_empty()).then_some(&*mode);
+
         let package = self.package.borrow();
         let Some(context) = package.as_ref() else {
-            return parse_standalone_xml(xml).map_err(to_js);
+            return parse_gui_xml_with(
+                xml,
+                ParseOptions {
+                    form: dotgui_renderer::DocumentForm::Standalone,
+                    mode,
+                    ..ParseOptions::default()
+                },
+            )
+            .map_err(to_js);
         };
         let library = match &context.library {
             Some(Ok(library)) => Some(library),
@@ -731,6 +785,7 @@ impl Engine {
             ParseOptions {
                 library,
                 in_multi_document_package: context.multi_document,
+                mode,
                 ..ParseOptions::default()
             },
         )
