@@ -5,6 +5,7 @@
 //!   decidable at parse time.
 //! - RFC-0043: an asset reference is never a `data:` URI, and a document served
 //!   on its own references assets only by absolute URL.
+//! - RFC-0033: a dimension is a bare number, `%` only on sizes.
 
 use crate::issues::Issues;
 use crate::model::{GuiMetadata, GuiNode};
@@ -189,6 +190,91 @@ fn url_functions(value: &str) -> impl Iterator<Item = &str> {
         let end = rest.find(')')?;
         Some(rest[..end].trim().trim_matches(|c| c == '"' || c == '\''))
     })
+}
+
+/// Sizes, which may also be a share of the parent (RFC-0033).
+const SIZE_ATTRIBUTES: &[&str] = &[
+    "w",
+    "h",
+    "min-width",
+    "max-width",
+    "min-height",
+    "max-height",
+];
+
+/// Other dimensions, which are bare numbers only.
+const DIMENSION_ATTRIBUTES: &[&str] = &[
+    "x",
+    "y",
+    "p",
+    "pt",
+    "pr",
+    "pb",
+    "pl",
+    "gap",
+    "radius",
+    "font-size",
+    "line-height",
+    "letter-spacing",
+    "stroke-width",
+    "border-width",
+];
+
+/// Reports every dimension written in a form the format does not have: a `px`
+/// suffix, `rem`, `em`, `vw`, `vh`, `calc()`, or `%` outside the sizes. This
+/// renderer would otherwise ignore the unit and draw something the author did
+/// not write. Errors from 0.3.9 (`strict`), advice before.
+pub(crate) fn check_units(root: &GuiNode, strict: bool, issues: &mut Issues) {
+    let mut report = |message: String| {
+        if strict {
+            issues.error(message);
+        } else {
+            issues.advise(message);
+        }
+    };
+    visit_units(root, &mut report);
+}
+
+fn visit_units(node: &GuiNode, report: &mut dyn FnMut(String)) {
+    for (name, value) in &node.attributes {
+        let size = SIZE_ATTRIBUTES.contains(&name.as_str());
+        if !size && !DIMENSION_ATTRIBUTES.contains(&name.as_str()) {
+            continue;
+        }
+        if value.trim_start().starts_with("calc(") {
+            report(format!(
+                "{name}=\"{value}\": calc() is not part of the format; use fill with padding or gap"
+            ));
+            continue;
+        }
+        for part in value.split_whitespace() {
+            let Some(unit) = ["px", "rem", "em", "vw", "vh", "%"]
+                .into_iter()
+                .find(|unit| {
+                    part.strip_suffix(unit)
+                        .is_some_and(|number| number.parse::<f32>().is_ok())
+                })
+            else {
+                continue;
+            };
+            match unit {
+                "%" if size => {}
+                "%" => report(format!(
+                    "{name}=\"{value}\": % is a share of the parent, and only sizes (w, h, min-*, max-*) take it"
+                )),
+                "px" => report(format!(
+                    "{name}=\"{value}\": write {} — a bare number is pixels",
+                    &part[..part.len() - 2]
+                )),
+                _ => report(format!(
+                    "{name}=\"{value}\": {unit} is not a unit of the format; dimensions are bare numbers in pixels"
+                )),
+            }
+        }
+    }
+    for child in &node.children {
+        visit_units(child, report);
+    }
 }
 
 #[cfg(test)]

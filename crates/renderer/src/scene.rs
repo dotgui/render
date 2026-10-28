@@ -1098,7 +1098,9 @@ fn parse_border(value: &str) -> Option<Border> {
     let mut style = "solid".to_owned();
     let mut align = "center".to_owned();
 
-    for part in value.split_whitespace() {
+    // `rgba(0, 0, 0, 0.2)` holds spaces, so split outside parentheses only.
+    for part in split_shadow_parts(value) {
+        let part = part.as_str();
         match part {
             "inside" | "outside" | "center" => align = part.to_owned(),
             "solid" | "dashed" | "dotted" => style = part.to_owned(),
@@ -1430,6 +1432,17 @@ mod tests {
         );
     }
     use super::*;
+
+    #[test]
+    fn a_border_color_with_spaces_stays_one_color() {
+        let border = parse_border("1 solid rgba(0, 0, 0, 0.2)").expect("border");
+        assert_eq!(border.color, "rgba(0, 0, 0, 0.2)");
+        assert_eq!(border.width, 1.0);
+        let border = parse_border("2 dashed oklch(0.6 0.2 250 / 0.5) inside").expect("border");
+        assert_eq!(border.color, "oklch(0.6 0.2 250 / 0.5)");
+        assert_eq!(border.style, "dashed");
+        assert_eq!(border.align, "inside");
+    }
     use crate::{compute_taffy_layout, parse_gui_xml};
 
     fn scene_of(xml: &str) -> Scene {
