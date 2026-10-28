@@ -4,8 +4,8 @@
       <slot name="body">
         <instance component="comp-card" heading="First trip">
           <slot name="content">
-            <text text-style="Body" value="Lisbon, 12–16 October" color="$ink" w="fill" />
-            <text text-style="Caption" value="3 friends invited" color="$muted" />
+            <text text-style="Body" value="Lisbon, 12–16 October" fill="$ink" w="fill" />
+            <text text-style="Caption" value="3 friends invited" fill="$muted" />
           </slot>
         </instance>
       </slot>

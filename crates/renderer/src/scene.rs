@@ -531,14 +531,24 @@ fn node_border(layout: &LayoutBox, metadata: &GuiMetadata) -> Option<Border> {
     let longhand_style = value("border-style");
     let longhand_align = value("border-align");
 
-    // Nothing declared, nothing to draw.
+    // Nothing declared: a document written before 0.3.10 may still say
+    // `stroke` / `stroke-width` / `stroke-position`, which always meant this
+    // border (RFC-0022). From 0.3.10 the parser refuses them.
     if shorthand.is_none()
         && longhand_color.is_none()
         && longhand_width.is_none()
         && longhand_style.is_none()
         && longhand_align.is_none()
     {
-        return None;
+        let color = value("stroke")?;
+        let width = value("stroke-width").and_then(|value| parse_number(&value))?;
+        return (width > 0.0).then(|| Border {
+            width,
+            widths: BorderWidths::uniform(width),
+            color,
+            style: "solid".to_owned(),
+            align: value("stroke-position").unwrap_or_else(|| "center".to_owned()),
+        });
     }
 
     let color = longhand_color.or_else(|| shorthand.as_ref().map(|border| border.color.clone()))?;
@@ -1293,6 +1303,23 @@ mod tests {
         let layout = compute_taffy_layout(&document).expect("layout computes");
         let scene = build_scene(&document, &layout);
         scene.root.children[0].borders.first().cloned()
+    }
+
+    #[test]
+    fn a_legacy_stroke_draws_as_the_border_it_meant() {
+        let border = border_of(
+            r##"<gui version="0.3.9"><col w="100"><col w="40" h="40" stroke="#ff0000" stroke-width="2" stroke-position="inside" /></col></gui>"##,
+        )
+        .expect("drawn as a border");
+        assert_eq!(border.color, "#ff0000");
+        assert_eq!(border.width, 2.0);
+        assert_eq!(border.align, "inside");
+        // A border, when there is one, wins.
+        let border = border_of(
+            r##"<gui version="0.3.9"><col w="100"><col w="40" h="40" border="1 #00ff00" stroke="#ff0000" stroke-width="2" /></col></gui>"##,
+        )
+        .expect("border");
+        assert_eq!(border.color, "#00ff00");
     }
 
     #[test]

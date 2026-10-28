@@ -30,8 +30,8 @@ pub const RENDERER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// cumulative: every earlier point is implemented too, and a document declaring
 /// a newer one is refused rather than drawn with features this renderer does
 /// not know.
-pub const SUPPORTED_VERSION: &str = "0.3.9";
-const SUPPORTED: (u32, u32, u32) = (0, 3, 9);
+pub const SUPPORTED_VERSION: &str = "0.3.10";
+const SUPPORTED: (u32, u32, u32) = (0, 3, 10);
 const MULTI_DOCUMENT: (u32, u32, u32) = (0, 3, 0);
 /// From 0.3.6 provenance is `<gui source>`, and `<meta>` is obsolete (RFC-0036).
 const ROOT_SOURCE: (u32, u32, u32) = (0, 3, 6);
@@ -41,6 +41,8 @@ const IDENTITY: (u32, u32, u32) = (0, 3, 7);
 const DETACHED: (u32, u32, u32) = (0, 3, 8);
 /// From 0.3.9 a dimension is a bare number, `%` only on sizes (RFC-0033).
 const UNITS: (u32, u32, u32) = (0, 3, 9);
+/// From 0.3.10 `fill` colors text and `border` outlines (RFC-0022).
+const FILL_AND_BORDER: (u32, u32, u32) = (0, 3, 10);
 
 #[derive(Debug, Error)]
 pub enum ParseError {
@@ -210,6 +212,7 @@ pub fn parse_gui_xml_with(xml: &str, options: ParseOptions) -> Result<GuiDocumen
     modes::apply(&mut layout_root, &metadata, options.mode);
 
     validate::check_units(&layout_root, parts.unit_rules, &mut issues);
+    validate::check_fill_and_border(&layout_root, parts.fill_rules, &mut issues);
 
     // A 0.2 document keeps its old leniency about what it refers to: it
     // renders as it always did, and nothing new is said about it.
@@ -346,6 +349,8 @@ struct Parts {
     detached_rules: bool,
     /// Whether dimensions are held to 0.3.9's rules.
     unit_rules: bool,
+    /// Whether text color and outlines are held to 0.3.10's rules.
+    fill_rules: bool,
     name: Option<String>,
     metadata: GuiMetadata,
     component_blocks: Vec<GuiNode>,
@@ -424,6 +429,7 @@ fn read_parts(xml: &str, requires_multi_document: bool) -> Result<Parts, ParseEr
         source_id_without_source,
         detached_rules: parsed >= DETACHED,
         unit_rules: parsed >= UNITS,
+        fill_rules: parsed >= FILL_AND_BORDER,
         version,
         name: attr(root, "name"),
         metadata,
@@ -1010,6 +1016,58 @@ mod tests {
                 r#"<gui version="0.3.8"><col w="390">{node}</col></gui>"#
             ))
             .expect("only advice before 0.3.9");
+            assert!(older.warnings.iter().any(|w| w.contains(says)), "{node}");
+        }
+    }
+
+    #[test]
+    fn fill_colors_text_and_border_outlines_from_0_3_10() {
+        let ok = [
+            r##"<text value="a" fill="#111111" />"##,
+            r##"<text><segment value="a" fill="#111111" /></text>"##,
+            r##"<col w="10" border="1 #000000 inside" />"##,
+            r##"<col w="10"><appearance><border color="#000000" w="1" /></appearance></col>"##,
+        ];
+        for node in ok {
+            assert!(
+                parse_gui_xml(&format!(
+                    r#"<gui version="0.3.10"><col w="390">{node}</col></gui>"#
+                ))
+                .is_ok(),
+                "{node}"
+            );
+        }
+        for (node, says) in [
+            (
+                r##"<text value="a" color="#111111" />"##,
+                "fill colors text",
+            ),
+            (
+                r##"<text><segment value="a" color="#111111" /></text>"##,
+                "fill colors text",
+            ),
+            (
+                r##"<col w="10" stroke="#000000" stroke-width="2" />"##,
+                "stroke, stroke-width",
+            ),
+            (
+                r##"<col w="10"><appearance><stroke color="#000000" /></appearance></col>"##,
+                "<stroke> is not",
+            ),
+            (
+                r##"<col w="10"><border color="#000000" w="1" /></col>"##,
+                "belongs inside <appearance>",
+            ),
+        ] {
+            let err = parse_gui_xml(&format!(
+                r#"<gui version="0.3.10"><col w="390">{node}</col></gui>"#
+            ))
+            .expect_err(node);
+            assert!(err.to_string().contains(says), "{node}: {err}");
+            let older = parse_gui_xml(&format!(
+                r#"<gui version="0.3.9"><col w="390">{node}</col></gui>"#
+            ))
+            .expect("only advice before 0.3.10");
             assert!(older.warnings.iter().any(|w| w.contains(says)), "{node}");
         }
     }

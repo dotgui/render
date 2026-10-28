@@ -281,6 +281,11 @@ fn read_props(component: &str, node: &GuiNode, body: &GuiNode, issues: &mut Issu
             continue;
         };
         let bind = prop.attributes.get("bind").cloned();
+        if matches!(kind.as_str(), "color" | "fill") && bind.as_deref() == Some("stroke") {
+            issues.advise(format!(
+                "component '{component}': <prop bind=\"stroke\"> is the old name; use bind=\"border-color\""
+            ));
+        }
 
         if let Some((_, new)) = LEGACY_PROP_TYPES.iter().find(|(old, _)| old == kind) {
             issues.advise(format!(
@@ -806,7 +811,12 @@ fn apply_override(body: &mut GuiNode, target: &str, kind: &str, value: &str, bin
 
     let attribute = match kind {
         "string" | "text" => bind.unwrap_or("value"),
-        "color" | "fill" => bind.unwrap_or("fill"),
+        // `stroke` is the old name for `border-color` (RFC-0022).
+        "color" | "fill" => match bind {
+            Some("stroke") => "border-color",
+            Some(bind) => bind,
+            None => "fill",
+        },
         "image" | "src" => "src",
         "component" => "component",
         // A number or a named style has no natural home, so the prop has to
@@ -1949,5 +1959,33 @@ mod tests {
         .is_ok());
         assert!(parse_err(&fill(r#"<row detached-from="comp-other" />"#)).contains("accepts only"));
         assert!(parse_err(&fill("<row />")).contains("accepts only"));
+    }
+
+    #[test]
+    fn a_color_prop_bound_to_border_color_or_stroke_recolors_the_border() {
+        for bind in ["border-color", "stroke"] {
+            let doc = parse_gui_xml(&format!(
+                r##"
+                <gui version="0.3.10">
+                  <components><component id="comp-a">
+                    <props><prop name="edge" type="color" target="box" bind="{bind}" /></props>
+                    <col id="box" w="40" h="40" border="2 #000000" />
+                  </component></components>
+                  <col w="400"><instance component="comp-a" edge="#FF0000" /></col>
+                </gui>
+                "##
+            ))
+            .expect("valid gui");
+            let body = &doc.root.children[0];
+            assert_eq!(
+                body.attributes.get("border-color").map(String::as_str),
+                Some("#FF0000"),
+                "{bind}"
+            );
+            assert_eq!(
+                doc.warnings.iter().any(|w| w.contains("bind=\"stroke\"")),
+                bind == "stroke"
+            );
+        }
     }
 }

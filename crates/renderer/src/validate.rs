@@ -277,6 +277,59 @@ fn visit_units(node: &GuiNode, report: &mut dyn FnMut(String)) {
     }
 }
 
+/// SVG's outline attributes, which `border` replaced (RFC-0022).
+const STROKE_ATTRIBUTES: &[&str] = &["stroke", "stroke-width", "stroke-position"];
+
+/// Reports `color` on `<text>` / `<segment>` (write `fill`), `stroke`
+/// attributes and `<stroke>` entries (write `border`), and `<border>` outside
+/// `<appearance>`. Errors from 0.3.10 (`strict`), advice before, when the
+/// legacy forms still draw.
+pub(crate) fn check_fill_and_border(root: &GuiNode, strict: bool, issues: &mut Issues) {
+    let mut report = |message: String| {
+        if strict {
+            issues.error(message);
+        } else {
+            issues.advise(message);
+        }
+    };
+    visit_fill_and_border(root, "gui", &mut report);
+}
+
+fn visit_fill_and_border(node: &GuiNode, parent: &str, report: &mut dyn FnMut(String)) {
+    let tag = node.tag.as_str();
+    if matches!(tag, "text" | "segment") {
+        if let Some(color) = node.attributes.get("color") {
+            report(format!(
+                "<{tag} color=\"{color}\">: write fill=\"{color}\" — fill colors text"
+            ));
+        }
+    }
+    if parent == "appearance" {
+        if tag == "stroke" {
+            report("<stroke> is not an <appearance> entry; write <border>".to_owned());
+        }
+    } else if tag == "border" {
+        report(format!(
+            "<border> belongs inside <appearance>, not directly in <{parent}>"
+        ));
+    } else if !matches!(tag, "effect" | "fill") {
+        let used: Vec<&str> = STROKE_ATTRIBUTES
+            .iter()
+            .copied()
+            .filter(|name| node.attributes.contains_key(*name))
+            .collect();
+        if !used.is_empty() {
+            report(format!(
+                "<{tag}> {}: write border=\"{{width}} {{color}} {{position}}\" instead",
+                used.join(", ")
+            ));
+        }
+    }
+    for child in &node.children {
+        visit_fill_and_border(child, tag, report);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,3 +1,23 @@
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$primary">: write fill="$primary" — fill colors text
+warning: <text color="$ink-secondary">: write fill="$ink-secondary" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$ink-secondary">: write fill="$ink-secondary" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$ink-secondary">: write fill="$ink-secondary" — fill colors text
+warning: <text color="$primary">: write fill="$primary" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$ink-secondary">: write fill="$ink-secondary" — fill colors text
+warning: <text color="$ink">: write fill="$ink" — fill colors text
+warning: <text color="$ink-secondary">: write fill="$ink-secondary" — fill colors text
+warning: <text color="$on-primary">: write fill="$on-primary" — fill colors text
+warning: <text color="$on-primary">: write fill="$on-primary" — fill colors text
 col 360x979 @ 0,0
   row 360x24 @ 0,0
     text 26.4x16 @ 16,4
