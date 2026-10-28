@@ -613,6 +613,22 @@ impl FontStore {
             .map(Rc::as_ref)
     }
 
+    /// Every distinct font file the store holds, as raw bytes.
+    ///
+    /// resvg keeps a font database of its own and draws SVG text only with a
+    /// face it has been handed, so the files the document already loaded are
+    /// what it gets. Faces instanced from one file at several weights share
+    /// their bytes, so the same file is returned once.
+    pub(crate) fn face_files(&self) -> Vec<Rc<Vec<u8>>> {
+        let mut files: Vec<Rc<Vec<u8>>> = Vec::new();
+        for face in self.fonts.values().chain(self.default_face.iter()) {
+            if !files.iter().any(|bytes| Rc::ptr_eq(bytes, &face.bytes)) {
+                files.push(Rc::clone(&face.bytes));
+            }
+        }
+        files
+    }
+
     /// The host's UI font, when one was found.
     ///
     /// This is what a run falls back to, so a host that cannot reach a font

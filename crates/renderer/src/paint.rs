@@ -905,7 +905,7 @@ fn paint_node_direct(
     if node.visible {
         paint_backdrop_effects(pixmap, node);
         paint_drop_shadows(pixmap, node);
-        paint_fill(pixmap, node, asset_cache);
+        paint_fill(pixmap, node, asset_cache, fonts);
         paint_inner_shadows(pixmap, node);
         paint_content(pixmap, node, font, asset_cache, fonts);
     }
@@ -1500,13 +1500,18 @@ fn saturate(pixmap: &mut Pixmap, amount: f32) {
 }
 
 /// Paints the node's fill stack, bottom entry first.
-fn paint_fill(pixmap: &mut Pixmap, node: &SceneNode, asset_cache: Option<&AssetCache>) {
+fn paint_fill(
+    pixmap: &mut Pixmap,
+    node: &SceneNode,
+    asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
+) {
     if matches!(node.content, PaintContent::Text { .. }) {
         return;
     }
 
     for fill in &node.fills {
-        paint_one_fill(pixmap, node, fill, asset_cache);
+        paint_one_fill(pixmap, node, fill, asset_cache, fonts);
     }
 }
 
@@ -1515,9 +1520,10 @@ fn paint_one_fill(
     node: &SceneNode,
     fill: &Fill,
     asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
 ) {
     if fill.kind == "image" {
-        paint_image_fill(pixmap, node, fill, asset_cache);
+        paint_image_fill(pixmap, node, fill, asset_cache, fonts);
         return;
     }
 
@@ -1632,6 +1638,7 @@ fn paint_image_fill(
     node: &SceneNode,
     fill: &Fill,
     asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
 ) {
     let (Some(cache), Some(src)) = (asset_cache, fill.src.as_deref()) else {
         return;
@@ -1643,19 +1650,15 @@ fn paint_image_fill(
         return;
     };
 
+    let style = ImageStyle {
+        fit: fill.fit.as_deref(),
+        ..Default::default()
+    };
     let drawn =
         if asset.media_type.as_deref() == Some("image/svg+xml") || looks_like_svg(&asset.bytes) {
-            render_svg_asset(&mut layer, node, &asset.bytes)
+            render_svg_asset(&mut layer, node, &asset.bytes, style, fonts)
         } else {
-            render_raster_asset(
-                &mut layer,
-                node,
-                &asset.bytes,
-                ImageStyle {
-                    fit: fill.fit.as_deref(),
-                    ..Default::default()
-                },
-            )
+            render_raster_asset(&mut layer, node, &asset.bytes, style)
         };
 
     if drawn.is_err() {
@@ -1867,6 +1870,7 @@ fn paint_content(
                 rendering: image_rendering.as_deref(),
             },
             asset_cache,
+            fonts,
         ),
     }
 }
@@ -2832,6 +2836,7 @@ fn paint_image(
     src: &str,
     style: ImageStyle<'_>,
     asset_cache: Option<&AssetCache>,
+    fonts: Option<&FontStore>,
 ) {
     if let Some(cache) = asset_cache {
         match cache.resolve(src) {
@@ -2839,7 +2844,7 @@ fn paint_image(
                 if asset.media_type.as_deref() == Some("image/svg+xml")
                     || looks_like_svg(&asset.bytes)
                 {
-                    match render_svg_asset(pixmap, node, &asset.bytes) {
+                    match render_svg_asset(pixmap, node, &asset.bytes, style, fonts) {
                         Ok(_) => return,
                         Err(err) => {
                             eprintln!("warning: failed to render SVG asset '{}': {}", src, err)
@@ -2897,41 +2902,8 @@ fn render_raster_asset(
     // did on their own before it was read.
     let (align_x, align_y) = style.alignment();
 
-    let (transform, needs_clip) = match style.fit.unwrap_or("fill") {
-        "contain" => {
-            let scale = (rw / iw).min(rh / ih);
-            let dx = rx + (rw - iw * scale) * align_x;
-            let dy = ry + (rh - ih * scale) * align_y;
-            (
-                Transform::from_scale(scale, scale).post_translate(dx, dy),
-                false,
-            )
-        }
-        "cover" => {
-            let scale = (rw / iw).max(rh / ih);
-            let dx = rx + (rw - iw * scale) * align_x;
-            let dy = ry + (rh - ih * scale) * align_y;
-            (
-                Transform::from_scale(scale, scale).post_translate(dx, dy),
-                true,
-            )
-        }
-        "crop" | "none" => {
-            let dx = rx + (rw - iw) * align_x;
-            let dy = ry + (rh - ih) * align_y;
-            (Transform::from_translate(dx, dy), true)
-        }
-        _ => {
-            // `fill` stretches to both edges, so there is no room left for
-            // `object-position` to place it in.
-            let scale_x = rw / iw;
-            let scale_y = rh / ih;
-            (
-                Transform::from_scale(scale_x, scale_y).post_translate(rx, ry),
-                false,
-            )
-        }
-    };
+    let (transform, needs_clip) =
+        fit_transform(rx, ry, rw, rh, iw, ih, style.fit, align_x, align_y);
 
     let mask = if needs_clip {
         create_clip_mask(pixmap.width(), pixmap.height(), node)
@@ -2974,26 +2946,149 @@ fn looks_like_svg(bytes: &[u8]) -> bool {
         .unwrap_or(false)
 }
 
-fn render_svg_asset(pixmap: &mut Pixmap, node: &SceneNode, bytes: &[u8]) -> Result<(), PaintError> {
+/// Where an image of `iw`x`ih` lands in the box at `rx,ry` sized `rw`x`rh`.
+///
+/// Shared by both decoders so `fit` means one thing: an SVG used to be scaled
+/// to its box on each axis independently, which is `fill`, whatever the
+/// document asked for. The flag says whether the result overflows the box and
+/// so has to be clipped to it.
+#[allow(clippy::too_many_arguments)]
+fn fit_transform(
+    rx: f32,
+    ry: f32,
+    rw: f32,
+    rh: f32,
+    iw: f32,
+    ih: f32,
+    fit: Option<&str>,
+    align_x: f32,
+    align_y: f32,
+) -> (Transform, bool) {
+    match fit.unwrap_or("fill") {
+        "contain" => {
+            let scale = (rw / iw).min(rh / ih);
+            let dx = rx + (rw - iw * scale) * align_x;
+            let dy = ry + (rh - ih * scale) * align_y;
+            (
+                Transform::from_scale(scale, scale).post_translate(dx, dy),
+                false,
+            )
+        }
+        "cover" => {
+            let scale = (rw / iw).max(rh / ih);
+            let dx = rx + (rw - iw * scale) * align_x;
+            let dy = ry + (rh - ih * scale) * align_y;
+            (
+                Transform::from_scale(scale, scale).post_translate(dx, dy),
+                true,
+            )
+        }
+        "crop" | "none" => {
+            let dx = rx + (rw - iw) * align_x;
+            let dy = ry + (rh - ih) * align_y;
+            (Transform::from_translate(dx, dy), true)
+        }
+        _ => {
+            // `fill` stretches to both edges, so there is no room left for
+            // `object-position` to place it in.
+            (
+                Transform::from_scale(rw / iw, rh / ih).post_translate(rx, ry),
+                false,
+            )
+        }
+    }
+}
+
+/// Whether an SVG holds text, and so needs fonts to draw it.
+///
+/// Building a font database is the expensive part of drawing one, and the
+/// overwhelming majority of SVGs here are icons with no text at all, so the
+/// cheap check comes first.
+fn svg_has_text(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes).is_ok_and(|text| text.contains("<text"))
+}
+
+/// Parse options for an SVG, carrying fonts only when the SVG needs them.
+///
+/// usvg starts with an empty database and silently drops any text whose family
+/// it cannot find, which is why SVG text did not draw at all. It is handed the
+/// faces the document itself loaded — the only ones a browser-hosted WASM
+/// build can reach, since there is no font directory there to scan.
+fn svg_options(bytes: &[u8], fonts: Option<&FontStore>) -> resvg::usvg::Options<'static> {
+    let mut options = resvg::usvg::Options::default();
+    let Some(fonts) = fonts.filter(|_| svg_has_text(bytes)) else {
+        return options;
+    };
+
+    let database = std::sync::Arc::make_mut(&mut options.fontdb);
+    for file in fonts.face_files() {
+        database.load_font_data(file.as_ref().clone());
+    }
+
+    let Some(family) = database
+        .faces()
+        .next()
+        .and_then(|face| face.families.first())
+        .map(|(name, _)| name.clone())
+    else {
+        return options;
+    };
+
+    // An SVG naming a family nothing here holds — `font-family="Helvetica"`,
+    // say — falls back to the generic `serif`, and a generic resolves through
+    // these names. fontdb points them at Times New Roman and friends, none of
+    // which is loaded, so the query failed and the run was dropped without a
+    // mark on the canvas. Pointing all five at a face that is loaded is what
+    // makes the fallback land somewhere.
+    database.set_serif_family(&family);
+    database.set_sans_serif_family(&family);
+    database.set_cursive_family(&family);
+    database.set_fantasy_family(&family);
+    database.set_monospace_family(&family);
+
+    // And this is the family an SVG that names none of its own gets.
+    options.font_family = family;
+
+    options
+}
+
+fn render_svg_asset(
+    pixmap: &mut Pixmap,
+    node: &SceneNode,
+    bytes: &[u8],
+    style: ImageStyle<'_>,
+    fonts: Option<&FontStore>,
+) -> Result<(), PaintError> {
     let target_width = node.bounds.width.ceil().max(1.0) as u32;
     let target_height = node.bounds.height.ceil().max(1.0) as u32;
-    let options = resvg::usvg::Options::default();
+    let options = svg_options(bytes, fonts);
     let tree = resvg::usvg::Tree::from_data(bytes, &options)
         .map_err(|err| PaintError::Svg(err.to_string()))?;
     let svg_size = tree.size();
-    let scale_x = target_width as f32 / svg_size.width();
-    let scale_y = target_height as f32 / svg_size.height();
+
+    let (align_x, align_y) = style.alignment();
+    // The transform is worked out against the box's own origin, because the
+    // SVG is drawn onto a pixmap of exactly that box: anything `cover` or
+    // `crop` pushes outside is clipped by the edge of it.
+    let (transform, _) = fit_transform(
+        0.0,
+        0.0,
+        node.bounds.width,
+        node.bounds.height,
+        svg_size.width(),
+        svg_size.height(),
+        style.fit,
+        align_x,
+        align_y,
+    );
+
     let mut icon_pixmap =
         Pixmap::new(target_width, target_height).ok_or(PaintError::Allocation {
             width: target_width,
             height: target_height,
         })?;
 
-    resvg::render(
-        &tree,
-        Transform::from_scale(scale_x, scale_y),
-        &mut icon_pixmap.as_mut(),
-    );
+    resvg::render(&tree, transform, &mut icon_pixmap.as_mut());
 
     pixmap.draw_pixmap(
         node.bounds.x.round() as i32,
@@ -6249,6 +6344,94 @@ mod tests {
             "expected a blurred edge inside the panel, found {inside}"
         );
         assert_eq!(outside, 255, "outside the panel the edge stays hard");
+    }
+
+    /// Like `render_with_asset`, but with the document's fonts resolved.
+    ///
+    /// SVG text needs them: resvg draws only with a face it has been handed.
+    fn render_svg_with_fonts(xml: &str, src: &str, svg: &str) -> image::RgbaImage {
+        let document = parse_gui_xml(xml).expect("valid gui");
+        let mut package_assets = std::collections::BTreeMap::new();
+        package_assets.insert(src.to_owned(), svg.as_bytes().to_vec());
+        let cache = AssetCache::new(std::env::temp_dir()).with_package_assets(package_assets);
+        let fonts = crate::FontStore::from_document(&document, &cache).expect("fonts resolve");
+
+        let layout = compute_taffy_layout(&document).expect("layout computes");
+        let scene = build_scene(&document, &layout);
+        let png =
+            paint_scene_to_png_bytes(&scene, Some(&cache), Some(&fonts)).expect("scene paints");
+        image::load_from_memory(&png)
+            .expect("painted png decodes")
+            .to_rgba8()
+    }
+
+    #[test]
+    fn an_svg_honours_its_fit_instead_of_stretching() {
+        // A 2:1 SVG in a square box. `contain` letterboxes it; the old code
+        // scaled each axis to the box on its own, which is `fill` whatever the
+        // document asked for.
+        const SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><rect width="100" height="50" fill="#ff0000"/></svg>"##;
+        let page = |fit: &str| {
+            render_svg_with_fonts(
+                &format!(
+                    r##"
+                    <gui version="0.2">
+                      <frame w="100" h="100" fill="#ffffff">
+                        <img abs x="0" y="0" w="100" h="100" src="assets/band.svg" fit="{fit}" />
+                      </frame>
+                    </gui>
+                    "##
+                ),
+                "assets/band.svg",
+                SVG,
+            )
+        };
+
+        let red =
+            |image: &image::RgbaImage, x: u32, y: u32| image.get_pixel(x, y).0[0..3] == [255, 0, 0];
+
+        let contained = page("contain");
+        assert!(red(&contained, 50, 50), "the band sits across the middle");
+        assert!(!red(&contained, 50, 5), "and leaves the top bare");
+        assert!(!red(&contained, 50, 95), "and the bottom");
+
+        // `fill` is the old behaviour, and still reaches both edges.
+        let filled = page("fill");
+        assert!(red(&filled, 50, 5) && red(&filled, 50, 95));
+    }
+
+    #[test]
+    #[cfg_attr(not(target_os = "macos"), ignore = "reads macOS font files")]
+    fn text_inside_an_svg_is_drawn() {
+        // usvg starts with an empty font database and silently drops any text
+        // it cannot find a face for, so SVG text used to paint nothing at all.
+        const WITH_TEXT: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><text x="4" y="34" font-family="Helvetica" font-size="34" fill="#000000">HHH</text></svg>"##;
+        const WITHOUT: &str =
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"></svg>"##;
+
+        let page = |svg: &str| {
+            render_svg_with_fonts(
+                r##"
+                <gui version="0.2">
+                  <frame w="100" h="50" fill="#ffffff">
+                    <img abs x="0" y="0" w="100" h="50" src="assets/label.svg" fit="fill" />
+                  </frame>
+                </gui>
+                "##,
+                "assets/label.svg",
+                svg,
+            )
+        };
+
+        let inked = |image: &image::RgbaImage| {
+            (0..50)
+                .flat_map(|y| (0..100).map(move |x| (x, y)))
+                .filter(|(x, y)| image.get_pixel(*x, *y).0[0..3] != [255, 255, 255])
+                .count()
+        };
+
+        assert_eq!(inked(&page(WITHOUT)), 0, "an empty SVG marks nothing");
+        assert!(inked(&page(WITH_TEXT)) > 50, "the glyphs reach the canvas");
     }
 
     #[test]
