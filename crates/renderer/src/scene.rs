@@ -714,7 +714,13 @@ fn image_mask_for(layout: &LayoutBox, metadata: &GuiMetadata) -> Option<ImageMas
         width: number("mask-width"),
         height: number("mask-height"),
         mode: attr(layout, "mask-mode").unwrap_or("alpha").to_owned(),
-        composite: attr(layout, "mask-composite").unwrap_or("add").to_owned(),
+        // `mask-invert` cuts the shape out (RFC-0028); `mask-composite` is
+        // what documents before 0.3.11 wrote for it.
+        composite: if attr(layout, "mask-invert").is_some_and(|value| value != "false") {
+            "subtract".to_owned()
+        } else {
+            attr(layout, "mask-composite").unwrap_or("add").to_owned()
+        },
     })
 }
 
@@ -2204,6 +2210,24 @@ mod tests {
         // Left out, so the node's own size stands in at paint time.
         assert_eq!((mask.width, mask.height), (None, None));
         assert_eq!(mask.mode, "luminance");
+        assert_eq!(mask.composite, "subtract");
+    }
+
+    #[test]
+    fn mask_invert_cuts_the_shape_out() {
+        let scene = scene_of(
+            r##"
+            <gui version="0.3.11">
+              <frame w="200" h="100">
+                <group w="200" h="100" mask-src="https://example.com/mask.svg" mask-invert />
+              </frame>
+            </gui>
+            "##,
+        );
+        let mask = scene.root.children[0]
+            .image_mask
+            .as_ref()
+            .expect("mask is read");
         assert_eq!(mask.composite, "subtract");
     }
 
