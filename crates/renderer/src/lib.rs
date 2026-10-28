@@ -53,8 +53,8 @@ pub use paint::{
 };
 pub use parser::{
     normalize_presence_attrs, parse_gui_xml, parse_gui_xml_with, parse_library,
-    parse_standalone_xml, DocumentForm, Library, ParseError, ParseOptions, RENDERER_VERSION,
-    SUPPORTED_VERSION,
+    parse_library_files, parse_standalone_xml, DocumentForm, Library, ParseError, ParseOptions,
+    RENDERER_VERSION, SUPPORTED_VERSION,
 };
 pub use scene::{
     build_scene, Border, BorderWidths, Effect, Fill, ImageMask, Outline, PaintContent, Scene,

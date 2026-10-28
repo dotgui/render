@@ -12,7 +12,9 @@
 //! path that leaves the package, two paths that differ only in case or
 //! Unicode normalization, or (in a directory) a symbolic link, are refused.
 
-use crate::parser::{parse_gui_xml_with, parse_library, Library, ParseError, ParseOptions};
+use crate::parser::{
+    parse_gui_xml_with, parse_library, parse_library_files, Library, ParseError, ParseOptions,
+};
 use crate::{GuiDocument, Modes};
 use std::{
     collections::BTreeMap,
@@ -57,6 +59,9 @@ pub enum PackageError {
 
     #[error("{0} is not a package: a package directory's name ends in .gui")]
     NotAPackageDirectory(String),
+
+    #[error("the package has both library.guix and library/; a library is stored one way or the other, never both")]
+    BothLibraryForms,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +71,9 @@ pub struct GuiPackage {
     pub documents: Vec<PackageDocument>,
     /// `library.guix`, when the package has one.
     pub library: Option<PackageDocument>,
+    /// The library split across `library/`, in path order (RFC-0055). Never
+    /// beside `library`.
+    pub library_files: Vec<PackageDocument>,
     /// Everything that is not a root `.guix`: `assets/`, `preview.webp`.
     pub assets: BTreeMap<String, Vec<u8>>,
     /// Entries read but not part of the package — dotfiles, stray files, a
@@ -94,7 +102,7 @@ impl GuiPackage {
     /// Whether the package is 0.3 structure: more than one document, or a
     /// library. Every document in such a package must declare 0.3 or higher.
     pub fn is_multi_document(&self) -> bool {
-        self.documents.len() > 1 || self.library.is_some()
+        self.documents.len() > 1 || self.library.is_some() || !self.library_files.is_empty()
     }
 
     /// The package's only document, for callers that handle one screen.
@@ -111,13 +119,35 @@ impl GuiPackage {
         self.documents.iter().find(|doc| doc.name == name)
     }
 
-    /// The package's `library.guix`, parsed.
+    /// The package's library, parsed: `library.guix`, or every file under
+    /// `library/` taken together (RFC-0055).
     pub fn parse_library(&self) -> Option<Result<Library, ParseError>> {
-        let library = self.library.as_ref()?;
-        Some(match library.xml() {
-            Ok(xml) => parse_library(xml),
-            Err(_) => Err(ParseError::Encoding(library.name.clone())),
-        })
+        if let Some(library) = &self.library {
+            return Some(match library.xml() {
+                Ok(xml) => parse_library(xml),
+                Err(_) => Err(ParseError::Encoding(library.name.clone())),
+            });
+        }
+        if self.library_files.is_empty() {
+            return None;
+        }
+        Some(self.parse_library_files_except(None))
+    }
+
+    /// The split library without one of its files — the library that file's
+    /// own page resolves against.
+    fn parse_library_files_except(&self, skip: Option<&str>) -> Result<Library, ParseError> {
+        let mut files = Vec::new();
+        for file in &self.library_files {
+            if Some(file.name.as_str()) == skip {
+                continue;
+            }
+            let xml = file
+                .xml()
+                .map_err(|_| ParseError::Encoding(file.name.clone()))?;
+            files.push((file.name.clone(), xml.to_owned()));
+        }
+        parse_library_files(&files)
     }
 
     /// Parses one document against the package's library.
@@ -149,7 +179,7 @@ impl GuiPackage {
         let xml = document
             .xml()
             .map_err(|_| ParseError::Encoding(document.name.clone()))?;
-        parse_gui_xml_with(
+        let parsed = parse_gui_xml_with(
             xml,
             ParseOptions {
                 library,
@@ -157,7 +187,15 @@ impl GuiPackage {
                 mode,
                 ..ParseOptions::default()
             },
-        )
+        )?;
+        // A package with library/ is 0.4.2 structure (RFC-0055).
+        if !self.library_files.is_empty() && version_below(&parsed.version, (0, 4, 2)) {
+            return Err(ParseError::VersionBelowLibraryDirectory(
+                document.name.clone(),
+                parsed.version,
+            ));
+        }
+        Ok(parsed)
     }
 
     /// Every page the package renders: its documents in order, then the
@@ -182,6 +220,25 @@ impl GuiPackage {
                 document: self.parse_document_in_mode(document, library.as_ref(), mode),
             })
             .collect();
+
+        // A split library has no page of its own; each library file with a
+        // layout root is its own page, resolved against the rest.
+        if self.library.is_none() {
+            for file in &self.library_files {
+                let has_root = file
+                    .xml()
+                    .is_ok_and(|xml| crate::parser::has_layout_root(xml).unwrap_or(false));
+                if !has_root {
+                    continue;
+                }
+                let rest = self.parse_library_files_except(Some(&file.name));
+                pages.push(PackagePage {
+                    name: file.name.clone(),
+                    is_library: true,
+                    document: self.parse_document_in_mode(file, Some(&rest), mode),
+                });
+            }
+        }
 
         match (&self.library, library) {
             (Some(file), Some(Ok(library))) if library.has_page() => pages.push(PackagePage {
@@ -318,6 +375,10 @@ fn entry_kind(path: &str) -> Option<EntryKind> {
     if path.split('/').any(|segment| segment.starts_with('.')) {
         return None;
     }
+    // Under library/, only .guix files are part of the package (RFC-0055).
+    if let Some(rest) = path.strip_prefix("library/") {
+        return (!rest.is_empty() && path.ends_with(".guix")).then_some(EntryKind::LibraryFile);
+    }
     if !path.contains('/') {
         return if path.ends_with(".guix") {
             Some(EntryKind::Document)
@@ -333,6 +394,21 @@ fn entry_kind(path: &str) -> Option<EntryKind> {
 enum EntryKind {
     Document,
     Asset,
+    LibraryFile,
+}
+
+/// Whether `version` is a spec point before `floor`.
+fn version_below(version: &str, floor: (u32, u32, u32)) -> bool {
+    let mut parts = version
+        .trim()
+        .split('.')
+        .map(|part| part.parse::<u32>().unwrap_or(0));
+    let point = (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    );
+    point < floor
 }
 
 /// Builds a package from its entries — a ZIP's, or a walked directory's —
@@ -340,6 +416,7 @@ enum EntryKind {
 pub fn read_gui_entries(entries: Vec<(String, Vec<u8>)>) -> Result<GuiPackage, PackageError> {
     let mut documents = Vec::new();
     let mut library = None;
+    let mut library_files = Vec::new();
     let mut assets = BTreeMap::new();
     let mut ignored = Vec::new();
     let mut seen: BTreeMap<String, String> = BTreeMap::new();
@@ -371,19 +448,25 @@ pub fn read_gui_entries(entries: Vec<(String, Vec<u8>)>) -> Result<GuiPackage, P
             Some(EntryKind::Asset) => {
                 assets.insert(name, bytes);
             }
+            Some(EntryKind::LibraryFile) => library_files.push(PackageDocument { name, bytes }),
             None => ignored.push(name),
         }
     }
 
-    if documents.is_empty() && library.is_none() {
+    if library.is_some() && !library_files.is_empty() {
+        return Err(PackageError::BothLibraryForms);
+    }
+    if documents.is_empty() && library.is_none() && library_files.is_empty() {
         return Err(PackageError::NoDocuments);
     }
     documents.sort_by(|a, b| a.name.cmp(&b.name));
+    library_files.sort_by(|a, b| a.name.cmp(&b.name));
     ignored.sort();
 
     Ok(GuiPackage {
         documents,
         library,
+        library_files,
         assets,
         ignored,
     })
@@ -541,6 +624,125 @@ pub(crate) mod tests {
         assert!(matches!(
             read_gui_entries(files),
             Err(PackageError::Collision(..))
+        ));
+    }
+
+    const SPLIT: &[(&str, &[u8])] = &[
+        (
+            "01-screen.guix",
+            b"<gui version=\"0.4.2\"><col w=\"390\" fill=\"$primary\"><instance component=\"comp-button\" /></col></gui>",
+        ),
+        (
+            "library/tokens.guix",
+            b"<gui version=\"0.4.2\"><tokens><color name=\"primary\" value=\"#007AFF\" /></tokens></gui>",
+        ),
+        (
+            "library/components/button.guix",
+            b"<gui version=\"0.4.2\"><components><component id=\"comp-button\"><row w=\"80\" fill=\"$primary\"><text value=\"Go\" /></row></component></components><row><instance component=\"comp-button\" /></row></gui>",
+        ),
+    ];
+
+    #[test]
+    fn a_split_library_is_one_library() {
+        let package = read_gui_entries(owned(SPLIT)).expect("reads");
+        assert_eq!(package.documents.len(), 1);
+        assert_eq!(package.library_files.len(), 2);
+        let pages = package.pages();
+        let screen = pages[0]
+            .document
+            .as_ref()
+            .expect("the screen resolves across library files");
+        assert_eq!(screen.metadata.tokens["primary"], "#007AFF");
+        // The instance expanded into the button from the other library file.
+        assert_eq!(screen.root.children[0].tag, "row");
+        // The button file's own page renders against the rest of the library.
+        let button = pages
+            .iter()
+            .find(|page| page.name == "library/components/button.guix")
+            .expect("the library file is a page");
+        assert!(button.is_library);
+        assert!(
+            button.document.is_ok(),
+            "{:?}",
+            button.document.as_ref().err()
+        );
+    }
+
+    #[test]
+    fn both_library_forms_are_refused_and_an_empty_directory_is_none() {
+        let mut files = owned(SPLIT);
+        files.push((
+            LIBRARY_FILENAME.to_owned(),
+            b"<gui version=\"0.4.2\"><tokens /></gui>".to_vec(),
+        ));
+        assert!(matches!(
+            read_gui_entries(files),
+            Err(PackageError::BothLibraryForms)
+        ));
+
+        let package = read_gui_entries(vec![
+            (
+                "01.guix".to_owned(),
+                b"<gui version=\"0.4.2\"><col /></gui>".to_vec(),
+            ),
+            (
+                "library.guix".to_owned(),
+                b"<gui version=\"0.4.2\"><tokens /></gui>".to_vec(),
+            ),
+            ("library/README.md".to_owned(), b"notes".to_vec()),
+        ])
+        .expect("a README is no library file");
+        assert!(package.library_files.is_empty());
+        assert_eq!(package.ignored, ["library/README.md"]);
+    }
+
+    #[test]
+    fn a_name_in_two_library_files_names_both() {
+        for (path, xml) in [
+            ("library/brand.guix", "<gui version=\"0.4.2\"><tokens><color name=\"primary\" value=\"#FF0000\" /></tokens></gui>"),
+            ("library/x.guix", "<gui version=\"0.4.2\"><components><component id=\"comp-button\"><row /></component></components></gui>"),
+        ] {
+            let mut files = owned(SPLIT);
+            files.push((path.to_owned(), xml.as_bytes().to_vec()));
+            let package = read_gui_entries(files).expect("reads");
+            let err = package.parse_library().expect("a library").expect_err("collision");
+            let text = err.to_string();
+            assert!(text.contains(path), "{text}");
+        }
+        let mut files = owned(SPLIT);
+        files.push((
+            "library/a.guix".to_owned(),
+            b"<gui version=\"0.4.2\"><mode name=\"theme\" values=\"light dark\" /></gui>".to_vec(),
+        ));
+        files.push((
+            "library/b.guix".to_owned(),
+            b"<gui version=\"0.4.2\"><mode name=\"theme\" values=\"light dark\" /></gui>".to_vec(),
+        ));
+        let package = read_gui_entries(files).expect("reads");
+        assert!(package.parse_library().expect("a library").is_err());
+    }
+
+    #[test]
+    fn every_file_in_a_split_package_declares_0_4_2() {
+        let mut files = owned(SPLIT);
+        files[0].1 = String::from_utf8(files[0].1.clone())
+            .unwrap()
+            .replace("0.4.2", "0.4.1")
+            .into_bytes();
+        let package = read_gui_entries(files).expect("reads");
+        assert!(matches!(
+            package.pages()[0].document,
+            Err(ParseError::VersionBelowLibraryDirectory(..))
+        ));
+        let mut files = owned(SPLIT);
+        files[1].1 = String::from_utf8(files[1].1.clone())
+            .unwrap()
+            .replace("0.4.2", "0.4.1")
+            .into_bytes();
+        let package = read_gui_entries(files).expect("reads");
+        assert!(matches!(
+            package.parse_library(),
+            Some(Err(ParseError::VersionBelowLibraryDirectory(..)))
         ));
     }
 

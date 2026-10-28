@@ -31,8 +31,8 @@ pub const RENDERER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// cumulative: every earlier point is implemented too, and a document declaring
 /// a newer one is refused rather than drawn with features this renderer does
 /// not know.
-pub const SUPPORTED_VERSION: &str = "0.4.1";
-const SUPPORTED: (u32, u32, u32) = (0, 4, 1);
+pub const SUPPORTED_VERSION: &str = "0.4.2";
+const SUPPORTED: (u32, u32, u32) = (0, 4, 2);
 const MULTI_DOCUMENT: (u32, u32, u32) = (0, 3, 0);
 /// From 0.3.6 provenance is `<gui source>`, and `<meta>` is obsolete (RFC-0036).
 const ROOT_SOURCE: (u32, u32, u32) = (0, 3, 6);
@@ -74,6 +74,9 @@ pub enum ParseError {
 
     #[error("library.guix is invalid: {0}")]
     Library(String),
+
+    #[error("{0} declares version {1}, but every file in a package with library/ must declare 0.4.2 or higher")]
+    VersionBelowLibraryDirectory(String, String),
 
     #[error("{}", .0.join("; "))]
     Invalid(Vec<String>),
@@ -251,12 +254,102 @@ pub fn parse_library(xml: &str) -> Result<Library, ParseError> {
     let parts = read_parts(xml, true)?;
     let mut issues = Issues::new(true);
     report_provenance(&parts, &mut issues);
-    let components = components::read_components(&parts.component_blocks, &mut issues);
-    validate::check_styles(&parts.metadata, &mut issues);
+    let has_page = parts.layout_root.is_some();
+    finish_library(
+        parts.metadata,
+        &parts.component_blocks,
+        issues,
+        has_page,
+        xml.to_owned(),
+    )
+}
+
+/// Whether a document has a layout root — whether a library file is also a
+/// page (RFC-0055).
+pub(crate) fn has_layout_root(xml: &str) -> Result<bool, ParseError> {
+    Ok(read_parts(xml, false)?.layout_root.is_some())
+}
+
+/// The first spec point a package with `library/` may declare (RFC-0055).
+const LIBRARY_DIRECTORY: (u32, u32, u32) = (0, 4, 2);
+
+/// Parses a library split across `library/` (RFC-0055): every file's library
+/// part, taken together as one library. Library files reference each other
+/// freely; a name declared by two files is an error naming both, and each
+/// file must declare 0.4.2 or higher. `files` are (path, markup) pairs.
+pub fn parse_library_files(files: &[(String, String)]) -> Result<Library, ParseError> {
+    let mut issues = Issues::new(true);
+    let mut metadata = GuiMetadata::default();
+    let mut blocks = Vec::new();
+    let mut owners: BTreeMap<String, String> = BTreeMap::new();
+    let mut claim = |kind: &str, name: &str, file: &str, issues: &mut Issues| {
+        let key = format!("{kind} '{name}'");
+        match owners.get(&key) {
+            Some(first) => issues.error(format!("{key} is declared by {first} and {file}")),
+            None => {
+                owners.insert(key, file.to_owned());
+            }
+        }
+    };
+
+    for (file, xml) in files {
+        let parts = read_parts(xml, true)?;
+        if parse_version(&parts.version).is_some_and(|version| version < LIBRARY_DIRECTORY) {
+            return Err(ParseError::VersionBelowLibraryDirectory(
+                file.clone(),
+                parts.version,
+            ));
+        }
+        report_provenance(&parts, &mut issues);
+        let own = parts.metadata;
+        for name in own.tokens.keys() {
+            claim("token", &format!("${name}"), file, &mut issues);
+        }
+        for axis in &own.mode_axes {
+            claim("mode", &axis.name, file, &mut issues);
+        }
+        for family in own.fonts.keys() {
+            claim("font", family, file, &mut issues);
+        }
+        for name in own.styles.keys() {
+            claim("text style", name, file, &mut issues);
+        }
+        for name in own.effect_styles.keys() {
+            claim("effect style", name, file, &mut issues);
+        }
+        let mut scratch = Issues::new(true);
+        for id in components::read_components(&parts.component_blocks, &mut scratch).ids() {
+            claim("component", id, file, &mut issues);
+        }
+        metadata.tokens.extend(own.tokens);
+        metadata.token_modes.extend(own.token_modes);
+        metadata.mode_axes.extend(own.mode_axes);
+        metadata.fonts.extend(own.fonts);
+        metadata.styles.extend(own.styles);
+        metadata.effect_styles.extend(own.effect_styles);
+        blocks.extend(parts.component_blocks);
+    }
+
+    // Each file's own page renders against the rest of the library, so the
+    // joined library itself has none.
+    finish_library(metadata, &blocks, issues, false, String::new())
+}
+
+/// The checks every library passes, however it is stored: what it declares
+/// resolves inside it, because a library depends on nothing.
+fn finish_library(
+    metadata: GuiMetadata,
+    component_blocks: &[GuiNode],
+    mut issues: Issues,
+    has_page: bool,
+    xml: String,
+) -> Result<Library, ParseError> {
+    let components = components::read_components(component_blocks, &mut issues);
+    validate::check_styles(&metadata, &mut issues);
 
     for (id, body) in components.bodies() {
         let mut unexpanded = Issues::new(true);
-        validate::check_tree(body, &parts.metadata, &mut unexpanded);
+        validate::check_tree(body, &metadata, &mut unexpanded);
         check_instances_resolve(body, &components, &mut unexpanded);
         issues.errors.extend(
             unexpanded
@@ -271,10 +364,10 @@ pub fn parse_library(xml: &str) -> Result<Library, ParseError> {
     }
 
     Ok(Library {
-        metadata: parts.metadata,
+        metadata,
         components,
-        has_page: parts.layout_root.is_some(),
-        xml: xml.to_owned(),
+        has_page,
+        xml,
     })
 }
 
