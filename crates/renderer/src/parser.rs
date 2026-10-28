@@ -30,8 +30,8 @@ pub const RENDERER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// cumulative: every earlier point is implemented too, and a document declaring
 /// a newer one is refused rather than drawn with features this renderer does
 /// not know.
-pub const SUPPORTED_VERSION: &str = "0.3.8";
-const SUPPORTED: (u32, u32, u32) = (0, 3, 8);
+pub const SUPPORTED_VERSION: &str = "0.3.9";
+const SUPPORTED: (u32, u32, u32) = (0, 3, 9);
 const MULTI_DOCUMENT: (u32, u32, u32) = (0, 3, 0);
 /// From 0.3.6 provenance is `<gui source>`, and `<meta>` is obsolete (RFC-0036).
 const ROOT_SOURCE: (u32, u32, u32) = (0, 3, 6);
@@ -39,6 +39,8 @@ const ROOT_SOURCE: (u32, u32, u32) = (0, 3, 6);
 const IDENTITY: (u32, u32, u32) = (0, 3, 7);
 /// From 0.3.8 `detached-from` must resolve and `component` is `<instance>`'s alone (RFC-0035).
 const DETACHED: (u32, u32, u32) = (0, 3, 8);
+/// From 0.3.9 a dimension is a bare number, `%` only on sizes (RFC-0033).
+const UNITS: (u32, u32, u32) = (0, 3, 9);
 
 #[derive(Debug, Error)]
 pub enum ParseError {
@@ -207,6 +209,8 @@ pub fn parse_gui_xml_with(xml: &str, options: ParseOptions) -> Result<GuiDocumen
     // subtree's mode — and before anything reads a token.
     modes::apply(&mut layout_root, &metadata, options.mode);
 
+    validate::check_units(&layout_root, parts.unit_rules, &mut issues);
+
     // A 0.2 document keeps its old leniency about what it refers to: it
     // renders as it always did, and nothing new is said about it.
     if parts.strict {
@@ -340,6 +344,8 @@ struct Parts {
     source_id_without_source: Option<bool>,
     /// Whether `detached-from` and `component` are held to 0.3.8's rules.
     detached_rules: bool,
+    /// Whether dimensions are held to 0.3.9's rules.
+    unit_rules: bool,
     name: Option<String>,
     metadata: GuiMetadata,
     component_blocks: Vec<GuiNode>,
@@ -417,6 +423,7 @@ fn read_parts(xml: &str, requires_multi_document: bool) -> Result<Parts, ParseEr
         obsolete_meta,
         source_id_without_source,
         detached_rules: parsed >= DETACHED,
+        unit_rules: parsed >= UNITS,
         version,
         name: attr(root, "name"),
         metadata,
@@ -970,6 +977,41 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.contains("no source on <gui>")));
+    }
+
+    #[test]
+    fn dimensions_are_bare_numbers_and_percent_on_sizes_from_0_3_9() {
+        for node in [
+            r#"<col w="50%" />"#,
+            r#"<col max-width="80%" />"#,
+            r#"<col w="10" p="16 24" />"#,
+        ] {
+            assert!(
+                parse_gui_xml(&format!(
+                    r#"<gui version="0.3.9"><col w="390">{node}</col></gui>"#
+                ))
+                .is_ok(),
+                "{node}"
+            );
+        }
+        for (node, says) in [
+            (r#"<col w="320px" />"#, "write 320"),
+            (r#"<col w="1.5rem" />"#, "rem is not a unit"),
+            (r#"<col w="100vw" />"#, "vw is not a unit"),
+            (r#"<col w="calc(100% - 16px)" />"#, "calc() is not part"),
+            (r#"<col w="10" p="10%" />"#, "only sizes"),
+        ] {
+            let err = parse_gui_xml(&format!(
+                r#"<gui version="0.3.9"><col w="390">{node}</col></gui>"#
+            ))
+            .expect_err(node);
+            assert!(err.to_string().contains(says), "{node}: {err}");
+            let older = parse_gui_xml(&format!(
+                r#"<gui version="0.3.8"><col w="390">{node}</col></gui>"#
+            ))
+            .expect("only advice before 0.3.9");
+            assert!(older.warnings.iter().any(|w| w.contains(says)), "{node}");
+        }
     }
 
     #[test]

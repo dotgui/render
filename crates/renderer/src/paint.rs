@@ -4061,11 +4061,38 @@ pub(crate) fn ellipse_path(x: f32, y: f32, width: f32, height: f32) -> Option<ti
     pb.finish()
 }
 
+/// Reads a color in any of the format's notations (RFC-0033): hex,
+/// `rgba(r, g, b, a)`, `oklch(L C H [/ a])`, and `rgb(r, g, b)`, which is not
+/// part of the format but is what exported gradient stops carry. `opacity`
+/// multiplies the color's own alpha.
 fn parse_color(value: &str, opacity: f32) -> Option<Color> {
     let value = value.trim();
     if value == "none" || value == "transparent" || value.starts_with("linear-gradient") {
         return None;
     }
+    let opacity = opacity.clamp(0.0, 1.0);
+    if let Some(args) = function_args(value, "rgba") {
+        let [r, g, b, a] = <[&str; 4]>::try_from(split_commas(args)).ok()?;
+        return Some(Color::from_rgba8(
+            channel(r)?,
+            channel(g)?,
+            channel(b)?,
+            alpha_byte(unit(a)? * opacity),
+        ));
+    }
+    if let Some(args) = function_args(value, "rgb") {
+        let [r, g, b] = <[&str; 3]>::try_from(split_commas(args)).ok()?;
+        return Some(Color::from_rgba8(
+            channel(r)?,
+            channel(g)?,
+            channel(b)?,
+            alpha_byte(opacity),
+        ));
+    }
+    if let Some(args) = function_args(value, "oklch") {
+        return oklch(args, opacity);
+    }
+
     let hex = value.strip_prefix('#')?;
     let (r, g, b, a) = match hex.len() {
         6 => (
@@ -4082,14 +4109,135 @@ fn parse_color(value: &str, opacity: f32) -> Option<Color> {
         ),
         _ => return None,
     };
-    let alpha = ((a as f32) * opacity.clamp(0.0, 1.0)).round() as u8;
+    let alpha = ((a as f32) * opacity).round() as u8;
     Some(Color::from_rgba8(r, g, b, alpha))
+}
+
+/// The text between `name(` and the closing `)`.
+fn function_args<'a>(value: &'a str, name: &str) -> Option<&'a str> {
+    value
+        .strip_prefix(name)?
+        .trim_start()
+        .strip_prefix('(')?
+        .strip_suffix(')')
+}
+
+fn split_commas(args: &str) -> Vec<&str> {
+    args.split(',').map(str::trim).collect()
+}
+
+fn channel(text: &str) -> Option<u8> {
+    let value = text.parse::<u16>().ok()?;
+    u8::try_from(value).ok()
+}
+
+/// A number 0–1, or a percentage.
+fn unit(text: &str) -> Option<f32> {
+    let value = match text.strip_suffix('%') {
+        Some(percent) => percent.trim().parse::<f32>().ok()? / 100.0,
+        None => text.parse::<f32>().ok()?,
+    };
+    (0.0..=1.0).contains(&value).then_some(value)
+}
+
+fn alpha_byte(alpha: f32) -> u8 {
+    (alpha.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// `L C H` or `L C H / a`, converted to sRGB. A color outside sRGB is clipped
+/// to it channel by channel: this renderer paints in sRGB, and the file keeps
+/// the full color for one that does not.
+fn oklch(args: &str, opacity: f32) -> Option<Color> {
+    let (lch, alpha) = match args.split_once('/') {
+        Some((lch, alpha)) => (lch, unit(alpha.trim())?),
+        None => (args, 1.0),
+    };
+    let mut parts = lch.split_whitespace();
+    let lightness = unit(parts.next()?)?;
+    let chroma = parts.next()?.parse::<f32>().ok().filter(|c| *c >= 0.0)?;
+    let hue = parts.next()?.trim_end_matches("deg").parse::<f32>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let (sin, cos) = hue.to_radians().sin_cos();
+    let (a, b) = (chroma * cos, chroma * sin);
+    // OKLab → linear sRGB (Björn Ottosson's matrices).
+    let l = (lightness + 0.396_337_78 * a + 0.215_803_76 * b).powi(3);
+    let m = (lightness - 0.105_561_346 * a - 0.063_854_17 * b).powi(3);
+    let s = (lightness - 0.089_484_18 * a - 1.291_485_5 * b).powi(3);
+    let red = 4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_94 * s;
+    let green = -1.268_438 * l + 2.609_757_4 * m - 0.341_319_38 * s;
+    let blue = -0.004_196_086_3 * l - 0.703_418_6 * m + 1.707_614_7 * s;
+
+    let encode = |linear: f32| -> u8 {
+        let linear = linear.clamp(0.0, 1.0);
+        let srgb = if linear <= 0.003_130_8 {
+            12.92 * linear
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        };
+        (srgb * 255.0).round() as u8
+    };
+    Some(Color::from_rgba8(
+        encode(red),
+        encode(green),
+        encode(blue),
+        alpha_byte(alpha * opacity),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{build_scene, compute_taffy_layout, parse_gui_xml};
+
+    fn rgba8(value: &str) -> Option<[u8; 4]> {
+        let color = parse_color(value, 1.0)?.to_color_u8();
+        Some([color.red(), color.green(), color.blue(), color.alpha()])
+    }
+
+    #[test]
+    fn every_color_notation_is_read() {
+        assert_eq!(rgba8("#FF000080"), Some([255, 0, 0, 128]));
+        assert_eq!(rgba8("rgba(255, 0, 0, 0.5)"), Some([255, 0, 0, 128]));
+        assert_eq!(rgba8("rgba(0,128,255,1)"), Some([0, 128, 255, 255]));
+        assert_eq!(rgba8("rgb(255, 0, 0)"), Some([255, 0, 0, 255]));
+        // oklch white, black, and a known sRGB red.
+        assert_eq!(rgba8("oklch(1 0 0)"), Some([255, 255, 255, 255]));
+        assert_eq!(rgba8("oklch(0% 0 0)"), Some([0, 0, 0, 255]));
+        let red = rgba8("oklch(0.628 0.2577 29.23)").expect("oklch red");
+        assert!(red[0] >= 253 && red[1] <= 3 && red[2] <= 3, "{red:?}");
+        assert_eq!(rgba8("oklch(1 0 0 / 0.5)").map(|c| c[3]), Some(128));
+        assert_eq!(rgba8("oklch(1 0 0 / 50%)").map(|c| c[3]), Some(128));
+    }
+
+    #[test]
+    fn an_out_of_gamut_oklch_is_clipped_into_srgb() {
+        let vivid = rgba8("oklch(0.7 0.4 145)").expect("drawn, clipped");
+        assert_eq!(vivid[3], 255);
+    }
+
+    #[test]
+    fn malformed_colors_draw_nothing() {
+        for value in [
+            "rgba(255, 0, 0)",
+            "rgba(300, 0, 0, 0.5)",
+            "oklch(banana)",
+            "oklch(1.5 0.2 250)",
+            "red",
+        ] {
+            assert_eq!(rgba8(value), None, "{value}");
+        }
+    }
+
+    #[test]
+    fn opacity_multiplies_the_colors_own_alpha() {
+        let color = parse_color("rgba(0, 0, 0, 0.5)", 0.5)
+            .expect("color")
+            .to_color_u8();
+        assert_eq!(color.alpha(), 64);
+    }
 
     #[test]
     fn paints_scene_to_png_file() {
