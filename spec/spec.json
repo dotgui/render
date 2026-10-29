@@ -1,6 +1,6 @@
 {
   "$generated": "DO NOT EDIT — run `bun run gen:spec` in the kit. Source: core/schema/types.ts + spec.content.ts",
-  "formatVersion": "0.2",
+  "formatVersion": "0.4.4",
   "categoryOrder": [
     "Format",
     "Metadata",
@@ -10,6 +10,18 @@
     "Appearance"
   ],
   "sharedAttributes": [
+    {
+      "name": "id",
+      "type": "string",
+      "required": false,
+      "description": "The node's name in this file, for references: a prop target, a path\nsegment, a link. Lowercase kebab-case, [a-z][a-z0-9-]*. Written only on\nnodes something points at; unique within its scope (RFC-0046)."
+    },
+    {
+      "name": "source-id",
+      "type": "string",
+      "required": false,
+      "description": "The source tool's handle for this node, read against `source` on the\nroot. Opaque, exporters only, written only for round-trip exports (RFC-0046)."
+    },
     {
       "name": "opacity",
       "type": "number",
@@ -41,12 +53,6 @@
         "linear-burn",
         "linear-dodge"
       ]
-    },
-    {
-      "name": "mask",
-      "type": "boolean",
-      "required": false,
-      "description": "Presence = true. Acts as an alpha mask for subsequent siblings."
     },
     {
       "name": "rotation",
@@ -193,6 +199,8 @@
       "summary": "file format",
       "description": [
         "A .gui file is a ZIP package. The markup, design tokens, font declarations, binary assets, and a preview thumbnail all live in one self-contained file.",
+        "A directory named *.gui holding the same entries is the same package: the ZIP is for sending, the directory for working on. Conversion changes no byte; dotfiles and anything outside the package's entries are ignored and reported (RFC-0054).",
+        "The package library is library.guix or a library/ directory whose .guix files together form it — never both. Subfolders carry no meaning; a name declared in two library files is an error (RFC-0055).",
         "Internally, the markup lives as design.guix — an implementation detail never surfaced to the outside. A program distinguishing a package from a raw markup string uses magic bytes: ZIP starts with PK, markup starts with <."
       ],
       "attributes": [
@@ -241,24 +249,61 @@
       "category": "Format",
       "summary": "document root",
       "description": [
-        "The root element is a document envelope — never rendered. Direct children are metadata blocks or exactly one root layout node. Metadata always precedes the layout root."
+        "The root element is a document envelope — never rendered. Direct children are metadata blocks or exactly one root layout node. Metadata always precedes the layout root.",
+        "platform and source describe the document itself and belong to it alone: in a multi-document package each document, library.guix included, carries its own. There is no <meta> block; files written before 0.3.6 that carry one keep working."
       ],
       "attributes": [
         {
           "name": "version",
           "type": "string",
           "required": true,
-          "description": "Spec version. Current: 0.2."
+          "description": "Spec version the document is written for: a chapter (\"0.3\") or a point in it (\"0.3.4\"). Consumers refuse a version newer than they read. Current: 0.4.4."
         },
         {
           "name": "name",
           "type": "string",
           "required": false,
           "description": "Screen or layer name from the source design."
+        },
+        {
+          "name": "platform",
+          "type": "string",
+          "required": false,
+          "description": "The platform the document is designed for. Open string; recommended: ios, android, web, desktop, tv, watch. Absent = unspecified — assume no default. Describes intent; changes nothing about how the document is drawn (RFC-0036)."
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "required": false,
+          "description": "The tool that exported the file. Open string; recommended: figma, penpot, sketch, html. Exporters only — a file written by hand or by an AI omits it (RFC-0036)."
+        },
+        {
+          "name": "uid",
+          "type": "string",
+          "required": false,
+          "description": "A library package's own identity, minted once and never changed — on the root of the file holding its library part. Only a package used as a library writes it (RFC-0056)."
+        },
+        {
+          "name": "release",
+          "type": "string",
+          "required": false,
+          "description": "A library package's current release, beside uid. Opaque; semantic versioning recommended (RFC-0056)."
+        },
+        {
+          "name": "template",
+          "type": "boolean",
+          "required": false,
+          "description": "Presence: this document is a starting point to copy, not a screen to ship. Renders exactly as without it; never on library.guix or a library/ file (RFC-0057)."
+        },
+        {
+          "name": "source-id",
+          "type": "string",
+          "required": false,
+          "description": "The exported frame's handle in the source tool, read against source. Exporters only, and only for an export meant to round-trip. See spec/SOURCES.md (RFC-0046)."
         }
       ],
       "sharedAttrs": false,
-      "example": "<gui version=\"0.2\" name=\"Checkout\">\n  <tokens>\n    <color name=\"primary\" value=\"#007AFF\" />\n  </tokens>\n  <fonts>\n    <font family=\"Inter\" source=\"google\" weights=\"400 700\" />\n  </fonts>\n  <col w=\"390\" fill=\"#F2F2F7\" gap=\"16\" p=\"24\">\n    <text value=\"Checkout\"\n          font-family=\"Inter\" font-size=\"28\"\n          font-weight=\"700\" fill=\"#1C1C1E\" />\n  </col>\n</gui>",
+      "example": "<gui version=\"0.3\" name=\"Checkout\" platform=\"ios\">\n  <tokens>\n    <color name=\"primary\" value=\"#007AFF\" />\n  </tokens>\n  <fonts>\n    <font family=\"Inter\" source=\"google\" weights=\"400 700\" />\n  </fonts>\n  <col w=\"390\" fill=\"#F2F2F7\" gap=\"16\" p=\"24\">\n    <text value=\"Checkout\"\n          font-family=\"Inter\" font-size=\"28\"\n          font-weight=\"700\" fill=\"#1C1C1E\" />\n  </col>\n</gui>",
       "exampleLabel": "Example",
       "exampleMode": "hl",
       "related": [
@@ -323,7 +368,7 @@
           "name": "<color>",
           "type": "token",
           "required": false,
-          "description": "Hex color, e.g. #007AFF."
+          "description": "A color: hex, rgba() or oklch(), e.g. #007AFF."
         },
         {
           "name": "<number>",
@@ -462,6 +507,62 @@
       "hubHidden": false
     },
     {
+      "slug": "library",
+      "tag": "library",
+      "name": "<library>",
+      "navLabel": null,
+      "kind": "tag",
+      "category": "Metadata",
+      "summary": "linked library",
+      "description": [
+        "A block of declarations copied from another .gui package, recording where they came from (RFC-0056). Its children are ordinary declaration blocks — mode, tokens, styles, fonts, components — and resolve exactly as if written directly. Renderers never fetch src: the copy is the truth for rendering, and the package renders offline.",
+        "Names stay unique across the package; an identical mode axis may repeat. Blocks do not nest and hold no layout. A document with a <library> block declares 0.4.4 or higher."
+      ],
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "The library's human-readable label. Not an identity and not a namespace."
+        },
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "The source library's own identity."
+        },
+        {
+          "name": "release",
+          "type": "string",
+          "required": true,
+          "description": "The release the cached declarations were taken from."
+        },
+        {
+          "name": "src",
+          "type": "string",
+          "required": false,
+          "description": "Where a tool may find the library: a relative path or URL to a .gui package. Never followed by a renderer; never a source tool's file."
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "required": false,
+          "description": "The tool the library's declarations came from; source-id values inside the block read against it."
+        }
+      ],
+      "sharedAttrs": false,
+      "example": "<library name=\"acme-ds\" uid=\"7f3e9a1c-2b4d-4e1a-9c3f-5d6e7f8a9b0c\" release=\"1.4.0\"\n         src=\"../libraries/acme-ds.gui\" source=\"figma\">\n  <tokens><color name=\"primary\" value=\"#3B5BFD\" /></tokens>\n  <components>\n    <component id=\"comp-button\" source-id=\"a2b9c4d1e5f6\"> … </component>\n  </components>\n</library>",
+      "exampleLabel": "Example",
+      "exampleMode": "hl",
+      "related": [
+        "tokens",
+        "components",
+        "gui"
+      ],
+      "faq": [],
+      "hubHidden": false
+    },
+    {
       "slug": "assets",
       "tag": null,
       "name": "Assets",
@@ -514,32 +615,170 @@
       "category": "Metadata",
       "summary": "component system",
       "description": [
-        "A <components> block at the top of the document holds all component definitions. Instances reference a component by id and pass prop overrides as attributes.",
-        "<component> defines a single reusable component. <component-set> groups related variants. Each <variant> is a member of the set.",
-        "Declared props use a <props> block with <prop> entries. Ad-hoc overrides skip the props block and match by sanitized layer name."
+        "A <components> block above the layout root holds every component definition. An <instance> places one by id and passes prop values as flat attributes.",
+        "<component id> defines one reusable component: an optional <props> block, then one layout body. <component-set id> groups <variant id> members; an instance references a variant by its own id.",
+        "A component may declare slots — layout containers carrying slot=\"name\" — that an instance fills with content (RFC-0044).",
+        "In a multi-document package, components declared in library.guix are shared with every document (RFC-0042)."
       ],
-      "attributes": [
-        {
-          "name": "text",
-          "type": "prop type",
-          "required": false,
-          "description": "Overrides value attr of the target layer."
-        },
-        {
-          "name": "visible",
-          "type": "prop type",
-          "required": false,
-          "description": "Hides target when set to \"false\"."
-        }
-      ],
+      "attributes": [],
       "sharedAttrs": false,
-      "example": "<components>\n  <component name=\"Card/Product\" id=\"comp-card\">\n    <props>\n      <prop name=\"title\" type=\"text\" target=\"title\" />\n    </props>\n    <col w=\"320\" radius=\"12\" fill=\"#fff\" p=\"16\" gap=\"8\">\n      <text id=\"title\" value=\"Product Name\" font-size=\"16\" font-weight=\"600\" />\n    </col>\n  </component>\n</components>\n\n<instance component=\"comp-card\" title=\"Nike Air Max 90\" x=\"24\" y=\"120\" />",
+      "example": "<components>\n  <component name=\"Card/Product\" id=\"comp-card\">\n    <props>\n      <prop name=\"title\" type=\"string\" target=\"title\" />\n      <prop name=\"accent\" type=\"color\" target=\"badge\" />\n    </props>\n    <col w=\"320\" radius=\"12\" fill=\"#fff\" p=\"16\" gap=\"8\">\n      <text id=\"title\" value=\"Product Name\" font-size=\"16\" font-weight=\"600\" />\n      <rect id=\"badge\" w=\"24\" h=\"4\" fill=\"#0A84FF\" />\n      <col slot=\"details\" gap=\"4\" />\n    </col>\n  </component>\n</components>\n\n<instance component=\"comp-card\" title=\"Nike Air Max 90\" accent=\"#FF3B30\" />",
       "exampleLabel": "Component + instance",
       "exampleMode": "hl",
       "related": [
-        "gui",
-        "col",
-        "text"
+        "prop",
+        "instance",
+        "slot"
+      ],
+      "faq": [],
+      "hubHidden": false
+    },
+    {
+      "slug": "prop",
+      "tag": "prop",
+      "name": "<prop>",
+      "navLabel": null,
+      "kind": "tag",
+      "category": "Metadata",
+      "summary": "typed component prop",
+      "description": [
+        "A <prop> inside a component's <props> block declares one value an instance may pass. Prop types are data types — string, boolean, number, color, image, component, style — and bind names which attribute of the target changes.",
+        "number and style always need bind, because each could mean several attributes. A list in target applies one value to several layers at once.",
+        "A path reaches a node inside a nested instance, so a component can expose it as an ordinary prop: every segment but the last names an <instance> by id, and the next segment is read in that instance's component body."
+      ],
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "The attribute an instance passes the value as."
+        },
+        {
+          "name": "type",
+          "type": "string | boolean | number | color | image | component | style",
+          "required": true,
+          "description": "A data type (RFC-0034)."
+        },
+        {
+          "name": "target",
+          "type": "string",
+          "required": false,
+          "description": "Layer id(s) the value applies to, space-separated. Each is an id in the body, or a path through instances in it — tab-1/label sets label inside the instance tab-1 (RFC-0046). Optional for a string prop whose name is the id of exactly one <text> in the body."
+        },
+        {
+          "name": "bind",
+          "type": "string",
+          "required": false,
+          "description": "The attribute overridden on the target. Required for number and style. Defaults: string → value, boolean → visible, color → fill (or border-color; stroke is its old name), image → src, component → component."
+        }
+      ],
+      "sharedAttrs": false,
+      "example": "<props>\n  <prop name=\"label\"       type=\"string\"  target=\"label\" />\n  <prop name=\"disabled\"    type=\"boolean\" target=\"button\" />\n  <prop name=\"bg\"          type=\"color\"   target=\"surface\" />\n  <prop name=\"radius\"      type=\"number\"  target=\"surface\" bind=\"radius\" />\n  <prop name=\"label-style\" type=\"style\"   target=\"label\"   bind=\"text-style\" />\n  <prop name=\"accent\"      type=\"color\"   target=\"icon label indicator\" />\n</props>",
+      "exampleLabel": "Typed props",
+      "exampleMode": "hl",
+      "related": [
+        "components",
+        "instance"
+      ],
+      "faq": [],
+      "hubHidden": false
+    },
+    {
+      "slug": "instance",
+      "tag": "instance",
+      "name": "<instance>",
+      "navLabel": null,
+      "kind": "tag",
+      "category": "Content",
+      "summary": "component placement",
+      "description": [
+        "Places a component by id. Prop values and overrides are flat attributes, whatever their type; tokens and assets use the usual $name form.",
+        "Its only children are <slot> fills. Setting w or h scales the component body to fit."
+      ],
+      "mapsToFigma": "Instance",
+      "attributes": [
+        {
+          "name": "component",
+          "type": "string",
+          "required": true,
+          "description": "Component or variant id."
+        },
+        {
+          "name": "id",
+          "type": "string",
+          "required": false,
+          "description": "Names the instance so a path can pass through it: `tab-1/label` (RFC-0046)."
+        },
+        {
+          "name": "source-id",
+          "type": "string",
+          "required": false,
+          "description": "The source tool's handle for this instance (RFC-0046)."
+        },
+        {
+          "name": "x",
+          "type": "number",
+          "required": false,
+          "description": ""
+        },
+        {
+          "name": "y",
+          "type": "number",
+          "required": false,
+          "description": ""
+        },
+        {
+          "name": "w",
+          "type": "number | 'fill'",
+          "required": false,
+          "description": "Absent = the component's own width; scales the body when set."
+        },
+        {
+          "name": "h",
+          "type": "number | 'fill'",
+          "required": false,
+          "description": "Absent = the component's own height; scales the body when set."
+        }
+      ],
+      "sharedAttrs": true,
+      "example": "<instance component=\"comp-screen\" title=\"Audio Settings\">\n  <slot name=\"body\">\n    <instance component=\"comp-toggle\" label=\"Lossless\" />\n    <instance component=\"comp-toggle\" label=\"Spatial\" />\n  </slot>\n</instance>",
+      "exampleLabel": "Instance with props and a slot",
+      "exampleMode": "hl",
+      "related": [
+        "components",
+        "prop",
+        "slot"
+      ],
+      "faq": [],
+      "hubHidden": false
+    },
+    {
+      "slug": "slot",
+      "tag": "slot",
+      "name": "<slot>",
+      "navLabel": null,
+      "kind": "tag",
+      "category": "Content",
+      "summary": "content for a component slot",
+      "description": [
+        "A component declares a slot by putting slot=\"name\" on one of its layout containers; that container's layout applies to whatever is inserted, and its own children are the fallback. slot-accept limits it to instances of listed components or component sets; slot-min and slot-max advise a count.",
+        "An instance fills a slot with a <slot name> child. <slot> is valid only directly inside an <instance>, and its content cannot read the component's props. An unfilled slot keeps its fallback; one left empty renders nothing — no box, padding, or gap."
+      ],
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "The slot this fills. The component must declare it; each slot is filled once."
+        }
+      ],
+      "sharedAttrs": false,
+      "example": "<!-- in the component -->\n<row slot=\"tabs\" slot-accept=\"compset-tab-item\" slot-max=\"5\" w=\"fill\" gap=\"8\" />\n\n<!-- in the instance -->\n<slot name=\"tabs\">\n  <instance component=\"tab-library\" />\n  <instance component=\"tab-settings\" />\n</slot>",
+      "exampleLabel": "Declare and fill",
+      "exampleMode": "hl",
+      "related": [
+        "components",
+        "instance"
       ],
       "faq": [],
       "hubHidden": false
@@ -563,6 +802,12 @@
           "type": "string",
           "required": false,
           "description": ""
+        },
+        {
+          "name": "detached-from",
+          "type": "string",
+          "required": false,
+          "description": "The component this container was detached from: a component or variant\nid declared in the document or its library. Exporters only; changes\nnothing on screen (RFC-0035)."
         },
         {
           "name": "x",
@@ -674,7 +919,7 @@
           "name": "clip-path",
           "type": "string",
           "required": false,
-          "description": ""
+          "description": "A shape to clip to: inset(), circle(), ellipse() or polygon(); % of the node's box (RFC-0028)."
         },
         {
           "name": "overflow-x",
@@ -717,6 +962,76 @@
           "type": "number",
           "required": false,
           "description": ""
+        },
+        {
+          "name": "slot",
+          "type": "string",
+          "required": false,
+          "description": "Declares this container a slot, by name. Not on a component's root; not inside another slot."
+        },
+        {
+          "name": "slot-accept",
+          "type": "string",
+          "required": false,
+          "description": "Space-separated component or component-set ids. Present = the slot takes only instances of these, flat."
+        },
+        {
+          "name": "slot-min",
+          "type": "number",
+          "required": false,
+          "description": "Advisory minimum item count. A quality finding, never an error."
+        },
+        {
+          "name": "slot-max",
+          "type": "number",
+          "required": false,
+          "description": "Advisory maximum item count. A quality finding, never an error."
+        },
+        {
+          "name": "mask-src",
+          "type": "asset",
+          "required": false,
+          "description": "The mask: an SVG or raster asset."
+        },
+        {
+          "name": "mask-x",
+          "type": "number",
+          "required": false,
+          "description": "Where the mask sits, relative to the container. Default 0."
+        },
+        {
+          "name": "mask-y",
+          "type": "number",
+          "required": false,
+          "description": ""
+        },
+        {
+          "name": "mask-width",
+          "type": "number",
+          "required": false,
+          "description": "The mask's size. Default: the container's size."
+        },
+        {
+          "name": "mask-height",
+          "type": "number",
+          "required": false,
+          "description": ""
+        },
+        {
+          "name": "mask-mode",
+          "type": "MaskMode",
+          "required": false,
+          "description": "alpha (the asset's opacity, default) or luminance (its brightness).",
+          "enum": [
+            "alpha",
+            "luminance"
+          ]
+        },
+        {
+          "name": "mask-invert",
+          "type": "boolean",
+          "required": false,
+          "description": "Presence = true. Cut the mask's shape out instead of keeping it."
         }
       ],
       "sharedAttrs": true,
@@ -755,6 +1070,12 @@
           "type": "string",
           "required": false,
           "description": ""
+        },
+        {
+          "name": "detached-from",
+          "type": "string",
+          "required": false,
+          "description": "The component this container was detached from: a component or variant\nid declared in the document or its library. Exporters only; changes\nnothing on screen (RFC-0035)."
         },
         {
           "name": "direction",
@@ -968,7 +1289,7 @@
           "name": "clip-path",
           "type": "string",
           "required": false,
-          "description": ""
+          "description": "A shape to clip to: inset(), circle(), ellipse() or polygon(); % of the node's box (RFC-0028)."
         },
         {
           "name": "overflow-x",
@@ -1011,6 +1332,76 @@
           "type": "number",
           "required": false,
           "description": ""
+        },
+        {
+          "name": "slot",
+          "type": "string",
+          "required": false,
+          "description": "Declares this container a slot, by name. Not on a component's root; not inside another slot."
+        },
+        {
+          "name": "slot-accept",
+          "type": "string",
+          "required": false,
+          "description": "Space-separated component or component-set ids. Present = the slot takes only instances of these, flat."
+        },
+        {
+          "name": "slot-min",
+          "type": "number",
+          "required": false,
+          "description": "Advisory minimum item count. A quality finding, never an error."
+        },
+        {
+          "name": "slot-max",
+          "type": "number",
+          "required": false,
+          "description": "Advisory maximum item count. A quality finding, never an error."
+        },
+        {
+          "name": "mask-src",
+          "type": "asset",
+          "required": false,
+          "description": "The mask: an SVG or raster asset."
+        },
+        {
+          "name": "mask-x",
+          "type": "number",
+          "required": false,
+          "description": "Where the mask sits, relative to the container. Default 0."
+        },
+        {
+          "name": "mask-y",
+          "type": "number",
+          "required": false,
+          "description": ""
+        },
+        {
+          "name": "mask-width",
+          "type": "number",
+          "required": false,
+          "description": "The mask's size. Default: the container's size."
+        },
+        {
+          "name": "mask-height",
+          "type": "number",
+          "required": false,
+          "description": ""
+        },
+        {
+          "name": "mask-mode",
+          "type": "MaskMode",
+          "required": false,
+          "description": "alpha (the asset's opacity, default) or luminance (its brightness).",
+          "enum": [
+            "alpha",
+            "luminance"
+          ]
+        },
+        {
+          "name": "mask-invert",
+          "type": "boolean",
+          "required": false,
+          "description": "Presence = true. Cut the mask's shape out instead of keeping it."
         }
       ],
       "sharedAttrs": true,
@@ -1058,6 +1449,12 @@
           "description": ""
         },
         {
+          "name": "detached-from",
+          "type": "string",
+          "required": false,
+          "description": "The component this container was detached from: a component or variant\nid declared in the document or its library. Exporters only; changes\nnothing on screen (RFC-0035)."
+        },
+        {
           "name": "x",
           "type": "number",
           "required": false,
@@ -1222,7 +1619,7 @@
           "name": "clip-path",
           "type": "string",
           "required": false,
-          "description": ""
+          "description": "A shape to clip to: inset(), circle(), ellipse() or polygon(); % of the node's box (RFC-0028)."
         },
         {
           "name": "overflow-x",
@@ -1265,6 +1662,76 @@
           "type": "number",
           "required": false,
           "description": ""
+        },
+        {
+          "name": "slot",
+          "type": "string",
+          "required": false,
+          "description": "Declares this container a slot, by name. Not on a component's root; not inside another slot."
+        },
+        {
+          "name": "slot-accept",
+          "type": "string",
+          "required": false,
+          "description": "Space-separated component or component-set ids. Present = the slot takes only instances of these, flat."
+        },
+        {
+          "name": "slot-min",
+          "type": "number",
+          "required": false,
+          "description": "Advisory minimum item count. A quality finding, never an error."
+        },
+        {
+          "name": "slot-max",
+          "type": "number",
+          "required": false,
+          "description": "Advisory maximum item count. A quality finding, never an error."
+        },
+        {
+          "name": "mask-src",
+          "type": "asset",
+          "required": false,
+          "description": "The mask: an SVG or raster asset."
+        },
+        {
+          "name": "mask-x",
+          "type": "number",
+          "required": false,
+          "description": "Where the mask sits, relative to the container. Default 0."
+        },
+        {
+          "name": "mask-y",
+          "type": "number",
+          "required": false,
+          "description": ""
+        },
+        {
+          "name": "mask-width",
+          "type": "number",
+          "required": false,
+          "description": "The mask's size. Default: the container's size."
+        },
+        {
+          "name": "mask-height",
+          "type": "number",
+          "required": false,
+          "description": ""
+        },
+        {
+          "name": "mask-mode",
+          "type": "MaskMode",
+          "required": false,
+          "description": "alpha (the asset's opacity, default) or luminance (its brightness).",
+          "enum": [
+            "alpha",
+            "luminance"
+          ]
+        },
+        {
+          "name": "mask-invert",
+          "type": "boolean",
+          "required": false,
+          "description": "Presence = true. Cut the mask's shape out instead of keeping it."
         }
       ],
       "sharedAttrs": true,
@@ -1312,6 +1779,12 @@
           "description": ""
         },
         {
+          "name": "detached-from",
+          "type": "string",
+          "required": false,
+          "description": "The component this container was detached from: a component or variant\nid declared in the document or its library. Exporters only; changes\nnothing on screen (RFC-0035)."
+        },
+        {
           "name": "x",
           "type": "number",
           "required": false,
@@ -1476,7 +1949,7 @@
           "name": "clip-path",
           "type": "string",
           "required": false,
-          "description": ""
+          "description": "A shape to clip to: inset(), circle(), ellipse() or polygon(); % of the node's box (RFC-0028)."
         },
         {
           "name": "overflow-x",
@@ -1519,6 +1992,76 @@
           "type": "number",
           "required": false,
           "description": ""
+        },
+        {
+          "name": "slot",
+          "type": "string",
+          "required": false,
+          "description": "Declares this container a slot, by name. Not on a component's root; not inside another slot."
+        },
+        {
+          "name": "slot-accept",
+          "type": "string",
+          "required": false,
+          "description": "Space-separated component or component-set ids. Present = the slot takes only instances of these, flat."
+        },
+        {
+          "name": "slot-min",
+          "type": "number",
+          "required": false,
+          "description": "Advisory minimum item count. A quality finding, never an error."
+        },
+        {
+          "name": "slot-max",
+          "type": "number",
+          "required": false,
+          "description": "Advisory maximum item count. A quality finding, never an error."
+        },
+        {
+          "name": "mask-src",
+          "type": "asset",
+          "required": false,
+          "description": "The mask: an SVG or raster asset."
+        },
+        {
+          "name": "mask-x",
+          "type": "number",
+          "required": false,
+          "description": "Where the mask sits, relative to the container. Default 0."
+        },
+        {
+          "name": "mask-y",
+          "type": "number",
+          "required": false,
+          "description": ""
+        },
+        {
+          "name": "mask-width",
+          "type": "number",
+          "required": false,
+          "description": "The mask's size. Default: the container's size."
+        },
+        {
+          "name": "mask-height",
+          "type": "number",
+          "required": false,
+          "description": ""
+        },
+        {
+          "name": "mask-mode",
+          "type": "MaskMode",
+          "required": false,
+          "description": "alpha (the asset's opacity, default) or luminance (its brightness).",
+          "enum": [
+            "alpha",
+            "luminance"
+          ]
+        },
+        {
+          "name": "mask-invert",
+          "type": "boolean",
+          "required": false,
+          "description": "Presence = true. Cut the mask's shape out instead of keeping it."
         }
       ],
       "sharedAttrs": true,
@@ -1589,6 +2132,12 @@
           "description": ""
         },
         {
+          "name": "detached-from",
+          "type": "string",
+          "required": false,
+          "description": "The component this container was detached from: a component or variant\nid declared in the document or its library. Exporters only; changes\nnothing on screen (RFC-0035)."
+        },
+        {
           "name": "x",
           "type": "number",
           "required": false,
@@ -1716,7 +2265,7 @@
           "name": "clip-path",
           "type": "string",
           "required": false,
-          "description": ""
+          "description": "A shape to clip to: inset(), circle(), ellipse() or polygon(); % of the node's box (RFC-0028)."
         },
         {
           "name": "overflow-x",
@@ -1759,6 +2308,76 @@
           "type": "number",
           "required": false,
           "description": ""
+        },
+        {
+          "name": "slot",
+          "type": "string",
+          "required": false,
+          "description": "Declares this container a slot, by name. Not on a component's root; not inside another slot."
+        },
+        {
+          "name": "slot-accept",
+          "type": "string",
+          "required": false,
+          "description": "Space-separated component or component-set ids. Present = the slot takes only instances of these, flat."
+        },
+        {
+          "name": "slot-min",
+          "type": "number",
+          "required": false,
+          "description": "Advisory minimum item count. A quality finding, never an error."
+        },
+        {
+          "name": "slot-max",
+          "type": "number",
+          "required": false,
+          "description": "Advisory maximum item count. A quality finding, never an error."
+        },
+        {
+          "name": "mask-src",
+          "type": "asset",
+          "required": false,
+          "description": "The mask: an SVG or raster asset."
+        },
+        {
+          "name": "mask-x",
+          "type": "number",
+          "required": false,
+          "description": "Where the mask sits, relative to the container. Default 0."
+        },
+        {
+          "name": "mask-y",
+          "type": "number",
+          "required": false,
+          "description": ""
+        },
+        {
+          "name": "mask-width",
+          "type": "number",
+          "required": false,
+          "description": "The mask's size. Default: the container's size."
+        },
+        {
+          "name": "mask-height",
+          "type": "number",
+          "required": false,
+          "description": ""
+        },
+        {
+          "name": "mask-mode",
+          "type": "MaskMode",
+          "required": false,
+          "description": "alpha (the asset's opacity, default) or luminance (its brightness).",
+          "enum": [
+            "alpha",
+            "luminance"
+          ]
+        },
+        {
+          "name": "mask-invert",
+          "type": "boolean",
+          "required": false,
+          "description": "Presence = true. Cut the mask's shape out instead of keeping it."
         }
       ],
       "sharedAttrs": true,
@@ -1783,7 +2402,7 @@
       "summary": "logical grouping",
       "description": [
         "No layout behavior. Children are absolutely positioned relative to the group origin. Maps to a Figma group node.",
-        "When the first child of a Figma group is a mask node, the mask shape is extracted as an SVG asset and hoisted onto the <group> as mask-src attrs."
+        "A mask is mask-src on the container — any layout container, not only a group — and masks everything it draws. An exporter turns a design tool's mask layer into an SVG or raster asset and writes it there (RFC-0028)."
       ],
       "mapsToFigma": "Group",
       "attributes": [
@@ -1792,6 +2411,12 @@
           "type": "string",
           "required": false,
           "description": ""
+        },
+        {
+          "name": "detached-from",
+          "type": "string",
+          "required": false,
+          "description": "The component this container was detached from: a component or variant\nid declared in the document or its library. Exporters only; changes\nnothing on screen (RFC-0035)."
         },
         {
           "name": "x",
@@ -1821,13 +2446,13 @@
           "name": "mask-src",
           "type": "asset",
           "required": false,
-          "description": ""
+          "description": "The mask: an SVG or raster asset."
         },
         {
           "name": "mask-x",
           "type": "number",
           "required": false,
-          "description": ""
+          "description": "Where the mask sits, relative to the container. Default 0."
         },
         {
           "name": "mask-y",
@@ -1839,7 +2464,7 @@
           "name": "mask-width",
           "type": "number",
           "required": false,
-          "description": ""
+          "description": "The mask's size. Default: the container's size."
         },
         {
           "name": "mask-height",
@@ -1851,23 +2476,17 @@
           "name": "mask-mode",
           "type": "MaskMode",
           "required": false,
-          "description": "",
+          "description": "alpha (the asset's opacity, default) or luminance (its brightness).",
           "enum": [
             "alpha",
             "luminance"
           ]
         },
         {
-          "name": "mask-composite",
-          "type": "MaskComposite",
+          "name": "mask-invert",
+          "type": "boolean",
           "required": false,
-          "description": "",
-          "enum": [
-            "add",
-            "subtract",
-            "intersect",
-            "exclude"
-          ]
+          "description": "Presence = true. Cut the mask's shape out instead of keeping it."
         }
       ],
       "sharedAttrs": true,
@@ -1892,7 +2511,8 @@
       "summary": "text node",
       "description": [
         "Single-style text is self-closing with a value attribute. Mixed-style text has <segment> children — each segment overrides font attrs for its run.",
-        "text-style references a named style; individual font attrs are omitted when a style is referenced. Variable fonts use font-variation; OpenType features use font-feature."
+        "text-style references a named style; individual font attrs are omitted when a style is referenced. Variable fonts use font-variation; OpenType features use font-feature.",
+        "fill colors the glyphs, on <text> and on each <segment> — the same attribute that colors a frame. There is no color attribute on text (RFC-0022)."
       ],
       "mapsToFigma": "Text",
       "attributes": [
@@ -2498,13 +3118,13 @@
           "name": "w",
           "type": "number | 'fill'",
           "required": true,
-          "description": "Unified width. Replaces width + sizing-h.\nAbsent = hug (valid on row/col/stack/text/instance only).\n\"fill\" = grow to fill parent.\nnumber = fixed px.\nString forms: '50%' (of parent), '1.5rem', '100vw', 'calc(100% - 16px)'\nNot valid on frame/img/svg — those require explicit values."
+          "description": "Unified width. Replaces width + sizing-h.\nAbsent = hug (valid on row/col/stack/text/instance only).\n\"fill\" = grow to fill parent.\nnumber = fixed px.\nOr a share of the parent: '50%'.\nNot valid on frame/img/svg — those require explicit values."
         },
         {
           "name": "h",
           "type": "number | 'fill'",
           "required": true,
-          "description": "Unified height. Replaces height + sizing-v.\nAbsent = hug (valid on row/col/stack/text/instance only).\n\"fill\" = grow to fill parent.\nnumber = fixed px.\nString forms: '50%' (of parent), '1.5rem', '100vh', 'calc(100% - 16px)'\nNot valid on frame/img/svg — those require explicit values."
+          "description": "Unified height. Replaces height + sizing-v.\nAbsent = hug (valid on row/col/stack/text/instance only).\n\"fill\" = grow to fill parent.\nnumber = fixed px.\nOr a share of the parent: '50%'.\nNot valid on frame/img/svg — those require explicit values."
         },
         {
           "name": "fill",
@@ -2641,13 +3261,13 @@
           "name": "w",
           "type": "number | 'fill'",
           "required": true,
-          "description": "Unified width. Replaces width + sizing-h.\nAbsent = hug (valid on row/col/stack/text/instance only).\n\"fill\" = grow to fill parent.\nnumber = fixed px.\nString forms: '50%' (of parent), '1.5rem', '100vw', 'calc(100% - 16px)'\nNot valid on frame/img/svg — those require explicit values."
+          "description": "Unified width. Replaces width + sizing-h.\nAbsent = hug (valid on row/col/stack/text/instance only).\n\"fill\" = grow to fill parent.\nnumber = fixed px.\nOr a share of the parent: '50%'.\nNot valid on frame/img/svg — those require explicit values."
         },
         {
           "name": "h",
           "type": "number | 'fill'",
           "required": true,
-          "description": "Unified height. Replaces height + sizing-v.\nAbsent = hug (valid on row/col/stack/text/instance only).\n\"fill\" = grow to fill parent.\nnumber = fixed px.\nString forms: '50%' (of parent), '1.5rem', '100vh', 'calc(100% - 16px)'\nNot valid on frame/img/svg — those require explicit values."
+          "description": "Unified height. Replaces height + sizing-v.\nAbsent = hug (valid on row/col/stack/text/instance only).\n\"fill\" = grow to fill parent.\nnumber = fixed px.\nOr a share of the parent: '50%'.\nNot valid on frame/img/svg — those require explicit values."
         },
         {
           "name": "fill",
@@ -2771,7 +3391,7 @@
           "name": "w",
           "type": "number | 'fill'",
           "required": false,
-          "description": "Unified width. Replaces width + sizing-h.\nAbsent = hug (valid on row/col/stack/text/instance only).\n\"fill\" = grow to fill parent.\nnumber = fixed px.\nString forms: '50%' (of parent), '1.5rem', '100vw', 'calc(100% - 16px)'\nNot valid on frame/img/svg — those require explicit values."
+          "description": "Unified width. Replaces width + sizing-h.\nAbsent = hug (valid on row/col/stack/text/instance only).\n\"fill\" = grow to fill parent.\nnumber = fixed px.\nOr a share of the parent: '50%'.\nNot valid on frame/img/svg — those require explicit values."
         },
         {
           "name": "direction",
@@ -2830,7 +3450,8 @@
       "summary": "paint & effects stack",
       "description": [
         "A non-layout child that describes the parent's complete paint and effect stack. Used when a node has multiple fills, complex borders, or multiple effects.",
-        "All three stacks — fills, borders, effects — are ordered in document order. When <appearance> contains at least one <border>, the border shorthand on the parent is ignored."
+        "All three stacks — fills, borders, effects — are ordered in document order. When <appearance> contains at least one <border>, the border shorthand on the parent is ignored.",
+        "Outlines are border — the shorthand, its longhands, or <border> entries here. <border> belongs inside <appearance>, never directly in a node, and there is no stroke attribute or <stroke> entry (RFC-0022)."
       ],
       "attributes": [
         {
@@ -2873,7 +3494,8 @@
       "category": "Appearance",
       "summary": "fill attribute formats",
       "description": [
-        "The fill attribute accepts hex colors, gradient functions, and token references. Alpha is encoded as the last byte of an 8-digit hex: #1C1C1ECC.",
+        "The fill attribute accepts a color — hex, rgba() or oklch() — a gradient function, or a token reference. The same three color notations work everywhere a color goes: strokes, borders, shadows, gradient stops, tokens and fill styles. rgb() is tolerated for existing exports but is not part of the format; write hex.",
+        "Dimensions are bare numbers in pixels. Sizes (w, h, min-width, max-width, min-height, max-height) may also be a share of the parent: w=\"50%\". There is no px suffix, rem, vw/vh or calc() (RFC-0033).",
         "Gradient syntax mirrors CSS — linear-gradient(), radial-gradient(), conic-gradient(). Token references use $name syntax."
       ],
       "attributes": [
@@ -2890,6 +3512,18 @@
           "description": "#1C1C1ECC (last byte = alpha)."
         },
         {
+          "name": "rgba",
+          "type": "format",
+          "required": false,
+          "description": "rgba(28, 28, 30, 0.8) — integers 0–255, alpha 0–1. The readable form for any color with opacity (RFC-0033)."
+        },
+        {
+          "name": "oklch",
+          "type": "format",
+          "required": false,
+          "description": "oklch(0.627 0.258 29.23) or oklch(0.6 0.2 250 / 0.5) — wide-gamut, stored as written (RFC-0033)."
+        },
+        {
           "name": "Linear gradient",
           "type": "format",
           "required": false,
@@ -2899,13 +3533,13 @@
           "name": "Radial gradient",
           "type": "format",
           "required": false,
-          "description": "radial-gradient(circle at 50% 30%, #FFF 0%, #000 100%)."
+          "description": "radial-gradient(circle at 50% 30%, #FFFFFF 0%, #000000 100%)."
         },
         {
           "name": "Angular gradient",
           "type": "format",
           "required": false,
-          "description": "conic-gradient(from 0deg at 50% 50%, #F00 0deg, #00F 360deg)."
+          "description": "conic-gradient(from 0deg at 50% 50%, #FF0000 0deg, #0000FF 360deg)."
         },
         {
           "name": "Token",
@@ -2936,9 +3570,26 @@
       "summary": "all nodes",
       "description": [
         "Visual attributes available on all layout, content, and geometry nodes.",
-        "Boolean presence convention: bare attributes without a value are treated as true. <frame clip> = <frame clip=\"true\">. Applies to: clip, mask, wrap, abs, truncate, reverse-z."
+        "description says what a library item is for and when to use it — on components, component sets, variants, tokens and styles only. Plain text, one or two sentences, never rendered; exporters copy it from the source, never write one (RFC-0057).",
+        "id names a node so something can point at it: a prop target, a path segment through an instance (target=\"tab-1/label\"). Lowercase kebab-case, written only where something points, unique within its scope — the screen tree of a document, or one component or variant body. A reference that does not resolve is an error (RFC-0046).",
+        "source-id is the source tool's own handle for a node, read against source on the <gui> root. It is optional, written by exporters only when the user asks for an export that can go back, and opaque: the format never parses it. A document with any source-id must declare source. What each tool writes is in spec/SOURCES.md (RFC-0046).",
+        "detached-from names the component a layout container was detached from, when an exporter could not keep a heavily-overridden instance as an <instance>. It holds a component or variant id declared in the document or its library, and must resolve; it changes nothing on screen. Only <instance> carries component (RFC-0035).",
+        "Boolean presence convention: bare attributes without a value are treated as true. <frame clip> = <frame clip=\"true\">. Applies to: clip, mask-invert, wrap, abs, truncate, reverse-z.",
+        "Clipping and masks (RFC-0028): clip clips children to the box and its radius; clip-path clips to a shape — inset(), circle(), ellipse() or polygon(), with % of the node's box; mask-src masks everything a container draws through an SVG or raster asset, placed by mask-x, mask-y, mask-width and mask-height, read by mask-mode (alpha or luminance), and cut out instead with mask-invert. The mask attributes mean nothing without mask-src. There is no mask flag on a child and no mask-composite."
       ],
       "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "required": false,
+          "description": "The node's name in this file, for references: a prop target, a path\nsegment, a link. Lowercase kebab-case, [a-z][a-z0-9-]*. Written only on\nnodes something points at; unique within its scope (RFC-0046)."
+        },
+        {
+          "name": "source-id",
+          "type": "string",
+          "required": false,
+          "description": "The source tool's handle for this node, read against `source` on the\nroot. Opaque, exporters only, written only for round-trip exports (RFC-0046)."
+        },
         {
           "name": "opacity",
           "type": "number",
@@ -2970,12 +3621,6 @@
             "linear-burn",
             "linear-dodge"
           ]
-        },
-        {
-          "name": "mask",
-          "type": "boolean",
-          "required": false,
-          "description": "Presence = true. Acts as an alpha mask for subsequent siblings."
         },
         {
           "name": "rotation",

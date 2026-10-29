@@ -131,24 +131,8 @@ What that requires:
 
 ### Carried today
 
-| Vocabulary | RFC | Status in core | Chapter it belongs to |
-|---|---|---|---|
-| Token modes — `<mode>`/`<modes>`, per-mode token values, `mode-{axis}` pins | [0037](https://github.com/dotgui/core/blob/main/rfcs/0037-token-modes-theming.md) | Proposed | 1.0 |
-
-Token modes shipped ahead of its chapter because kit already resolves them. A
-document using them rendered in one renderer and failed to parse in the other,
-which is a divergence about whole documents rather than about pixels. It meets
-the additive rule: `modes::apply` returns before touching the tree unless the
-document declares an axis *and* a token that varies along one. Checked rather
-than assumed — all 27 examples render byte-identical across the commit that
-added it, and the 18 goldens hold.
-
-It cannot be versioned `0.3.x`, because it is not in the 0.3 chapter. It cannot
-be `1.0` either — that chapter also holds composite token types (RFC-0038,
-Draft), and a renderer claiming a version implements all of it, not a subset
-(RFC-0042, *The version is the contract*). So the renderer stays `0.3.x` and
-token modes sits outside the number until RFC-0037 is Accepted and lands in a
-chapter of its own.
+Nothing. Token modes (RFC-0037) was carried ahead of its spec version until core
+accepted it into the 0.3.0 baseline; renderer 0.4.0 claims it.
 
 ## Where the versions show
 
