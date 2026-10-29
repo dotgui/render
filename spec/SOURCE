@@ -7,5 +7,5 @@
 #
 repo   = dotgui/core
 path   = spec/spec.json
-commit = bdcb1eb7b5f51e951773bd39507fc852c1975054
-date   = 2026-07-27
+commit = 4fec30bffe29642d5a1a7374522e71f51e161c00
+date   = 2026-10-29

@@ -2,16 +2,16 @@
 
 Generated — do not edit by hand. Run `UPDATE_COVERAGE=1 cargo test -p dotgui-renderer --test spec_coverage` and commit the result.
 
-Measured against `spec/spec.json`, vendored from `dotgui/core` at commit `bdcb1eb7b5f5`. Coverage is declared in `crates/renderer/src/coverage.rs`, not inferred from the sources, so a row says the renderer reads that property and acts on it.
+Measured against `spec/spec.json`, vendored from `dotgui/core` at commit `4fec30bffe29`. Coverage is declared in `crates/renderer/src/coverage.rs`, not inferred from the sources, so a row says the renderer reads that property and acts on it.
 
 Listed by property, because that is the unit of work: implementing `radius` is one job across every element that allows it, not one job per element.
 
 | | Properties |
 |---|---|
-| Implemented | **115** |
+| Implemented | **128** |
 | Partial | **0** |
 | Not implemented | **5** |
-| Total | **120** |
+| Total | **133** |
 
 ## Not implemented
 
@@ -20,8 +20,8 @@ The work list. Each row is one property to add, and the elements it has to work 
 | Property | Elements |
 |---|---|
 | `border-image` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
-| `constraint-h` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `constraint-v` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `constraint-h` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `constraint-v` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `fill-rule` | `<rect>`, `<ellipse>` |
 | `font-feature` | `<text>` |
 
@@ -32,11 +32,12 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `<border>` | `<appearance>` |
 | `<effect>` | `<appearance>` |
 | `<fill>` | `<appearance>` |
-| `abs` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `abs` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `align` | `<stack>`, `<row>`, `<col>`, `<text>` |
-| `aspect-ratio` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `aspect-ratio` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `baseline-shift` | `<text>` |
-| `blend` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `bind` | `<prop>` |
+| `blend` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `border` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `border-align` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
 | `border-color` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>`, `<ellipse>` |
@@ -46,18 +47,20 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `clip-path` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `col-gap` | `<grid>` |
 | `columns` | `<grid>` |
+| `component` | `<instance>` |
 | `corner-smoothing` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>` |
 | `decoration` | `<text>` |
 | `decoration-color` | `<text>` |
 | `decoration-style` | `<text>` |
 | `decoration-thickness` | `<text>` |
+| `detached-from` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>` |
 | `direction` | `<stack>`, `<text>`, `<line>` |
 | `effect-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<rect>`, `<ellipse>` |
 | `fill` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
 | `fill-style` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<text>`, `<rect>`, `<ellipse>`, `<line>` |
-| `filter` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `filter` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `fit` | `<img>` |
-| `flip` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `flip` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `font-family` | `<text>` |
 | `font-optical-sizing` | `<text>` |
 | `font-postscript` | `<text>` |
@@ -73,32 +76,32 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `grid-columns` | `<stack>` |
 | `grid-row-gap` | `<stack>` |
 | `grid-rows` | `<stack>` |
-| `h` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>` |
+| `h` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>` |
 | `href` | `<text>` |
+| `id` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `image-rendering` | `<img>` |
-| `isolation` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `isolation` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `leading-trim` | `<text>` |
 | `letter-spacing` | `<text>` |
 | `line-height` | `<text>` |
 | `list` | `<text>` |
 | `list-level` | `<text>` |
 | `list-marker` | `<text>` |
-| `mask` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `mask-composite` | `<group>` |
-| `mask-height` | `<group>` |
-| `mask-mode` | `<group>` |
-| `mask-src` | `<group>` |
-| `mask-width` | `<group>` |
-| `mask-x` | `<group>` |
-| `mask-y` | `<group>` |
-| `max-height` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `mask-height` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>` |
+| `mask-invert` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>` |
+| `mask-mode` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>` |
+| `mask-src` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>` |
+| `mask-width` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>` |
+| `mask-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>` |
+| `mask-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>` |
+| `max-height` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `max-lines` | `<text>` |
-| `max-width` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `min-height` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `min-width` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `name` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `max-width` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `min-height` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `min-width` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `name` | `<library>`, `<prop>`, `<slot>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `object-position` | `<img>` |
-| `opacity` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `opacity` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `outline` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `outline-offset` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `overflow` | `<text>` |
@@ -112,16 +115,24 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `pr` | `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `pt` | `<stack>`, `<row>`, `<col>`, `<grid>` |
 | `radius` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<img>`, `<rect>` |
+| `release` | `<library>` |
 | `reverse-z` | `<stack>`, `<row>`, `<col>` |
-| `rotation` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `rotation` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `row-gap` | `<grid>` |
 | `rows` | `<grid>` |
-| `scale-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `scale-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `scale-x` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `scale-y` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `shadow` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<rect>`, `<ellipse>` |
-| `skew-x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `skew-y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `src` | `<img>` |
+| `skew-x` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `skew-y` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `slot` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `slot-accept` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `slot-max` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `slot-min` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>` |
+| `source` | `<library>` |
+| `source-id` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `src` | `<library>`, `<img>` |
+| `target` | `<prop>` |
 | `text-case` | `<text>` |
 | `text-decoration-skip-ink` | `<text>` |
 | `text-rendering` | `<text>` |
@@ -130,20 +141,22 @@ The work list. Each row is one property to add, and the elements it has to work 
 | `text-underline-offset` | `<text>` |
 | `text-wrap` | `<text>` |
 | `thickness` | `<line>` |
-| `transform-origin` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `transform-origin` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `truncate` | `<text>` |
+| `type` | `<prop>` |
+| `uid` | `<library>` |
 | `value` | `<text>` |
 | `vertical-align` | `<text>` |
-| `visible` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `w` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `visible` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `w` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 | `white-space` | `<text>` |
 | `word-break` | `<text>` |
 | `word-spacing` | `<text>` |
 | `wrap` | `<stack>`, `<row>`, `<col>` |
 | `writing-mode` | `<text>` |
-| `x` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `y` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
-| `z-index` | `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `x` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `y` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
+| `z-index` | `<instance>`, `<frame>`, `<stack>`, `<row>`, `<col>`, `<grid>`, `<group>`, `<text>`, `<img>`, `<rect>`, `<ellipse>`, `<line>` |
 
 ## Ahead of the vendored spec
 
