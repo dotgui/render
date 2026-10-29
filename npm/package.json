@@ -1,0 +1,36 @@
+{
+  "name": "@dotgui/render",
+  "version": "0.4.0",
+  "description": "The dotgui renderer: .gui drawn by Rust, compiled to WebAssembly. Reads documents up to spec 0.4.4.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./node": {
+      "types": "./node.d.ts",
+      "default": "./node.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "node.js",
+    "node.d.ts",
+    "pkg/",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "bun run build.ts",
+    "test": "bun test",
+    "prepublishOnly": "bun run build.ts"
+  },
+  "keywords": ["dotgui", "gui", "render", "wasm"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dotgui/render",
+    "directory": "npm"
+  }
+}
