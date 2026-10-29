@@ -32,8 +32,8 @@ pub const RENDERER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// cumulative: every earlier point is implemented too, and a document declaring
 /// a newer one is refused rather than drawn with features this renderer does
 /// not know.
-pub const SUPPORTED_VERSION: &str = "0.4.3";
-const SUPPORTED: (u32, u32, u32) = (0, 4, 3);
+pub const SUPPORTED_VERSION: &str = "0.4.4";
+const SUPPORTED: (u32, u32, u32) = (0, 4, 4);
 const MULTI_DOCUMENT: (u32, u32, u32) = (0, 3, 0);
 /// From 0.3.6 provenance is `<gui source>`, and `<meta>` is obsolete (RFC-0036).
 const ROOT_SOURCE: (u32, u32, u32) = (0, 3, 6);
@@ -49,6 +49,15 @@ const FILL_AND_BORDER: (u32, u32, u32) = (0, 3, 10);
 const MASKS: (u32, u32, u32) = (0, 3, 11);
 /// From 0.4.3 `description` sits on library items only (RFC-0057).
 const DESCRIPTIONS: (u32, u32, u32) = (0, 4, 3);
+/// From 0.4.4 a `<library>` block records where declarations came from (RFC-0056).
+const LINKED_LIBRARIES: (u32, u32, u32) = (0, 4, 4);
+
+/// What a `<library>` block may hold: declaration blocks only.
+const LIBRARY_BLOCK_CHILDREN: &[&str] =
+    &["mode", "modes", "tokens", "styles", "fonts", "components"];
+
+/// Hosts of source tools, which a `<library src>` must never point at.
+const SOURCE_TOOL_HOSTS: &[&str] = &["figma.com", "penpot.app", "sketch.com", "framer.com"];
 
 /// The library items a reader picks from — the only places `description` goes.
 const DESCRIBABLE: &[&str] = &[
@@ -303,6 +312,8 @@ pub fn parse_library_files(files: &[(String, String)]) -> Result<Library, ParseE
     let mut issues = Issues::new(true);
     let mut metadata = GuiMetadata::default();
     let mut blocks = Vec::new();
+    let mut axis_owners: BTreeMap<String, String> = BTreeMap::new();
+    let mut uid_files: Vec<String> = Vec::new();
     let mut owners: BTreeMap<String, String> = BTreeMap::new();
     let mut claim = |kind: &str, name: &str, file: &str, issues: &mut Issues| {
         let key = format!("{kind} '{name}'");
@@ -330,8 +341,31 @@ pub fn parse_library_files(files: &[(String, String)]) -> Result<Library, ParseE
         for name in own.tokens.keys() {
             claim("token", &format!("${name}"), file, &mut issues);
         }
-        for axis in &own.mode_axes {
-            claim("mode", &axis.name, file, &mut issues);
+        // An identical axis is one axis (RFC-0056); a different one collides.
+        let mut new_axes = Vec::new();
+        for axis in own.mode_axes.iter().cloned() {
+            match metadata
+                .mode_axes
+                .iter()
+                .find(|known| known.name == axis.name)
+            {
+                Some(known) if known.values != axis.values || known.default != axis.default => {
+                    let first = axis_owners.get(&axis.name).cloned().unwrap_or_default();
+                    issues.error(format!(
+                        "mode '{}' is declared differently by {first} and {file}",
+                        axis.name
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    axis_owners.insert(axis.name.clone(), file.clone());
+                    new_axes.push(axis);
+                }
+            }
+        }
+        metadata.mode_axes.extend(new_axes);
+        if parts.uid.is_some() {
+            uid_files.push(file.clone());
         }
         for family in own.fonts.keys() {
             claim("font", family, file, &mut issues);
@@ -348,11 +382,18 @@ pub fn parse_library_files(files: &[(String, String)]) -> Result<Library, ParseE
         }
         metadata.tokens.extend(own.tokens);
         metadata.token_modes.extend(own.token_modes);
-        metadata.mode_axes.extend(own.mode_axes);
         metadata.fonts.extend(own.fonts);
         metadata.styles.extend(own.styles);
         metadata.effect_styles.extend(own.effect_styles);
         blocks.extend(parts.component_blocks);
+    }
+
+    // A library has one identity: one library file declares uid (RFC-0056).
+    if uid_files.len() > 1 {
+        issues.error(format!(
+            "uid is declared by {}; exactly one library file declares the library's identity",
+            uid_files.join(" and ")
+        ));
     }
 
     // Each file's own page renders against the rest of the library, so the
@@ -476,6 +517,12 @@ struct Parts {
     description_rules: bool,
     /// `<gui template>`: a starting point to copy, never a library file.
     template: bool,
+    /// `<gui uid>`: the library's identity, on the file holding its library
+    /// part (RFC-0056).
+    uid: Option<String>,
+    /// What the document's `<library>` blocks break (RFC-0056).
+    library_errors: Vec<String>,
+    library_warnings: Vec<String>,
     /// Whether `detached-from` and `component` are held to 0.3.8's rules.
     detached_rules: bool,
     /// Whether dimensions are held to 0.3.9's rules.
@@ -488,6 +535,143 @@ struct Parts {
     metadata: GuiMetadata,
     component_blocks: Vec<GuiNode>,
     layout_root: Option<GuiNode>,
+}
+
+/// The `<library>` block rules (RFC-0056): 0.4.4 or higher; `name`, `uid`
+/// and `release`; declaration blocks only, never nested; a `source` for any
+/// `source-id` inside; no source-tool `src`; and names unique across the
+/// document and its blocks, with identical mode axes counted once.
+fn check_library_blocks(root: Node, version: (u32, u32, u32)) -> (Vec<String>, Vec<String>) {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    let blocks: Vec<Node> = root
+        .children()
+        .filter(|child| child.is_element() && child.tag_name().name() == "library")
+        .collect();
+    if blocks.is_empty() {
+        return (errors, warnings);
+    }
+    if version < LINKED_LIBRARIES {
+        errors.push(format!(
+            "a <library> block needs a document declaring 0.4.4 or higher, but this one declares {}.{}.{}",
+            version.0, version.1, version.2
+        ));
+    }
+
+    let mut owners: BTreeMap<String, String> = BTreeMap::new();
+    let mut axes: BTreeMap<String, (String, String)> = BTreeMap::new();
+    let mut claim = |blocks: Vec<Node>, place: &str, errors: &mut Vec<String>| {
+        for block in blocks {
+            let tag = block.tag_name().name();
+            let modes: Vec<Node> = match tag {
+                "mode" => vec![block],
+                "modes" => block.children().filter(Node::is_element).collect(),
+                _ => Vec::new(),
+            };
+            for mode in modes {
+                let name = mode.attribute("name").unwrap_or_default().to_owned();
+                let signature = format!(
+                    "{}|{}",
+                    mode.attribute("values")
+                        .unwrap_or_default()
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    mode.attribute("default").unwrap_or_default()
+                );
+                match axes.get(&name) {
+                    Some((known, first)) if *known != signature => errors.push(format!(
+                        "mode '{name}' is declared differently by {first} and by {place}"
+                    )),
+                    Some(_) => {}
+                    None => {
+                        axes.insert(name, (signature, place.to_owned()));
+                    }
+                }
+            }
+            for item in block.children().filter(Node::is_element) {
+                let key = match (
+                    tag,
+                    item.attribute("name"),
+                    item.attribute("family"),
+                    item.attribute("id"),
+                ) {
+                    ("tokens", Some(name), _, _) => format!("token '${name}'"),
+                    ("fonts", _, Some(family), _) => format!("font '{family}'"),
+                    ("styles", Some(name), _, _) => {
+                        format!("{} '{name}'", item.tag_name().name().replace('-', " "))
+                    }
+                    ("components", _, _, Some(id)) => format!("component '{id}'"),
+                    _ => continue,
+                };
+                match owners.get(&key) {
+                    Some(first) => {
+                        errors.push(format!("{key} is declared by {first} and by {place}"))
+                    }
+                    None => {
+                        owners.insert(key, place.to_owned());
+                    }
+                }
+            }
+        }
+    };
+
+    let own: Vec<Node> = root
+        .children()
+        .filter(|child| child.is_element() && child.tag_name().name() != "library")
+        .collect();
+    claim(own, "the document", &mut errors);
+
+    for block in blocks {
+        let name = block.attribute("name").unwrap_or_default();
+        let place = format!("<library name=\"{name}\">");
+        for required in ["name", "uid", "release"] {
+            if block.attribute(required).is_none_or(str::is_empty) {
+                errors.push(format!("<library> needs {required}"));
+            }
+        }
+        for child in block.children().filter(Node::is_element) {
+            let tag = child.tag_name().name();
+            if tag == "library" {
+                errors.push("<library> blocks do not nest; hoist the inner library to its own top-level block".to_owned());
+            } else if !LIBRARY_BLOCK_CHILDREN.contains(&tag) {
+                errors.push(format!(
+                    "<library> holds declaration blocks only, not <{tag}>"
+                ));
+            }
+        }
+        if block.attribute("source").is_none()
+            && block
+                .descendants()
+                .any(|node| node.is_element() && node.has_attribute("source-id"))
+        {
+            errors.push(format!(
+                "{place} has source-id values but no source to read them against"
+            ));
+        }
+        if let Some(src) = block.attribute("src") {
+            let host = src
+                .split_once("://")
+                .map(|(_, rest)| rest.split('/').next().unwrap_or_default())
+                .unwrap_or_default();
+            if SOURCE_TOOL_HOSTS
+                .iter()
+                .any(|tool| host == *tool || host.ends_with(&format!(".{tool}")))
+            {
+                warnings.push(format!(
+                    "src=\"{src}\" points at a source tool's file; src points at a .gui package"
+                ));
+            }
+        }
+        let inner: Vec<Node> = block
+            .children()
+            .filter(|child| {
+                child.is_element() && LIBRARY_BLOCK_CHILDREN.contains(&child.tag_name().name())
+            })
+            .collect();
+        claim(inner, &place, &mut errors);
+    }
+    (errors, warnings)
 }
 
 fn read_parts(xml: &str, requires_multi_document: bool) -> Result<Parts, ParseError> {
@@ -512,10 +696,31 @@ fn read_parts(xml: &str, requires_multi_document: bool) -> Result<Parts, ParseEr
     let mut layout_root: Option<GuiNode> = None;
     let mut component_blocks = Vec::new();
 
+    // A `<library>` block's declaration blocks are the document's (RFC-0056):
+    // they are read as if written directly, after the block rules are checked.
+    let (library_errors, library_warnings) = check_library_blocks(root, parsed);
+    let declarations: Vec<Node> = root
+        .children()
+        .filter(Node::is_element)
+        .flat_map(|child| {
+            if child.tag_name().name() == "library" {
+                child
+                    .children()
+                    .filter(|block| {
+                        block.is_element()
+                            && LIBRARY_BLOCK_CHILDREN.contains(&block.tag_name().name())
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                vec![child]
+            }
+        })
+        .collect();
+
     // Axes are read first: a token's per-mode attributes are named after them,
     // so `<tokens>` cannot be understood until they are known, and the spec
     // does not fix the order the two blocks appear in.
-    for child in root.children().filter(Node::is_element) {
+    for &child in &declarations {
         match child.tag_name().name() {
             "mode" => read_mode_axis(child, &mut metadata),
             "modes" => {
@@ -527,7 +732,19 @@ fn read_parts(xml: &str, requires_multi_document: bool) -> Result<Parts, ParseEr
         }
     }
 
-    for child in root.children().filter(Node::is_element) {
+    // An identical axis declared twice is one axis (RFC-0056).
+    let mut seen_axes = Vec::new();
+    metadata.mode_axes.retain(|axis| {
+        let key = (axis.name.clone(), axis.values.clone(), axis.default.clone());
+        if seen_axes.contains(&key) {
+            false
+        } else {
+            seen_axes.push(key);
+            true
+        }
+    });
+
+    for &child in &declarations {
         let tag = child.tag_name().name();
         match tag {
             "mode" | "modes" => {}
@@ -567,10 +784,13 @@ fn read_parts(xml: &str, requires_multi_document: bool) -> Result<Parts, ParseEr
         }
     }
 
+    // A `<library>` block's source-ids read against the block (RFC-0056).
     let source_id_without_source = (attr(root, "source").is_none()
-        && root
-            .descendants()
-            .any(|node| node.is_element() && node.has_attribute("source-id")))
+        && root.descendants().any(|node| {
+            node.is_element()
+                && node.has_attribute("source-id")
+                && !node.ancestors().any(|a| a.tag_name().name() == "library")
+        }))
     .then_some(parsed >= IDENTITY);
 
     Ok(Parts {
@@ -581,6 +801,9 @@ fn read_parts(xml: &str, requires_multi_document: bool) -> Result<Parts, ParseEr
         empty_descriptions,
         description_rules: parsed >= DESCRIPTIONS,
         template: attr(root, "template").is_some_and(|value| value != "false"),
+        uid: attr(root, "uid"),
+        library_errors,
+        library_warnings,
         detached_rules: parsed >= DETACHED,
         unit_rules: parsed >= UNITS,
         fill_rules: parsed >= FILL_AND_BORDER,
@@ -598,6 +821,12 @@ fn report_provenance(parts: &Parts, issues: &mut Issues) {
         issues.advise(
             "<meta> is obsolete from 0.3.6: write source=\"…\" on <gui>, and leave out exported-at and source-node",
         );
+    }
+    for message in &parts.library_errors {
+        issues.error(message.clone());
+    }
+    for message in &parts.library_warnings {
+        issues.advise(message.clone());
     }
     // A description belongs to a library item and says something (RFC-0057).
     for tag in &parts.misplaced_descriptions {
@@ -1351,6 +1580,132 @@ mod tests {
         let err = parse_library(r#"<gui version="0.4.3" template><tokens /></gui>"#)
             .expect_err("not a library");
         assert!(err.to_string().contains("cannot be a template"), "{err}");
+    }
+
+    #[test]
+    fn a_library_block_resolves_as_declarations_written_directly() {
+        let direct = parse_gui_xml(
+            r##"<gui version="0.4.4"><tokens><color name="primary" value="#3B5BFD" /></tokens>
+            <components><component id="comp-button"><row w="10" h="10" fill="$primary" /></component></components>
+            <col w="40"><instance component="comp-button" /></col></gui>"##,
+        )
+        .expect("direct");
+        let linked = parse_gui_xml(
+            r##"<gui version="0.4.4">
+            <library name="acme-ds" uid="7f3e" release="1.4.0" src="nowhere/acme.gui" source="figma">
+              <tokens><color name="primary" value="#3B5BFD" /></tokens>
+              <components><component id="comp-button" source-id="a2b9"><row w="10" h="10" fill="$primary" /></component></components>
+            </library>
+            <col w="40"><instance component="comp-button" /></col></gui>"##,
+        )
+        .expect("a linked library resolves offline");
+        assert_eq!(direct.root, linked.root);
+        assert_eq!(direct.metadata.tokens, linked.metadata.tokens);
+        assert!(linked.warnings.is_empty(), "{:?}", linked.warnings);
+    }
+
+    #[test]
+    fn library_blocks_follow_their_rules() {
+        let block = |attrs: &str, inner: &str| format!(r#"<library {attrs}>{inner}</library>"#);
+        let ok = r#"name="acme" uid="u" release="1""#;
+        for (xml, says) in [
+            (
+                format!(
+                    r#"<gui version="0.4.3">{}<col /></gui>"#,
+                    block(ok, "<tokens />")
+                ),
+                "0.4.4 or higher",
+            ),
+            (
+                format!(
+                    r#"<gui version="0.4.4">{}<col /></gui>"#,
+                    block(r#"name="acme" release="1""#, "<tokens />")
+                ),
+                "needs uid",
+            ),
+            (
+                format!(
+                    r#"<gui version="0.4.4">{}<col /></gui>"#,
+                    block(ok, "<col />")
+                ),
+                "declaration blocks only",
+            ),
+            (
+                format!(
+                    r#"<gui version="0.4.4">{}<col /></gui>"#,
+                    block(ok, &block(r#"name="b" uid="v" release="1""#, "<tokens />"))
+                ),
+                "do not nest",
+            ),
+            (
+                format!(
+                    r##"<gui version="0.4.4">{}<col /></gui>"##,
+                    block(
+                        ok,
+                        r##"<components><component id="c" source-id="1:2"><row /></component></components>"##
+                    )
+                ),
+                "no source to read them against",
+            ),
+            (
+                format!(
+                    r##"<gui version="0.4.4"><tokens><color name="p" value="#000000" /></tokens>{}<col /></gui>"##,
+                    block(
+                        ok,
+                        r##"<tokens><color name="p" value="#ffffff" /></tokens>"##
+                    )
+                ),
+                "is declared by the document",
+            ),
+        ] {
+            let err = parse_gui_xml(&xml).expect_err(says);
+            assert!(err.to_string().contains(says), "{says}: {err}");
+        }
+        let figma = parse_gui_xml(&format!(
+            r#"<gui version="0.4.4">{}<col /></gui>"#,
+            block(
+                r#"name="acme" uid="u" release="1" src="https://www.figma.com/file/abc""#,
+                "<tokens />"
+            )
+        ))
+        .expect("a source-tool src only warns");
+        assert!(figma.warnings.iter().any(|w| w.contains("source tool")));
+    }
+
+    #[test]
+    fn identical_mode_axes_are_one_axis() {
+        let theme = r#"<mode name="theme" values="light dark" default="light" />"#;
+        let two = parse_gui_xml(&format!(
+            r#"<gui version="0.4.4"><library name="a" uid="a" release="1">{theme}</library><library name="b" uid="b" release="1">{theme}</library><col /></gui>"#
+        ))
+        .expect("identical axes are one");
+        assert_eq!(two.metadata.mode_axes.len(), 1);
+        let err = parse_gui_xml(&format!(
+            r#"<gui version="0.4.4"><library name="a" uid="a" release="1">{theme}</library><library name="b" uid="b" release="1"><mode name="theme" values="light dark dim" /></library><col /></gui>"#
+        ))
+        .expect_err("a different axis collides");
+        assert!(err.to_string().contains("declared differently"), "{err}");
+
+        let files = |b: &str| {
+            vec![
+                (
+                    "library/a.guix".to_owned(),
+                    format!(r#"<gui version="0.4.4" uid="u" release="1">{theme}</gui>"#),
+                ),
+                ("library/b.guix".to_owned(), b.to_owned()),
+            ]
+        };
+        assert!(
+            parse_library_files(&files(&format!(r#"<gui version="0.4.4">{theme}</gui>"#))).is_ok()
+        );
+        let twice = parse_library_files(&files(
+            r#"<gui version="0.4.4" uid="u" release="1"><tokens /></gui>"#,
+        ))
+        .expect_err("one identity");
+        assert!(
+            twice.to_string().contains("exactly one library file"),
+            "{twice}"
+        );
     }
 
     #[test]

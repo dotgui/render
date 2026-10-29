@@ -714,9 +714,19 @@ pub(crate) mod tests {
             "library/a.guix".to_owned(),
             b"<gui version=\"0.4.2\"><mode name=\"theme\" values=\"light dark\" /></gui>".to_vec(),
         ));
-        files.push((
+        // An identical axis is one axis (RFC-0056)…
+        let mut same = files.clone();
+        same.push((
             "library/b.guix".to_owned(),
             b"<gui version=\"0.4.2\"><mode name=\"theme\" values=\"light dark\" /></gui>".to_vec(),
+        ));
+        let package = read_gui_entries(same).expect("reads");
+        assert!(package.parse_library().expect("a library").is_ok());
+        // …and a different one collides.
+        files.push((
+            "library/b.guix".to_owned(),
+            b"<gui version=\"0.4.2\"><mode name=\"theme\" values=\"light dark dim\" /></gui>"
+                .to_vec(),
         ));
         let package = read_gui_entries(files).expect("reads");
         assert!(package.parse_library().expect("a library").is_err());

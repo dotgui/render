@@ -56,10 +56,10 @@ and refuses anything newer.
 
 | Renderer (reads spec) | Document declares | Result |
 |---|---|---|
-| `0.4.x` (`0.4.3`) | `0.1`, `0.2`, or no version (read as `0.2`) | Renders exactly as it always did |
-| `0.4.x` (`0.4.3`) | `0.3`, `0.3.0` … `0.3.11`, `0.4`, `0.4.1` … `0.4.3` | Renders, with each point's rules enforced |
-| `0.4.x` (`0.4.3`) | `0.4.4` and up | **Refused**: "a newer renderer is needed" |
-| `0.4.x` (`0.4.3`) | `0.5`, `1.0`, … | **Refused** |
+| `0.4.x` (`0.4.4`) | `0.1`, `0.2`, or no version (read as `0.2`) | Renders exactly as it always did |
+| `0.4.x` (`0.4.4`) | `0.3`, `0.3.0` … `0.3.11`, `0.4`, `0.4.1` … `0.4.4` | Renders, with each point's rules enforced |
+| `0.4.x` (`0.4.4`) | `0.4.5` and up | **Refused**: "a newer renderer is needed" |
+| `0.4.x` (`0.4.4`) | `0.5`, `1.0`, … | **Refused** |
 | `0.2.x` | `0.3` | Refused (from 0.3.0 onward; see below) |
 
 **Why refuse instead of trying.** An older renderer has never heard of the newer
@@ -155,10 +155,10 @@ chapter of its own.
 | | Value today |
 |---|---|
 | `RENDERER_VERSION` (Rust) | `0.4.0`, read from `Cargo.toml` at build time |
-| `SUPPORTED_VERSION` (Rust) | `"0.4.3"`, in `parser.rs` |
-| `render_png --version` | `dotgui renderer 0.4.0 (reads .gui up to version 0.4.3)` |
-| WASM `renderer_version()` / `supported_spec_version()` | `"0.4.0"` / `"0.4.3"` |
-| Error for a newer document | `the document declares version 0.4.4, but this renderer (0.4.0) reads documents up to version 0.4.3; a newer renderer is needed` |
+| `SUPPORTED_VERSION` (Rust) | `"0.4.4"`, in `parser.rs` |
+| `render_png --version` | `dotgui renderer 0.4.0 (reads .gui up to version 0.4.4)` |
+| WASM `renderer_version()` / `supported_spec_version()` | `"0.4.0"` / `"0.4.4"` |
+| Error for a newer document | `the document declares version 0.4.5, but this renderer (0.4.0) reads documents up to version 0.4.4; a newer renderer is needed` |
 
 The test `the_renderer_version_names_the_spec_it_implements` in `parser.rs`
 fails if `Cargo.toml`'s `MAJOR.MINOR` and `SUPPORTED_VERSION`'s chapter disagree. Treat a
