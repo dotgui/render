@@ -27,6 +27,7 @@ zip.workspace = true
 unicode-normalization.workspace = true
 image.workspace = true
 rustybuzz = "0.20.1"
+wuff.workspace = true
 
 [dev-dependencies]
 

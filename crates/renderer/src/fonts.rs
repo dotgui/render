@@ -795,8 +795,13 @@ fn google_css_url(family: &str, weights: &[String], styles: &[String]) -> Option
 
 /// Pulls `(weight, style) -> url` out of the `@font-face` blocks of a
 /// stylesheet.
+///
+/// A browser is answered with one face per unicode subset — cyrillic, greek,
+/// vietnamese, latin — under the same weight and style. The renderer takes one
+/// file per face, so the latin subset wins, the one that covers ASCII.
 fn parse_font_face_css(css: &str) -> BTreeMap<(String, String), String> {
     let mut faces = BTreeMap::new();
+    let mut latin_faces = std::collections::BTreeSet::new();
 
     for block in css.split("@font-face").skip(1) {
         let Some(block) = block.split('}').next() else {
@@ -806,6 +811,8 @@ fn parse_font_face_css(css: &str) -> BTreeMap<(String, String), String> {
         let mut style = "normal".to_owned();
         let mut weight = "400".to_owned();
         let mut url = None;
+        // A face without a range covers everything, ASCII included.
+        let mut latin = true;
 
         for declaration in block.split(';') {
             let Some((property, value)) = declaration.split_once(':') else {
@@ -824,12 +831,19 @@ fn parse_font_face_css(css: &str) -> BTreeMap<(String, String), String> {
                         .and_then(|(_, rest)| rest.split_once(')'))
                         .map(|(link, _)| link.trim().trim_matches('"').to_owned())
                 }
+                "unicode-range" => latin = value.to_ascii_uppercase().contains("U+0000-00FF"),
                 _ => {}
             }
         }
 
         if let Some(url) = url {
-            faces.insert((normalize_weight(&weight), style), url);
+            let key = (normalize_weight(&weight), style);
+            if latin && !latin_faces.contains(&key) {
+                latin_faces.insert(key.clone());
+                faces.insert(key, url);
+            } else {
+                faces.entry(key).or_insert(url);
+            }
         }
     }
 
@@ -971,7 +985,13 @@ impl FontSource {
 
     fn load(&self, cache: &AssetCache) -> Result<(Vec<u8>, u32), FontError> {
         match self {
-            FontSource::Google(url) => Ok((cache.resolve(url)?.bytes, 0)),
+            FontSource::Google(url) => {
+                let bytes = sfnt(cache.resolve(url)?.bytes).map_err(|message| FontError::Load {
+                    family: url.clone(),
+                    message,
+                })?;
+                Ok((bytes, 0))
+            }
             FontSource::System(face) => {
                 let bytes =
                     read_system_font(&face.path, cache).map_err(|message| FontError::Load {
@@ -1039,6 +1059,9 @@ const SYSTEM_UI_FALLBACKS: &[&str] = &[
     "DejaVu Sans", // most Linux distributions
     "Liberation Sans",
     "Arial",
+    // Last, for hosts with no UI font of their own: a browser has no font
+    // directory to search, so the canvas host supplies Inter instead.
+    "Inter",
 ];
 
 /// Finds the declared family, or the nearest platform UI font.
@@ -1158,7 +1181,9 @@ fn system_font_paths(family: &str, assets: &AssetCache) -> Vec<PathBuf> {
         let lowercase = name.to_ascii_lowercase();
         if !(lowercase.ends_with(".ttf")
             || lowercase.ends_with(".otf")
-            || lowercase.ends_with(".ttc"))
+            || lowercase.ends_with(".ttc")
+            || lowercase.ends_with(".woff")
+            || lowercase.ends_with(".woff2"))
         {
             continue;
         }
@@ -1173,12 +1198,26 @@ fn system_font_paths(family: &str, assets: &AssetCache) -> Vec<PathBuf> {
 /// A system font file's bytes: from disk, or from the host when it listed its
 /// files instead.
 fn read_system_font(path: &Path, assets: &AssetCache) -> Result<Vec<u8>, String> {
-    match assets.host_font_files() {
+    let bytes = match assets.host_font_files() {
         Some(_) => assets
             .package_asset(&path.to_string_lossy())
             .map(<[u8]>::to_vec)
             .ok_or_else(|| "the host has not supplied this file".to_owned()),
         None => std::fs::read(path).map_err(|err| err.to_string()),
+    }?;
+    sfnt(bytes)
+}
+
+/// A font file as plain OpenType, unwrapping WOFF and WOFF2.
+///
+/// The web serves fonts compressed: Google answers a browser with WOFF2, and a
+/// browser host has no installed fonts to offer, only files it has fetched.
+/// Everything below reads sfnt, so the wrapper comes off here, once per file.
+fn sfnt(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    match bytes.get(..4) {
+        Some(b"wOF2") => wuff::decompress_woff2(&bytes).map_err(|err| format!("WOFF2: {err:?}")),
+        Some(b"wOFF") => wuff::decompress_woff1(&bytes).map_err(|err| format!("WOFF: {err:?}")),
+        _ => Ok(bytes),
     }
 }
 
@@ -1879,6 +1918,52 @@ mod tests {
 
         let faces = parse_font_face_css(css);
         assert!(faces.contains_key(&("100".to_owned(), "normal".to_owned())));
+    }
+
+    #[test]
+    fn a_browser_stylesheet_resolves_each_face_to_its_latin_subset() {
+        // What Google answers a browser: one face per subset, latin not first.
+        let css = r#"
+            @font-face {
+              font-style: normal;
+              font-weight: 400;
+              src: url(https://fonts.gstatic.com/s/inter/cyrillic.woff2) format('woff2');
+              unicode-range: U+0301, U+0400-045F, U+0490-0491;
+            }
+            @font-face {
+              font-style: normal;
+              font-weight: 400;
+              src: url(https://fonts.gstatic.com/s/inter/latin.woff2) format('woff2');
+              unicode-range: U+0000-00FF, U+0131, U+0152-0153;
+            }
+            @font-face {
+              font-style: normal;
+              font-weight: 400;
+              src: url(https://fonts.gstatic.com/s/inter/vietnamese.woff2) format('woff2');
+              unicode-range: U+0102-0103, U+0110-0111;
+            }
+        "#;
+
+        let faces = parse_font_face_css(css);
+        assert_eq!(faces.len(), 1);
+        assert_eq!(
+            faces.get(&("400".to_owned(), "normal".to_owned())).unwrap(),
+            "https://fonts.gstatic.com/s/inter/latin.woff2"
+        );
+        assert_eq!(
+            font_urls_in_stylesheet(css),
+            ["https://fonts.gstatic.com/s/inter/latin.woff2"]
+        );
+    }
+
+    #[test]
+    fn woff2_unwraps_to_a_face_and_plain_files_pass_through() {
+        let woff2 = include_bytes!("../tests/fixtures/fonts/inter-latin-400.woff2").to_vec();
+        let ttf = sfnt(woff2).expect("decodes");
+        let face = Face::parse(&ttf, 0).expect("parses as OpenType");
+        assert!(face.glyph_index('A').is_some());
+        assert_eq!(sfnt(ttf.clone()).unwrap(), ttf);
+        assert!(sfnt(b"wOF2 truncated".to_vec()).is_err());
     }
 
     #[test]

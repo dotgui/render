@@ -21,6 +21,7 @@ taffy = "0.13"
 thiserror = "1"
 tiny-skia = { version = "0.12", features = ["png-format"] }
 ttf-parser = "0.25"
+wuff = "0.2.10"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 wasm-bindgen = "0.2"
 zip = { version = "2", default-features = false, features = ["deflate"] }

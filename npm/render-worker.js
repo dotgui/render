@@ -14,6 +14,13 @@ import init, { Engine, normalize_markup } from './pkg/dotgui_renderer_wasm.js'
 
 const wasmReady = init()
 
+/**
+ * Fonts this package ships, offered to every engine as if installed. A browser
+ * has no font directory, so a `source="system"` family that no host supplies
+ * falls back to these instead of drawing nothing.
+ */
+const BUNDLED_FONTS = [new URL('./fonts/Inter.woff2', import.meta.url).href]
+
 /** key → { engine, canvas } */
 const engines = new Map()
 
@@ -33,9 +40,15 @@ function fetchOnce(key, request) {
   return fetched.get(key)
 }
 
-/** Font lists by endpoint, fetched once. */
+/**
+ * The host's font files: those a `font-list` endpoint names, when the page has
+ * one, then the bundled ones. Fetched once per endpoint.
+ */
 const fontLists = new Map()
-function fontList(endpoint) {
+async function fontList(endpoint) {
+  return [...(endpoint ? await hostFontList(endpoint) : []), ...BUNDLED_FONTS]
+}
+function hostFontList(endpoint) {
   if (!fontLists.has(endpoint)) {
     fontLists.set(endpoint, fetch(endpoint)
       .then((response) => (response.ok ? response.json() : []))
@@ -56,18 +69,28 @@ async function supply(engine, wanted) {
   wanted.forEach(([key], i) => engine.set_asset(key, bytes[i]))
 }
 
+/** A remote URL as fetched: through the page's asset proxy when it has one, otherwise directly. */
+const viaProxy = (proxy, url) => (proxy ? proxy + encodeURIComponent(url) : url)
+
 /**
- * Fetches the fonts the engine cannot — web fonts through the asset proxy,
- * installed font files through the font endpoint — until it asks for nothing
- * more. Each round can reveal more: a stylesheet names its font files, and a
- * family that is not installed falls back to the next UI font.
+ * Where a host font file's bytes come from: a bundled font is a URL already;
+ * an installed one is served by the page's font endpoint.
+ */
+const fontFileRequest = (fontFile, file) =>
+  /^(https?|blob|data):/.test(file) ? file : fontFile + encodeURIComponent(file)
+
+/**
+ * Fetches the fonts the engine cannot — web fonts directly or through the
+ * asset proxy, host font files through the font endpoint — until it asks for
+ * nothing more. Each round can reveal more: a stylesheet names its font files,
+ * and a family that is not installed falls back to the next UI font.
  */
 async function supplyFonts(engine, xml, library, proxy, fontFile) {
   let supplied = 0
   for (let round = 0; round < 8; round++) {
     const wanted = [
-      ...engine.missing_font_urls(xml, library).map((url) => [url, proxy + encodeURIComponent(url)]),
-      ...engine.missing_font_files(xml, library).map((file) => [file, fontFile + encodeURIComponent(file)]),
+      ...engine.missing_font_urls(xml, library).map((url) => [url, viaProxy(proxy, url)]),
+      ...engine.missing_font_files(xml, library).map((file) => [file, fontFileRequest(fontFile, file)]),
     ]
     if (wanted.length === 0) break
     await supply(engine, wanted)
@@ -117,6 +140,19 @@ function patch(engine, canvas, last, xml, library) {
   }
 }
 
+/**
+ * Reads documents in `modes` (RFC-0037), `{ axis: value }`, when they differ
+ * from the modes the engine has. Same markup in other tokens paints whole.
+ */
+function applyModes(target, modes) {
+  const wanted = JSON.stringify(modes)
+  if ((target.modes ?? '{}') === wanted) return
+  target.engine.clear_modes()
+  for (const [axis, value] of Object.entries(modes)) target.engine.set_mode(axis, value)
+  target.modes = wanted
+  target.last = null
+}
+
 const handlers = {
   normalize({ xml }) {
     return [normalize_markup(xml)]
@@ -135,6 +171,7 @@ const handlers = {
     return [null]
   },
 
+
   /** Keeps the package's assets and library; answers with its pages. */
   loadPackage({ key, bytes }) {
     return [JSON.parse(entry(key).engine.load_package(new Uint8Array(bytes)))]
@@ -149,9 +186,10 @@ const handlers = {
    * `library` says the markup is the package's `library.guix`: its page is
    * drawn, and the documents drawn after it resolve against this markup.
    */
-  async render({ key, xml, library, density, proxy, fontFile }) {
+  async render({ key, xml, library, density, proxy, fontFile, modes = {} }) {
     const target = entry(key)
     const { engine, canvas } = target
+    applyModes(target, modes)
     const fontsStarted = performance.now()
     const suppliedFonts = await supplyFonts(engine, xml, library, proxy, fontFile)
     const fontsMs = performance.now() - fontsStarted
@@ -200,7 +238,7 @@ const handlers = {
 
   async supplyImages({ key, xml, library, proxy }) {
     const target = entry(key)
-    const wanted = target.engine.missing_image_urls(xml, library).map((url) => [url, proxy + encodeURIComponent(url)])
+    const wanted = target.engine.missing_image_urls(xml, library).map((url) => [url, viaProxy(proxy, url)])
     await supply(target.engine, wanted)
     if (wanted.length > 0) target.assetsArrived = true
     return [wanted.length]

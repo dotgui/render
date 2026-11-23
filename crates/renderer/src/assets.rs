@@ -140,6 +140,18 @@ impl AssetCache {
     }
 
     fn resolve_remote(&self, url: &str) -> Result<ResolvedAsset, AssetError> {
+        // Without the network there is no disk cache either — a browser has no
+        // directory to make — so an asset the host has not supplied is simply
+        // not fetched, the same answer a failed download gives.
+        if cfg!(not(feature = "net")) {
+            return fetch_url(url).map(|bytes| ResolvedAsset {
+                src: url.to_owned(),
+                cache_path: PathBuf::from(url),
+                media_type: media_type_for(url),
+                bytes,
+            });
+        }
+
         fs::create_dir_all(&self.root).map_err(|source| AssetError::CreateCache {
             path: self.root.clone(),
             source,
@@ -245,7 +257,7 @@ fn fetch_url(url: &str) -> Result<Vec<u8>, AssetError> {
 fn fetch_url(url: &str) -> Result<Vec<u8>, AssetError> {
     Err(AssetError::Fetch {
         url: url.to_owned(),
-        message: "network support is disabled; build with the \"net\" feature or                   supply this asset through the .gui package"
+        message: "not supplied by the host, and this build cannot fetch; build with the \"net\" feature, supply it through the .gui package, or hand it over with Engine::set_asset"
             .to_owned(),
     })
 }
