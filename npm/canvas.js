@@ -252,6 +252,15 @@ export class GuiCanvas extends Element {
     })
   }
 
+  static get observedAttributes() {
+    return ['density']
+  }
+
+  /** A new density redraws the page at it. */
+  attributeChangedCallback(name, previous, value) {
+    if (name === 'density' && previous !== value && this.#doc) this.#render()
+  }
+
   /** Whether pointing at the canvas hovers and selects its elements. */
   get selectable() {
     return this.hasAttribute('selectable')
