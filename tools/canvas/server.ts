@@ -39,6 +39,8 @@ const PACKAGES = path.join(ROOT, 'crates', 'renderer', 'tests', 'packages')
 /** Your own `.gui` / `.guix` files to try on the page, kept out of git and the tests. */
 const SAMPLES = path.join(HERE, 'samples')
 const WASM = path.join(ROOT, 'target', 'wasm32-unknown-unknown', 'release', 'dotgui_renderer_wasm.wasm')
+/** The element and its worker are the published package's, so this page runs what ships. */
+const NPM = path.join(ROOT, 'npm')
 
 /** The user agent the native renderer fetches with, so Google serves TrueType. */
 const NATIVE_USER_AGENT = 'ureq/3'
@@ -61,7 +63,7 @@ const WASM_BUILD = {
 }
 
 await run(['cargo', 'build', '--release', '-p', 'dotgui-renderer-wasm', '--target', 'wasm32-unknown-unknown'], WASM_BUILD)
-await run(['wasm-bindgen', '--target', 'web', '--out-dir', path.join(HERE, 'pkg'), WASM])
+await run(['wasm-bindgen', '--target', 'web', '--out-dir', path.join(NPM, 'pkg'), WASM])
 
 /** The directories `system_font_dirs` searches, for this platform. */
 function fontDirs() {
@@ -87,9 +89,9 @@ function installedFonts() {
 }
 
 const STATIC: Record<string, string> = {
-  '/': 'index.html',
-  '/gui-canvas.js': 'gui-canvas.js',
-  '/render-worker.js': 'render-worker.js',
+  '/': path.join(HERE, 'index.html'),
+  '/gui-canvas.js': path.join(NPM, 'canvas.js'),
+  '/render-worker.js': path.join(NPM, 'render-worker.js'),
 }
 
 async function proxy(url: string | null) {
@@ -112,9 +114,9 @@ Bun.serve({
   async fetch(request) {
     const { pathname, searchParams } = new URL(request.url)
 
-    if (pathname in STATIC) return new Response(Bun.file(path.join(HERE, STATIC[pathname])))
-    if (pathname.startsWith('/pkg/')) {
-      const file = path.join(HERE, 'pkg', path.basename(pathname))
+    if (pathname in STATIC) return new Response(Bun.file(STATIC[pathname]))
+    if (pathname.startsWith('/pkg/') || pathname.startsWith('/fonts/')) {
+      const file = path.join(NPM, path.dirname(pathname).slice(1), path.basename(pathname))
       if (existsSync(file)) return new Response(Bun.file(file))
     }
     if (pathname === '/examples') {

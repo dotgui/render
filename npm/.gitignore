@@ -1,0 +1,3 @@
+# Built by build.ts from the renderer-wasm crate
+/pkg/
+/node_modules/

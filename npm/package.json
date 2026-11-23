@@ -1,0 +1,57 @@
+{
+  "name": "@dotgui/render",
+  "version": "0.4.0",
+  "description": "The dotgui renderer: .gui drawn by Rust, compiled to WebAssembly \u2014 in Node, and on a <gui-canvas> in the browser. Reads documents up to spec 0.4.4.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./node": {
+      "types": "./node.d.ts",
+      "default": "./node.js"
+    },
+    "./canvas": {
+      "types": "./canvas.d.ts",
+      "default": "./canvas.js"
+    },
+    "./render-worker.js": "./render-worker.js",
+    "./pkg/*": "./pkg/*",
+    "./fonts/*": "./fonts/*"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "node.js",
+    "node.d.ts",
+    "canvas.js",
+    "canvas.d.ts",
+    "render-worker.js",
+    "fonts/",
+    "pkg/",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "bun run build.ts",
+    "test": "bun test",
+    "prepublishOnly": "bun run build.ts"
+  },
+  "keywords": [
+    "dotgui",
+    "gui",
+    "render",
+    "wasm",
+    "canvas",
+    "web-component"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dotgui/render",
+    "directory": "npm"
+  },
+  "sideEffects": [
+    "./canvas.js"
+  ]
+}

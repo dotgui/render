@@ -49,6 +49,43 @@ fn load_package(bytes: &[u8]) -> Result<Loaded, JsValue> {
     })
 }
 
+/// Re-encodes a painted PNG as `png`, `webp` or `jpeg`.
+fn encode_png_as(png: Vec<u8>, format: &str) -> Result<Vec<u8>, String> {
+    use image::{ImageFormat, Rgba, RgbaImage};
+    let target = match format {
+        "png" => return Ok(png),
+        "webp" => ImageFormat::WebP,
+        "jpeg" | "jpg" => ImageFormat::Jpeg,
+        other => {
+            return Err(format!(
+                "unknown image format '{other}': use png, webp or jpeg"
+            ))
+        }
+    };
+    let decoded = image::load_from_memory_with_format(&png, ImageFormat::Png)
+        .map_err(|err| err.to_string())?
+        .to_rgba8();
+    let mut out = std::io::Cursor::new(Vec::new());
+    if target == ImageFormat::Jpeg {
+        // JPEG has no alpha: composite onto white, as a browser screenshot does.
+        let mut flat = RgbaImage::from_pixel(
+            decoded.width(),
+            decoded.height(),
+            Rgba([255, 255, 255, 255]),
+        );
+        image::imageops::overlay(&mut flat, &decoded, 0, 0);
+        image::DynamicImage::ImageRgba8(flat)
+            .to_rgb8()
+            .write_to(&mut out, target)
+            .map_err(|err| err.to_string())?;
+    } else {
+        decoded
+            .write_to(&mut out, target)
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(out.into_inner())
+}
+
 /// An asset cache that never touches disk.
 ///
 /// `AssetCache` only reads or writes its root when it has to fetch something
@@ -588,6 +625,20 @@ impl Engine {
         kept.page
             .paint_area_png(area, scale, Some(&self.cache), Some(&kept.fonts))
             .map_err(to_js)
+    }
+
+    /// The whole page at `scale`, encoded as `format`: `png`, `webp` (lossless)
+    /// or `jpeg` (on white, since JPEG has no transparency). What a host needs
+    /// for a preview or an export without a browser to encode it.
+    pub fn screenshot_page_image(
+        &self,
+        xml: &str,
+        scale: f32,
+        library: Option<bool>,
+        format: &str,
+    ) -> Result<Vec<u8>, JsValue> {
+        let png = self.screenshot_page_png(xml, scale, library)?;
+        encode_png_as(png, format).map_err(to_js)
     }
 
     /// An area of the page, in document pixels, at `scale`, as PNG bytes.
